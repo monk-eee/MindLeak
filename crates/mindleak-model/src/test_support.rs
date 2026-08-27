@@ -9,6 +9,22 @@ use std::time::{Duration, Instant};
 const ACCEPT_BUDGET: Duration = Duration::from_secs(2);
 const COLD_HOLD: Duration = Duration::from_secs(1);
 
+/// The read timeout a client should use against [`cold_then_warm_json_endpoint`].
+///
+/// It sits between two bounds and the gap between them is the whole point. It
+/// must be **under** `COLD_HOLD` or the cold connection never times out and the
+/// retry under test never happens. It must be **over** the time a loaded machine
+/// needs to accept and serve that retry — and at the 100ms both planes used to
+/// hard-code independently, that second bound was too tight: the server thread
+/// contends with the still-sleeping cold thread and every other test in the run,
+/// and when it loses, the client closes the warm socket first.
+///
+/// 400ms widens that window; it does not guarantee it, because the variable is
+/// scheduler latency rather than anything this constant controls. What is
+/// guaranteed is that losing the race now fails the assertion that matters
+/// rather than panicking the fixture. Raise this before suspecting the client.
+pub const COLD_CLIENT_READ_TIMEOUT: Duration = Duration::from_millis(400);
+
 pub fn chat_response(content: impl Into<String>) -> Vec<u8> {
     serde_json::json!({
         "choices": [{ "message": { "content": content.into() } }]
@@ -138,19 +154,57 @@ fn read_request(stream: &mut TcpStream) {
     }
 }
 
+/// Write to a client that may already have given up.
+///
+/// These fixtures exist to make a client time out, so a vanished peer is an
+/// expected outcome here rather than a harness fault. Panicking on it reported
+/// the failure as "write test model body" — the harness blaming its own socket
+/// write, nowhere near the timing race that caused it — and buried the test's
+/// own honest assertion, which is that the client never got its response.
+fn write_all_if_still_listening(stream: &mut TcpStream, bytes: &[u8]) {
+    if stream.write_all(bytes).is_ok() {
+        let _ = stream.flush();
+    }
+}
+
 fn write_headers(stream: &mut TcpStream, status: u16, reason: &str, body_len: usize) {
     let headers = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\nConnection: close\r\n\r\n"
     );
-    stream
-        .write_all(headers.as_bytes())
-        .expect("write test model headers");
-    stream.flush().expect("flush test model headers");
+    write_all_if_still_listening(stream, headers.as_bytes());
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, reason: &str, body: &[u8]) {
     write_headers(stream, status, reason, body.len());
-    stream.write_all(body).expect("write test model body");
-    stream.flush().expect("flush test model response");
+    write_all_if_still_listening(stream, body);
     let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bug: these fixtures exist to make a client give up, so writing to a peer
+    /// that has gone is an expected outcome of using them — but the harness
+    /// `expect`ed the write and panicked, surfacing as "write test model body".
+    /// That reported the harness's own socket write as the fault, nowhere near
+    /// the timing race that caused it, and buried the test's real assertion:
+    /// that the client never received its response.
+    ///
+    /// Closing our own write half is what makes the write fail *deterministically*
+    /// here; a peer that has gone only does so once buffers fill, which would
+    /// make this test as load-dependent as the flake it guards. The property is
+    /// the same either way, and it is the one that matters: a write that cannot
+    /// land is reported to the caller, never panicked on.
+    #[test]
+    fn a_failed_write_does_not_panic_the_fixture() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let _client = TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
+        let (mut served, _) = listener.accept().expect("accept");
+        served
+            .shutdown(std::net::Shutdown::Write)
+            .expect("close the write half");
+
+        write_response(&mut served, 200, "OK", b"{\"ok\":true}");
+    }
 }

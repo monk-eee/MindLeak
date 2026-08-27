@@ -26,7 +26,9 @@ use super::{
 };
 
 mod create_work;
+mod directive_receipt;
 mod release_lease;
+mod supervisor_directives;
 mod task_mutations;
 
 /// What actually happened applying a confirmed command's payload. Recorded
@@ -52,6 +54,20 @@ enum ExecutionOutcome {
     ClaimLeaseChanged {
         current_lease_expires_at: SystemTime,
     },
+    /// The directive was durably enqueued to the addressed supervisor
+    /// (ADR-0125 decision 7); the receipt records `PendingDelivery`, never
+    /// `Applied` -- only the supervisor's own later receipt may apply an
+    /// effect (see `directive_receipt::apply`).
+    DirectiveIssued {
+        directive_id: String,
+    },
+    /// The addressed supervisor session does not advertise the directive
+    /// kind's required capability.
+    SupervisorCapabilityMissing,
+    /// No enrolled supervisor session matches the addressed target.
+    SupervisorSessionUnknown,
+    /// The addressed session belongs to a different node than named.
+    SupervisorTargetMismatch,
 }
 
 impl WorkCommandStore {
@@ -146,6 +162,21 @@ async fn apply_effect(
         WorkCommandPayload::SubmitReview(payload) => {
             task_mutations::submit_review(transaction, command, payload, now).await
         }
+        WorkCommandPayload::Assign(payload) => {
+            supervisor_directives::assign(transaction, command, payload, now).await
+        }
+        WorkCommandPayload::Steer(payload) => {
+            supervisor_directives::steer(transaction, command, payload, now).await
+        }
+        WorkCommandPayload::Pause(payload) => {
+            supervisor_directives::pause(transaction, command, payload, now).await
+        }
+        WorkCommandPayload::Resume(payload) => {
+            supervisor_directives::resume(transaction, command, payload, now).await
+        }
+        WorkCommandPayload::Drain(payload) => {
+            supervisor_directives::drain(transaction, command, payload, now).await
+        }
     }
 }
 
@@ -210,6 +241,27 @@ fn describe(outcome: &ExecutionOutcome, now: SystemTime) -> (WorkCommandOutcome,
                 format!("the claim's lease {detail}; it no longer matches the observed lease."),
             )
         }
+        ExecutionOutcome::DirectiveIssued { directive_id } => (
+            WorkCommandOutcome::PendingDelivery,
+            format!(
+                "directive {directive_id} was durably enqueued to the addressed supervisor; \
+                 only its own applied/refused/failed/expired receipt may change the task."
+            ),
+        ),
+        ExecutionOutcome::SupervisorCapabilityMissing => (
+            WorkCommandOutcome::Refused,
+            "the addressed supervisor session does not advertise this directive's required \
+             capability."
+                .to_owned(),
+        ),
+        ExecutionOutcome::SupervisorSessionUnknown => (
+            WorkCommandOutcome::Refused,
+            "no enrolled supervisor session matches the addressed target.".to_owned(),
+        ),
+        ExecutionOutcome::SupervisorTargetMismatch => (
+            WorkCommandOutcome::Refused,
+            "the addressed session belongs to a different node than named.".to_owned(),
+        ),
     }
 }
 

@@ -100,6 +100,7 @@ pub(in crate::work_command_store) fn command_from_row(
         idempotency_key: row.get("idempotency_key"),
         request_digest: row.get("request_digest"),
         payload_digest: row.get("payload_digest"),
+        directive_id: row.get("directive_id"),
         recorded_at: row.get("recorded_at"),
     })
 }
