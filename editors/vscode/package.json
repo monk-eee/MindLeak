@@ -634,6 +634,16 @@
             "default": "",
             "description": "Explicit path to the Lodestar intent database (LODESTAR_DB). Empty uses the shared per-repository user-local store."
           },
+          "mindleak.embedUrl": {
+            "type": "string",
+            "default": "",
+            "description": "OpenAI-compatible embeddings base URL for both planes (MINDLEAK_EMBED_URL), for example http://127.0.0.1:1234/v1 for LM Studio. Empty leaves the server's own default, http://localhost:11434/v1. Set this rather than a machine-wide variable: a server inherits its environment once, when the editor launches, so exporting one does nothing until the editor restarts."
+          },
+          "mindleak.embedModel": {
+            "type": "string",
+            "default": "",
+            "description": "Embedding model name for both planes (MINDLEAK_EMBED_MODEL). Empty leaves the server's own default, nomic-embed-text. Name the exact model id: an alias that resolves today changes meaning as soon as the server loads a second model, and the wrong-dimension answer arrives as a success."
+          },
           "mindleak.agentId": {
             "type": "string",
             "default": "vscode",

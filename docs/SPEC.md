@@ -269,6 +269,11 @@ not a convention each delete site has to remember.
 | `MINDLEAK_INDEX_INTERVAL_SECS` | `300` | autonomous index cadence (30-86400) |
 | `MINDLEAK_INDEX_BATCH` | `128` | nodes attempted per pass (1-1000) |
 
+A server inherits its environment once, when it is launched, so exporting these
+variables does nothing for an editor that is already running. The VS Code
+extension therefore contributes `mindleak.embedUrl` and `mindleak.embedModel`,
+which it threads into both planes at spawn.
+
 When the embedding endpoint is unavailable, explicit `index` calls name the
 model, URL, and remediation. Autonomous indexing records one degraded `skipped`
 transition, silences identical retries, backs off exponentially to one hour on

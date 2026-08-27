@@ -10,7 +10,7 @@ import {
   canRecoverLegacyClaim,
   canRetireTask,
   claimTaskRequest,
-  configuredPathEnvironment,
+  configuredEnvironment,
   conformanceDiagnostic,
   evidenceGroups,
   evidenceRequestForTask,
@@ -91,14 +91,14 @@ describe("healthSummary", () => {
   });
 });
 
-describe("configuredPathEnvironment", () => {
+describe("configuredEnvironment", () => {
   it("omits empty settings so the server resolves shared repository state", () => {
-    expect(configuredPathEnvironment("MINDLEAK_DB", undefined)).toEqual({});
-    expect(configuredPathEnvironment("LODESTAR_DB", "   ")).toEqual({});
+    expect(configuredEnvironment("MINDLEAK_DB", undefined)).toEqual({});
+    expect(configuredEnvironment("LODESTAR_DB", "   ")).toEqual({});
   });
 
   it("preserves an explicit database override", () => {
-    expect(configuredPathEnvironment("MINDLEAK_DB", "  D:/state/graph.db  ")).toEqual({
+    expect(configuredEnvironment("MINDLEAK_DB", "  D:/state/graph.db  ")).toEqual({
       MINDLEAK_DB: "D:/state/graph.db",
     });
   });
@@ -356,6 +356,36 @@ describe("planMcpServers", () => {
     );
     expect(overridden[0].env.MINDLEAK_DB).toBe("/tmp/m.db");
     expect(overridden[1].env.LODESTAR_DB).toBe("/tmp/i.db");
+  });
+
+  // Bug: the extension threaded database, attribution and every consolidation
+  // setting into its servers, but nothing for the embedding endpoint — so a
+  // server fell back to the Ollama default and its autonomous index pass could
+  // never reach the model. Measured here as 121 consecutive `skipped` events
+  // naming `nomic-embed-text`, on a machine configured for a different model on
+  // a different port. Exporting a variable does not rescue it: a process
+  // inherits its environment at launch, so an already-running editor keeps the
+  // old one.
+  it("tells both planes where the embedding model lives", () => {
+    const plans = planMcpServers(
+      "/ws",
+      "copilot",
+      { ...configured, embedUrl: "http://127.0.0.1:1234/v1", embedModel: "qwen3-embedding-4b" },
+      { exists: () => false }
+    );
+    // Both, because Lodestar falls back to MINDLEAK_EMBED_* for knowledge recall.
+    for (const plan of plans) {
+      expect(plan.env.MINDLEAK_EMBED_URL).toBe("http://127.0.0.1:1234/v1");
+      expect(plan.env.MINDLEAK_EMBED_MODEL).toBe("qwen3-embedding-4b");
+    }
+  });
+
+  it("leaves the server's own embedding default alone when unconfigured", () => {
+    const plans = planMcpServers("/ws", "copilot", configured, { exists: () => false });
+    for (const plan of plans) {
+      expect(plan.env.MINDLEAK_EMBED_URL).toBeUndefined();
+      expect(plan.env.MINDLEAK_EMBED_MODEL).toBeUndefined();
+    }
   });
 
   it("resolves both planes to the shared install when one is present", () => {
