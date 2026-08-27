@@ -65,6 +65,14 @@ impl WorkCommandKind {
             other => Err(WorkCommandStoreError::UnknownCommandKind { value: other }),
         }
     }
+
+    /// This variant's stable, snake_case operation name, read from the
+    /// shared `work_command_vocabulary::WORK_COMMAND_OPERATIONS` constant
+    /// by its persisted wire position (ADR-0125 decision 3: one canonical
+    /// vocabulary, not a second copy a caller could let drift).
+    pub(crate) fn operation_name(self) -> &'static str {
+        crate::work_command_vocabulary::WORK_COMMAND_OPERATIONS[(self.as_i16() - 1) as usize]
+    }
 }
 
 /// A durable command outcome. A receipt describes what happened; it does not
@@ -241,4 +249,47 @@ pub enum WorkCommandStoreError {
     InvalidDirectivePayload,
     #[error("issuing the supervisor-directed command's directive failed: {0}")]
     Directive(#[from] DirectiveStoreError),
+}
+
+#[cfg(test)]
+mod vocabulary_tests {
+    use super::*;
+    use crate::work_command_vocabulary::WORK_COMMAND_OPERATIONS;
+
+    /// Regression: `operation_name` must derive from
+    /// `WORK_COMMAND_OPERATIONS` for every variant, never a second,
+    /// independently-maintained string -- this is the exact defect Bridge's
+    /// `command_capabilities()` used to have (ADR-0125 decision 3).
+    #[test]
+    fn every_variant_maps_to_the_shared_vocabulary_by_wire_position() {
+        let expected = [
+            (WorkCommandKind::CreateWork, "create_work"),
+            (WorkCommandKind::RouteWork, "route_work"),
+            (WorkCommandKind::ReleaseLease, "release_lease"),
+            (WorkCommandKind::AnswerWait, "answer_wait"),
+            (WorkCommandKind::SubmitReview, "submit_review"),
+            (WorkCommandKind::Assign, "assign"),
+            (WorkCommandKind::Steer, "steer"),
+            (WorkCommandKind::Pause, "pause"),
+            (WorkCommandKind::Resume, "resume"),
+            (WorkCommandKind::Drain, "drain"),
+        ];
+        assert_eq!(expected.len(), WORK_COMMAND_OPERATIONS.len());
+        for (kind, name) in expected {
+            assert_eq!(kind.operation_name(), name);
+            assert_eq!(WORK_COMMAND_OPERATIONS[(kind.as_i16() - 1) as usize], name);
+        }
+    }
+
+    #[test]
+    fn from_i16_round_trips_through_operation_name_for_every_wire_value() {
+        for wire_value in 1..=10i16 {
+            let kind = WorkCommandKind::from_i16(wire_value).unwrap();
+            assert_eq!(kind.as_i16(), wire_value);
+            assert_eq!(
+                kind.operation_name(),
+                WORK_COMMAND_OPERATIONS[(wire_value - 1) as usize]
+            );
+        }
+    }
 }
