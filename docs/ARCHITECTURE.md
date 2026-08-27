@@ -327,6 +327,25 @@ Credential Manager, macOS Keychain, or Linux Secret Service, via the
 an explicit environment variable remains available as a documented,
 non-hardened override for tests and constrained deployments.
 
+`NodeSyncConnection` (`ackplane-client::node_sync`) is the first genuinely
+reusable client side of ADR-0116's supervisor runtime: it opens the
+bidirectional `Synchronize` stream, sends `Hello`, and completes the
+enrolled-key connection challenge -- the same handshake
+`ackplane-server::service::handshake` implements and tests server-side --
+returning a live authenticated frame sender/receiver only after `HelloAccepted`
+and `FlowControl` are observed. Signing goes through the existing
+`ClaimSigner` trait, never a raw key inline in this module. A wrong signature,
+an unknown `signing_key_id`, or a revoked key surface as
+`ClientError::ConnectionRefused` carrying the server's own typed
+`RejectionReason`, not a bare stream failure. The connection-challenge byte
+layout itself (`ConnectionChallengeBinding`, `connection_challenge_bytes`)
+moved to `ackplane_protocol::connection_challenge_auth` so the two sides can
+never drift into incompatible encodings of the same signed fields;
+`ackplane_server::enrollment` re-exports it unchanged for its existing
+callers. This slice sends and receives nothing beyond the handshake itself --
+supervisor registration, directive delivery, and reconnect reconciliation are
+later ADR-0116 slices built on the connection this returns.
+
 ### `ackplane-supervisor` (library)
 
 The local durable directive inbox and outbox for one enrolled supervisor and worker session (ADR-0116). It owns a caller-provided SQLite database rather than either repository-local plane database. The inbox binds itself to one tenant, repository, node, supervisor, and agent session; verifies that an incoming directive targets that identity and names an advertised capability; rejects expired or out-of-sequence delivery; and persists accepted, capability-refused, and expired receipts before returning them. Replaying the same directive id and payload digest returns the original stored receipt, while a changed digest under the same id is refused without overwriting evidence.
