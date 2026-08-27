@@ -6,8 +6,8 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::{LodestarError, Result};
 
-pub(crate) use support::column_exists;
-use support::{run_once, table_exists};
+use support::run_once;
+pub(crate) use support::{column_exists, table_exists};
 
 pub(super) fn migrate(connection: &Connection) -> Result<bool> {
     connection.execute_batch("BEGIN IMMEDIATE")?;

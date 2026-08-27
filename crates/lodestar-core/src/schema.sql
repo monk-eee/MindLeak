@@ -411,6 +411,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     applied_at INTEGER NOT NULL
 );
 
+-- Durable physical-maintenance phases. Schema migration completion does not
+-- imply a VACUUM or WAL checkpoint succeeded, and those operations cannot run
+-- inside the migration transaction.
+CREATE TABLE IF NOT EXISTS database_maintenance (
+    name  TEXT PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('vacuum', 'checkpoint', 'complete'))
+);
+
 CREATE TABLE IF NOT EXISTS conformance (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    TEXT,

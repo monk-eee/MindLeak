@@ -1,0 +1,1 @@
+- **Fixed:** Lodestar now retains and retries pending physical cleanup after rebuilding `knowledge_embeddings`, with a bounded SQLite lock wait and WAL checkpointing so reclaimed vector storage does not remain allocated after an interrupted migration.
