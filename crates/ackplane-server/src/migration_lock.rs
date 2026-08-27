@@ -150,6 +150,9 @@ pub(crate) mod key {
     pub(crate) const ADMINISTRATION_PURGE_CONFIRMATION_AUTHENTICATION: i64 = 51;
     /// `migrations/0052_administration_purge_confirmation_fingerprint.sql`.
     pub(crate) const ADMINISTRATION_PURGE_CONFIRMATION_FINGERPRINT: i64 = 52;
+    /// `migrations/0053_work_command_directives.sql`. Checked via
+    /// `migration-audit.mjs` before picking 53: no live discrepancy above 52.
+    pub(crate) const WORK_COMMAND_DIRECTIVES: i64 = 53;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

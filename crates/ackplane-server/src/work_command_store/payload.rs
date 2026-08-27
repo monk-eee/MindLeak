@@ -49,6 +49,47 @@ pub(super) struct SubmitReviewPayload {
     pub(super) rationale: String,
 }
 
+/// The enrolled supervisor session an ADR-0107 directive addresses. Every
+/// supervisor-directed payload names its own target explicitly rather than
+/// inferring one from the task's current claim: `Assign` by definition has
+/// no prior claim to infer from, and inferring one for the other four would
+/// make the same "which session" decision two different ways depending on
+/// kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DirectiveTarget {
+    pub(super) target_node_id: String,
+    pub(super) target_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AssignPayload {
+    pub(super) target: DirectiveTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SteerPayload {
+    pub(super) target: DirectiveTarget,
+    pub(super) instruction: String,
+    pub(super) checkpoint_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PausePayload {
+    pub(super) target: DirectiveTarget,
+    pub(super) checkpoint_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ResumePayload {
+    pub(super) target: DirectiveTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DrainPayload {
+    pub(super) target: DirectiveTarget,
+    pub(super) deadline: SystemTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum WorkCommandPayload {
     CreateWork(CreateWorkPayload),
@@ -56,6 +97,11 @@ pub(super) enum WorkCommandPayload {
     ReleaseLease(ReleaseLeasePayload),
     AnswerWait(AnswerWaitPayload),
     SubmitReview(SubmitReviewPayload),
+    Assign(AssignPayload),
+    Steer(SteerPayload),
+    Pause(PausePayload),
+    Resume(ResumePayload),
+    Drain(DrainPayload),
 }
 
 impl WorkCommandPayload {
@@ -66,6 +112,11 @@ impl WorkCommandPayload {
             Self::ReleaseLease(_) => WorkCommandKind::ReleaseLease,
             Self::AnswerWait(_) => WorkCommandKind::AnswerWait,
             Self::SubmitReview(_) => WorkCommandKind::SubmitReview,
+            Self::Assign(_) => WorkCommandKind::Assign,
+            Self::Steer(_) => WorkCommandKind::Steer,
+            Self::Pause(_) => WorkCommandKind::Pause,
+            Self::Resume(_) => WorkCommandKind::Resume,
+            Self::Drain(_) => WorkCommandKind::Drain,
         }
     }
 }
@@ -109,6 +160,30 @@ pub(super) fn payload_digest(
             hasher.update([tag]);
             append_bytes(&mut hasher, payload.rationale.as_bytes());
         }
+        WorkCommandPayload::Assign(payload) => {
+            append_target(&mut hasher, &payload.target);
+        }
+        WorkCommandPayload::Steer(payload) => {
+            append_target(&mut hasher, &payload.target);
+            append_bytes(&mut hasher, payload.instruction.as_bytes());
+            hasher.update([u8::from(payload.checkpoint_required)]);
+        }
+        WorkCommandPayload::Pause(payload) => {
+            append_target(&mut hasher, &payload.target);
+            hasher.update([u8::from(payload.checkpoint_required)]);
+        }
+        WorkCommandPayload::Resume(payload) => {
+            append_target(&mut hasher, &payload.target);
+        }
+        WorkCommandPayload::Drain(payload) => {
+            append_target(&mut hasher, &payload.target);
+            append_timestamp(&mut hasher, payload.deadline)?;
+        }
     }
     Ok(hasher.finalize().to_vec())
+}
+
+fn append_target(hasher: &mut Sha256, target: &DirectiveTarget) {
+    append_bytes(hasher, target.target_node_id.as_bytes());
+    append_bytes(hasher, target.target_session_id.as_bytes());
 }
