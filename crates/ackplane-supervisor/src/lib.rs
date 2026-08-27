@@ -8,6 +8,8 @@
 mod inbox;
 mod outbox;
 mod storage;
+mod worker_adapter;
 
 pub use inbox::{InboxError, SupervisorInbox};
 pub use outbox::{OutboxError, QueueOutcome, QueuedFrame, SupervisorOutbox};
+pub use worker_adapter::{AdapterError, ProcessWorkerAdapter, WorkerAdapter, WorkerAssignment};
