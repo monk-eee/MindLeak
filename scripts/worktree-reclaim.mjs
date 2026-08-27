@@ -524,6 +524,24 @@ export function revalidateBeforeReclaim(
 }
 
 /**
+ * Whether a worktree git failed to remove is still actually there.
+ *
+ * `git worktree remove` deletes the tree's contents and its `.git` link before
+ * unlinking the directory itself, so a lock on the directory fails the command
+ * *after* the worktree is already dismantled. Treating that as a keep is what
+ * orphaned three branches here: the entry was reported `kept`, so its branch
+ * was never deleted, and the `git worktree prune` at the end of the run then
+ * deregistered the gutted worktree — putting the branch permanently beyond the
+ * reach of a tool that only ever looks at registered worktrees.
+ *
+ * A refusal that happens *before* git touches anything (a dirty tree, say)
+ * leaves the `.git` link in place, and that is a real keep.
+ */
+export function worktreeSurvivedRemoval(path, exists = existsSync) {
+  return exists(join(path, ".git"));
+}
+
+/**
  * Remove one already-revalidated entry's build output, then (unless
  * `artifactsOnly`) the worktree and its branch.
  *
@@ -541,6 +559,7 @@ export function reclaimEntry(
     artifactsOnly = false,
     rm = removeTreeSafely,
     git: gitFn = tryGit,
+    exists = existsSync,
   } = {},
 ) {
   const { path, branch } = entry.worktree;
@@ -559,14 +578,26 @@ export function reclaimEntry(
     return { reclaimed: true, artifactsOnly: true };
   }
   const removed = gitFn(["worktree", "remove", path], anchor);
+  let residue = null;
   if (!removed.ok) {
-    return { reclaimed: false, reason: removed.out.trim().split(/\r?\n/)[0] };
+    if (worktreeSurvivedRemoval(path, exists)) {
+      return { reclaimed: false, reason: removed.out.trim().split(/\r?\n/)[0] };
+    }
+    // Dismantled, only the final unlink failed. Retry it with the same helper
+    // the artifacts use, then finish the reclaim either way: the branch must
+    // not survive a worktree that is already gone.
+    const unlinked = rm(path);
+    if (!unlinked.ok && exists(path)) {
+      const detail =
+        unlinked.error?.code ?? unlinked.error?.message ?? "unknown error";
+      residue = `${path} is an empty directory another process still holds (${detail}); remove it later`;
+    }
   }
   gitFn(["branch", "-D", branch], anchor);
   if (remote) {
     gitFn(["push", "origin", "--delete", branch], anchor);
   }
-  return { reclaimed: true, artifactsOnly: false };
+  return { reclaimed: true, artifactsOnly: false, residue };
 }
 
 /**
@@ -847,6 +878,9 @@ function main() {
         ? `worktree-reclaim: cleaned ${branch} (${formatBytes(entry.bytes)})`
         : `worktree-reclaim: reclaimed ${branch} (${formatBytes(entry.bytes)})`,
     );
+    if (result.residue) {
+      console.log(`worktree-reclaim: residue — ${result.residue}`);
+    }
   }
   tryGit(["worktree", "prune"], anchor);
 }
