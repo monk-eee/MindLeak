@@ -18,112 +18,13 @@ impl DirectiveStore {
     /// Records one immutable directive and assigns its per-target sequence.
     pub async fn enqueue(
         &mut self,
-        mut directive: v1::AgentDirective,
+        directive: v1::AgentDirective,
     ) -> Result<DirectiveWriteOutcome, DirectiveStoreError> {
         let now = normalize_timestamp(SystemTime::now());
-        let (requirement, expires_at) = validate_directive(&directive, now)?;
-        let request_digest = directive_request_digest(&directive);
         let transaction = self.client.transaction().await?;
-        let capabilities = target_capabilities(&transaction, &directive).await?;
-        if !capabilities
-            .supported_directives
-            .contains(&requirement.capability)
-        {
-            return Err(DirectiveStoreError::CapabilityMissing);
-        }
-
-        if let Some(record) = existing_by_directive_id(&transaction, &directive).await? {
-            let outcome = replay_or_conflict(record, &request_digest)?;
-            transaction.commit().await?;
-            return Ok(outcome);
-        }
-        if let Some(record) = existing_by_idempotency_key(&transaction, &directive).await? {
-            let outcome = replay_or_conflict(record, &request_digest)?;
-            transaction.commit().await?;
-            return Ok(outcome);
-        }
-
-        let current_position = lock_stream(&transaction, &directive).await?;
-        let sequence = current_position
-            .checked_add(1)
-            .filter(|position| *position > 0)
-            .ok_or(DirectiveStoreError::SequenceExhausted)?;
-        directive.sequence =
-            u64::try_from(sequence).map_err(|_| DirectiveStoreError::SequenceExhausted)?;
-        directive.created_at = format_timestamp(now)?;
-        let payload = directive.encode_to_vec();
-        let kind =
-            i16::try_from(directive.kind).map_err(|_| DirectiveStoreError::UnsupportedDirective)?;
-        let task_id = optional(&directive.task_id);
-        let goal_id = optional(&directive.goal_id);
-        let context_packet_id = optional(&directive.context_packet_id);
-
-        let inserted = transaction
-            .query_opt(
-                "INSERT INTO agent_directives (tenant_id, repository_id, directive_id, node_id, \
-                     agent_session_id, project_id, directive_kind, schema_version, issuing_principal_id, \
-                     rationale, task_id, goal_id, context_packet_id, created_at, expires_at, \
-                     directive_sequence, idempotency_key, request_digest, payload_digest, \
-                     required_capability, policy_refs, knowledge_refs, evidence_refs, directive_payload) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) \
-                 ON CONFLICT DO NOTHING \
-                 RETURNING directive_payload, request_digest, recorded_at",
-                &[
-                    &directive.tenant_id,
-                    &directive.repository_id,
-                    &directive.directive_id,
-                    &directive.target_node_id,
-                    &directive.target_agent_session_id,
-                    &directive.project_id,
-                    &kind,
-                    &directive.schema_version,
-                    &directive.issuing_principal_id,
-                    &directive.rationale,
-                    &task_id,
-                    &goal_id,
-                    &context_packet_id,
-                    &now,
-                    &expires_at,
-                    &sequence,
-                    &directive.idempotency_key,
-                    &request_digest,
-                    &directive.payload_digest,
-                    &directive.required_capability,
-                    &directive.policy_refs,
-                    &directive.knowledge_refs,
-                    &directive.evidence_refs,
-                    &payload,
-                ],
-            )
-            .await?;
-        let Some(row) = inserted else {
-            let record = existing_by_directive_id(&transaction, &directive)
-                .await?
-                .or(existing_by_idempotency_key(&transaction, &directive).await?)
-                .ok_or(DirectiveStoreError::IdempotencyConflict)?;
-            let outcome = replay_or_conflict(record, &request_digest)?;
-            transaction.commit().await?;
-            return Ok(outcome);
-        };
-        transaction
-            .execute(
-                "UPDATE directive_stream_heads SET stream_position = $5 \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND node_id = $3 AND agent_session_id = $4",
-                &[
-                    &directive.tenant_id,
-                    &directive.repository_id,
-                    &directive.target_node_id,
-                    &directive.target_agent_session_id,
-                    &sequence,
-                ],
-            )
-            .await?;
-        let record = directive_from_row(&row)?;
+        let outcome = enqueue_in_transaction(&transaction, directive, now).await?;
         transaction.commit().await?;
-        Ok(DirectiveWriteOutcome {
-            record,
-            idempotent_replay: false,
-        })
+        Ok(outcome)
     }
 
     /// Appends one receipt only when it binds to an existing directive exactly.
@@ -204,6 +105,113 @@ impl DirectiveStore {
             idempotent_replay,
         })
     }
+}
+
+/// The `enqueue` body, callable against a transaction another store already
+/// holds open. Cross-table atomicity (a Work command and its directive
+/// committing or rolling back together) is only possible on one connection;
+/// see `work_command_store::execute`'s own doc comment for why that module
+/// calls this directly instead of a second `DirectiveStore` connection.
+pub(crate) async fn enqueue_in_transaction(
+    transaction: &Transaction<'_>,
+    mut directive: v1::AgentDirective,
+    now: SystemTime,
+) -> Result<DirectiveWriteOutcome, DirectiveStoreError> {
+    let (requirement, expires_at) = validate_directive(&directive, now)?;
+    let request_digest = directive_request_digest(&directive);
+    let capabilities = target_capabilities(transaction, &directive).await?;
+    if !capabilities
+        .supported_directives
+        .contains(&requirement.capability)
+    {
+        return Err(DirectiveStoreError::CapabilityMissing);
+    }
+
+    if let Some(record) = existing_by_directive_id(transaction, &directive).await? {
+        return replay_or_conflict(record, &request_digest);
+    }
+    if let Some(record) = existing_by_idempotency_key(transaction, &directive).await? {
+        return replay_or_conflict(record, &request_digest);
+    }
+
+    let current_position = lock_stream(transaction, &directive).await?;
+    let sequence = current_position
+        .checked_add(1)
+        .filter(|position| *position > 0)
+        .ok_or(DirectiveStoreError::SequenceExhausted)?;
+    directive.sequence =
+        u64::try_from(sequence).map_err(|_| DirectiveStoreError::SequenceExhausted)?;
+    directive.created_at = format_timestamp(now)?;
+    let payload = directive.encode_to_vec();
+    let kind =
+        i16::try_from(directive.kind).map_err(|_| DirectiveStoreError::UnsupportedDirective)?;
+    let task_id = optional(&directive.task_id);
+    let goal_id = optional(&directive.goal_id);
+    let context_packet_id = optional(&directive.context_packet_id);
+
+    let inserted = transaction
+        .query_opt(
+            "INSERT INTO agent_directives (tenant_id, repository_id, directive_id, node_id, \
+                 agent_session_id, project_id, directive_kind, schema_version, issuing_principal_id, \
+                 rationale, task_id, goal_id, context_packet_id, created_at, expires_at, \
+                 directive_sequence, idempotency_key, request_digest, payload_digest, \
+                 required_capability, policy_refs, knowledge_refs, evidence_refs, directive_payload) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) \
+             ON CONFLICT DO NOTHING \
+             RETURNING directive_payload, request_digest, recorded_at",
+            &[
+                &directive.tenant_id,
+                &directive.repository_id,
+                &directive.directive_id,
+                &directive.target_node_id,
+                &directive.target_agent_session_id,
+                &directive.project_id,
+                &kind,
+                &directive.schema_version,
+                &directive.issuing_principal_id,
+                &directive.rationale,
+                &task_id,
+                &goal_id,
+                &context_packet_id,
+                &now,
+                &expires_at,
+                &sequence,
+                &directive.idempotency_key,
+                &request_digest,
+                &directive.payload_digest,
+                &directive.required_capability,
+                &directive.policy_refs,
+                &directive.knowledge_refs,
+                &directive.evidence_refs,
+                &payload,
+            ],
+        )
+        .await?;
+    let Some(row) = inserted else {
+        let record = existing_by_directive_id(transaction, &directive)
+            .await?
+            .or(existing_by_idempotency_key(transaction, &directive).await?)
+            .ok_or(DirectiveStoreError::IdempotencyConflict)?;
+        return replay_or_conflict(record, &request_digest);
+    };
+    transaction
+        .execute(
+            "UPDATE directive_stream_heads SET stream_position = $5 \
+             WHERE tenant_id = $1 AND repository_id = $2 AND node_id = $3 AND agent_session_id = $4",
+            &[
+                &directive.tenant_id,
+                &directive.repository_id,
+                &directive.target_node_id,
+                &directive.target_agent_session_id,
+                &sequence,
+            ],
+        )
+        .await?;
+    let record = directive_from_row(&row)?;
+    Ok(DirectiveWriteOutcome {
+        record,
+        idempotent_replay: false,
+    })
 }
 
 async fn target_capabilities(

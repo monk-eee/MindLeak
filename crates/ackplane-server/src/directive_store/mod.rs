@@ -15,6 +15,7 @@ pub use model::{
     DirectiveReceiptOutcome, DirectiveReceiptRecord, DirectiveRecord, DirectiveStoreError,
     DirectiveWriteOutcome,
 };
+pub(crate) use write::enqueue_in_transaction;
 
 /// PostgreSQL persistence for immutable typed directives and their receipts.
 pub struct DirectiveStore {

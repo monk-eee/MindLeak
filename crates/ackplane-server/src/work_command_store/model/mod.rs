@@ -2,6 +2,8 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 
+use crate::directive_store::DirectiveStoreError;
+
 mod digest;
 mod validation;
 
@@ -147,6 +149,11 @@ pub struct WorkCommand {
     pub idempotency_key: String,
     pub request_digest: Vec<u8>,
     pub payload_digest: Vec<u8>,
+    /// The ADR-0107 directive this command's confirm step issued, once one
+    /// has been (Assign/Steer/Pause/Resume/Drain only). `None` for the five
+    /// server-owned kinds, and for a supervisor-directed command that has not
+    /// yet been confirmed.
+    pub directive_id: Option<String>,
     pub recorded_at: SystemTime,
 }
 
@@ -230,4 +237,8 @@ pub enum WorkCommandStoreError {
     IdempotencyConflict,
     #[error("receipt id was replayed with different content")]
     ReceiptConflict,
+    #[error("a supervisor-directed command's payload does not name a closed directive kind")]
+    InvalidDirectivePayload,
+    #[error("issuing the supervisor-directed command's directive failed: {0}")]
+    Directive(#[from] DirectiveStoreError),
 }
