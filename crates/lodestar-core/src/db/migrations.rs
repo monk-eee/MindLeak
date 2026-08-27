@@ -1,8 +1,13 @@
 //! Transactional schema migration for existing Lodestar databases.
 
+mod support;
+
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::{LodestarError, Result};
+
+pub(crate) use support::column_exists;
+use support::{run_once, table_exists};
 
 pub(super) fn migrate(connection: &Connection) -> Result<bool> {
     connection.execute_batch("BEGIN IMMEDIATE")?;
@@ -360,38 +365,6 @@ fn cascade_knowledge_embeddings(connection: &Connection) -> Result<bool> {
     Ok(true)
 }
 
-/// Run a migration at most once per database, recorded by name (ADR-0063).
-///
-/// Pattern-idempotence — "rewrite every row that still looks unmigrated" — is
-/// only idempotent while nothing else creates such rows. A rewrite that races a
-/// live writer re-fires on every open, forever, and each firing looks exactly
-/// like the first. That is not a theoretical hazard: it re-owned a live claim
-/// out from under its holder every time any process opened the database, which
-/// is how a task ended up provable by nobody. Anything touching identity or
-/// ownership belongs here rather than in the pattern-guarded loop above.
-fn run_once(
-    connection: &Connection,
-    name: &str,
-    migration: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    let applied: Option<i64> = connection
-        .query_row(
-            "SELECT 1 FROM schema_migrations WHERE name = ?1",
-            [name],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if applied.is_some() {
-        return Ok(());
-    }
-    migration()?;
-    connection.execute(
-        "INSERT INTO schema_migrations (name, applied_at) VALUES (?1, ?2)",
-        rusqlite::params![name, crate::now_unix()],
-    )?;
-    Ok(())
-}
-
 /// Freeze the existing local goals as the first constitutional version.
 ///
 /// The goals ARE today's active constitution, so they become version 1 with
@@ -436,23 +409,4 @@ fn migrate_constitution_versions(connection: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
-}
-
-pub(crate) fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool> {
-    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-    for row in rows {
-        if row? == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-pub(crate) fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [table],
-        |row| row.get::<_, bool>(0),
-    )?)
 }
