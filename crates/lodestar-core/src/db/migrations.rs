@@ -4,20 +4,23 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::{LodestarError, Result};
 
-pub(super) fn migrate(connection: &Connection) -> Result<()> {
+pub(super) fn migrate(connection: &Connection) -> Result<bool> {
     connection.execute_batch("BEGIN IMMEDIATE")?;
     let result = migrate_locked(connection);
     match result {
-        Ok(()) => connection.execute_batch("COMMIT")?,
+        Ok(rebuilt) => {
+            connection.execute_batch("COMMIT")?;
+            Ok(rebuilt)
+        }
         Err(error) => {
             let _ = connection.execute_batch("ROLLBACK");
-            return Err(error);
+            Err(error)
         }
     }
-    Ok(())
 }
 
-fn migrate_locked(connection: &Connection) -> Result<()> {
+/// Reports whether a step rebuilt a table, so the caller can reclaim its pages.
+fn migrate_locked(connection: &Connection) -> Result<bool> {
     // ADR-0060 renamed the binding verb to link_goal_to_artifact; the store it
     // writes to follows. schema.sql has already ensured an (empty)
     // goal_artifacts exists, so for an existing ledger this moves every binding
@@ -155,6 +158,27 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
         }
         Ok(())
     })?;
+    // `knowledge_embeddings` is built lazily by the optional index pass in
+    // `embed`, away from schema.sql, and so was written without the cascade
+    // `knowledge_sources` already carries onto the same parent. A decay prune
+    // (`store::knowledge`) or a lifecycle clear therefore left a vector behind
+    // describing a lesson that no longer exists. The Memory Plane shipped this
+    // identical defect and reached 48,502 orphans and 142.1 MiB before anyone
+    // looked; here it was still 0, which is the only reason this is cheap.
+    //
+    // A rebuild is safe for this table where the note above forbids one for
+    // `tasks`: it carries no identity, ownership, or claim that a rewrite could
+    // disturb -- only a derived, regenerable vector keyed by the lesson it
+    // describes, copied across verbatim.
+    let rebuilt = std::cell::Cell::new(false);
+    run_once(
+        connection,
+        "cascade_knowledge_embeddings_onto_knowledge",
+        || {
+            rebuilt.set(cascade_knowledge_embeddings(connection)?);
+            Ok(())
+        },
+    )?;
     connection.execute(
         "UPDATE tasks
          SET claim_started_at = updated_at
@@ -306,7 +330,34 @@ fn migrate_locked(connection: &Connection) -> Result<()> {
            )",
         [],
     )?;
-    Ok(())
+    Ok(rebuilt.get())
+}
+
+/// Give `knowledge_embeddings` the cascade onto `knowledge` that every other
+/// child of it already has.
+///
+/// Copying only rows whose lesson still exists is what discards any orphan, so
+/// the purge is a consequence of the copy rather than a second statement that
+/// could disagree with it. Renaming first lets `ensure_table` build the
+/// replacement, so the rebuilt table is by construction the one production
+/// creates rather than a second copy of the definition that could drift.
+fn cascade_knowledge_embeddings(connection: &Connection) -> Result<bool> {
+    // Absent until something indexes, and `ensure_table` now builds it correctly.
+    if !table_exists(connection, "knowledge_embeddings")? {
+        return Ok(false);
+    }
+    connection.execute_batch(
+        "ALTER TABLE knowledge_embeddings RENAME TO knowledge_embeddings_superseded;",
+    )?;
+    crate::embed::ensure_table(connection)?;
+    connection.execute_batch(
+        "INSERT INTO knowledge_embeddings (knowledge_id, model, dim, vector, updated_at)
+         SELECT e.knowledge_id, e.model, e.dim, e.vector, e.updated_at
+         FROM knowledge_embeddings_superseded e
+         JOIN knowledge k ON k.id = e.knowledge_id;
+         DROP TABLE knowledge_embeddings_superseded;",
+    )?;
+    Ok(true)
 }
 
 /// Run a migration at most once per database, recorded by name (ADR-0063).
