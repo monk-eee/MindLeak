@@ -8,13 +8,46 @@ mod repairs;
 
 pub(crate) use migrations::column_exists;
 
-use rusqlite::Connection;
+use std::time::Duration;
+
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::Result;
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// Indexes are applied *after* migrations — see the header of `indexes.sql`.
 const INDEXES: &str = include_str!("indexes.sql");
+const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const RECLAMATION_BUSY_TIMEOUT: Duration = Duration::from_millis(100);
+const KNOWLEDGE_EMBEDDINGS_RECLAMATION: &str = "knowledge_embeddings_reclamation_v1";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReclamationState {
+    Vacuum,
+    Checkpoint,
+    Complete,
+}
+
+impl ReclamationState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Vacuum => "vacuum",
+            Self::Checkpoint => "checkpoint",
+            Self::Complete => "complete",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "vacuum" => Ok(Self::Vacuum),
+            "checkpoint" => Ok(Self::Checkpoint),
+            "complete" => Ok(Self::Complete),
+            _ => Err(crate::error::LodestarError::Invalid(format!(
+                "unknown knowledge-embedding reclamation state: {value}"
+            ))),
+        }
+    }
+}
 
 /// Open (or create) a Lodestar database at `path` and configure it.
 pub fn open(path: &str) -> Result<Connection> {
@@ -35,7 +68,7 @@ fn configure(conn: &Connection) -> Result<()> {
     // and race on the claim CAS; SQLite serialises writers, the timeout absorbs
     // contention instead of erroring.
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.busy_timeout(DEFAULT_BUSY_TIMEOUT)?;
     conn.execute_batch(SCHEMA)?;
     // Order is load-bearing: an index over a column a migration adds cannot be
     // created before that migration runs. On an existing database the CREATE
@@ -44,9 +77,7 @@ fn configure(conn: &Connection) -> Result<()> {
     let rebuilt = migrations::migrate(conn)?;
     conn.execute_batch(INDEXES)?;
     functions::register(conn)?;
-    if rebuilt {
-        reclaim_free_pages(conn);
-    }
+    reclaim_free_pages(conn, rebuilt);
     Ok(())
 }
 
@@ -54,13 +85,130 @@ fn configure(conn: &Connection) -> Result<()> {
 ///
 /// A rebuild parks the old table's pages on the freelist, so a migration that
 /// discards rows still leaves the file bigger than it found it until something
-/// vacuums. Best-effort, and last because VACUUM rebuilds indexes: the rows are
-/// already correct by here and the space stays reclaimable, so losing a lock
-/// race to another agent sharing this ledger must not fail an open.
-fn reclaim_free_pages(conn: &Connection) {
-    if let Err(error) = conn.execute_batch("VACUUM") {
-        eprintln!("lodestar: could not reclaim free pages after migrating: {error}");
+/// vacuums. Best-effort and bounded: an exclusive lock can be unavailable while
+/// other MCP processes read the ledger, so pending work is recorded for a later
+/// open instead of delaying every open for the normal busy timeout.
+fn reclaim_free_pages(conn: &Connection, rebuilt: bool) {
+    let stored = match stored_reclamation_state(conn) {
+        Ok(stored) => stored,
+        Err(error) => {
+            eprintln!("lodestar: could not inspect knowledge-embedding reclamation state: {error}");
+            return;
+        }
+    };
+    if !rebuilt && stored == Some(ReclamationState::Complete) {
+        return;
     }
+    match reclaim_with_bounded_wait(conn, rebuilt, stored) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("lodestar: could not truncate the reclamation WAL; a later open will retry")
+        }
+        Err(error) => {
+            eprintln!("lodestar: could not reclaim knowledge-embedding pages; a later open will retry: {error}")
+        }
+    }
+}
+
+fn reclaim_with_bounded_wait(
+    conn: &Connection,
+    rebuilt: bool,
+    stored: Option<ReclamationState>,
+) -> Result<bool> {
+    conn.busy_timeout(RECLAMATION_BUSY_TIMEOUT)?;
+    let result = try_reclaim_free_pages(conn, rebuilt, stored);
+    let restored = conn.busy_timeout(DEFAULT_BUSY_TIMEOUT);
+    match (result, restored) {
+        (Ok(reclaimed), Ok(())) => Ok(reclaimed),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Err(error), Err(restore_error)) => {
+            eprintln!(
+                "lodestar: could not restore the normal SQLite busy timeout: {restore_error}"
+            );
+            Err(error)
+        }
+    }
+}
+
+fn try_reclaim_free_pages(
+    conn: &Connection,
+    rebuilt: bool,
+    stored: Option<ReclamationState>,
+) -> Result<bool> {
+    let state = reclamation_state(conn, rebuilt, stored)?;
+    match state {
+        ReclamationState::Complete => Ok(true),
+        ReclamationState::Vacuum => {
+            conn.execute_batch("VACUUM")?;
+            store_reclamation_state(conn, ReclamationState::Checkpoint)?;
+            checkpoint_wal(conn)
+        }
+        ReclamationState::Checkpoint => checkpoint_wal(conn),
+    }
+}
+
+fn reclamation_state(
+    conn: &Connection,
+    rebuilt: bool,
+    stored: Option<ReclamationState>,
+) -> Result<ReclamationState> {
+    if rebuilt {
+        store_reclamation_state(conn, ReclamationState::Vacuum)?;
+        return Ok(ReclamationState::Vacuum);
+    }
+    if let Some(state) = stored {
+        return Ok(state);
+    }
+
+    let state = if !migrations::table_exists(conn, "knowledge_embeddings")? {
+        ReclamationState::Complete
+    } else {
+        let free_pages: i64 = conn.query_row("PRAGMA freelist_count", [], |row| row.get(0))?;
+        if free_pages > 0 {
+            ReclamationState::Vacuum
+        } else {
+            ReclamationState::Checkpoint
+        }
+    };
+    store_reclamation_state(conn, state)?;
+    Ok(state)
+}
+
+fn stored_reclamation_state(conn: &Connection) -> Result<Option<ReclamationState>> {
+    conn.query_row(
+        "SELECT state FROM database_maintenance WHERE name = ?1",
+        [KNOWLEDGE_EMBEDDINGS_RECLAMATION],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|state| ReclamationState::parse(&state))
+    .transpose()
+}
+
+fn store_reclamation_state(conn: &Connection, state: ReclamationState) -> Result<()> {
+    conn.execute(
+        "INSERT INTO database_maintenance (name, state)
+         VALUES (?1, ?2)
+         ON CONFLICT(name) DO UPDATE SET state = excluded.state",
+        [KNOWLEDGE_EMBEDDINGS_RECLAMATION, state.as_str()],
+    )?;
+    Ok(())
+}
+
+/// Mark completion only after SQLite reports a successful truncating checkpoint.
+/// A later open retries a blocked checkpoint without repeating a completed
+/// vacuum.
+fn checkpoint_wal(conn: &Connection) -> Result<bool> {
+    let (busy, log_frames, checkpointed_frames): (i64, i64, i64) =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+    if busy != 0 || log_frames != checkpointed_frames {
+        return Ok(false);
+    }
+    store_reclamation_state(conn, ReclamationState::Complete)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -247,6 +395,121 @@ mod tests {
             })
             .unwrap();
         assert_eq!(remaining, 0, "the rebuilt table cascades");
+    }
+
+    /// Regression: the cascade migration records its schema work before the
+    /// best-effort vacuum runs. A lock conflict or a release that shipped between
+    /// those steps leaves a current table with free pages, and reopening must
+    /// finish physical reclamation rather than treating the migration marker as
+    /// proof that nothing remains.
+    #[test]
+    fn a_migrated_knowledge_embeddings_table_with_free_pages_is_compacted_on_a_later_open() {
+        let path = temporary_database("knowledge-embeddings-reclaim-existing");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch(SCHEMA).unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TABLE knowledge_embeddings (
+                         knowledge_id TEXT NOT NULL,
+                         model        TEXT NOT NULL,
+                         dim          INTEGER NOT NULL,
+                         vector       BLOB NOT NULL,
+                         updated_at   INTEGER NOT NULL,
+                         PRIMARY KEY (knowledge_id, model),
+                         FOREIGN KEY (knowledge_id) REFERENCES knowledge(id) ON DELETE CASCADE
+                     );
+                     WITH RECURSIVE seq(n) AS (
+                         SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 400
+                     )
+                     INSERT INTO knowledge
+                         (id, statement, evidence, weight, half_life_hours, confirmed_at, created_at)
+                     SELECT 'knowledge:pruned-' || n, 'lesson', '', 1.0, 720.0, 1, 1 FROM seq;
+                     WITH RECURSIVE seq(n) AS (
+                         SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 400
+                     )
+                     INSERT INTO knowledge_embeddings (knowledge_id, model, dim, vector, updated_at)
+                     SELECT 'knowledge:pruned-' || n, 'm', 1024, zeroblob(4096), 1 FROM seq;
+                     DELETE FROM knowledge;
+                     INSERT INTO schema_migrations (name, applied_at)
+                     VALUES ('cascade_knowledge_embeddings_onto_knowledge', 1);",
+                )
+                .unwrap();
+            let free: i64 = connection
+                .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+                .unwrap();
+            assert!(
+                free > 0,
+                "the fixture must model pages left by the completed schema migration"
+            );
+        }
+
+        let connection = open(path.to_str().unwrap()).unwrap();
+        let free: i64 = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            free, 0,
+            "a later open must retry knowledge-embedding physical reclamation"
+        );
+        let wal_bytes = std::fs::metadata(format!("{}-wal", path.display()))
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let page_size: i64 = connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            wal_bytes <= page_size as u64 * 3,
+            "the WAL may retain only bounded migration-marker frames, not the reclaimed allocation: {wal_bytes} bytes"
+        );
+        let phase: String = connection
+            .query_row(
+                "SELECT state FROM database_maintenance
+                 WHERE name = 'knowledge_embeddings_reclamation_v1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(phase, "complete", "physical completion is durable");
+        let busy_timeout: i64 = connection
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            busy_timeout, 5_000,
+            "the bounded reclamation attempt restores the normal open timeout"
+        );
+
+        // Completion marks only the cascade repair as finished. Ordinary later
+        // deletes must not make every future database open run a full VACUUM.
+        connection
+            .execute_batch(
+                "CREATE TABLE reclamation_probe (body BLOB NOT NULL);
+                 WITH RECURSIVE seq(n) AS (
+                     SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 400
+                 )
+                 INSERT INTO reclamation_probe SELECT zeroblob(4096) FROM seq;
+                 DROP TABLE reclamation_probe;",
+            )
+            .unwrap();
+        let ordinary_free: i64 = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            ordinary_free > 0,
+            "the test needs ordinary free pages after maintenance completed"
+        );
+        drop(connection);
+
+        let connection = open(path.to_str().unwrap()).unwrap();
+        let free_after_later_open: i64 = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            free_after_later_open, ordinary_free,
+            "completed one-time reclamation must not vacuum every later open"
+        );
+        drop(connection);
+        cleanup_database(&path);
     }
 
     /// ADR-0060 renamed the binding verb to link_goal_to_artifact; the store it
@@ -1375,7 +1638,13 @@ mod tests {
     fn temporary_database(name: &str) -> PathBuf {
         let path =
             std::env::temp_dir().join(format!("lodestar-db-{name}-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        cleanup_database(&path);
         path
+    }
+
+    fn cleanup_database(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 }
