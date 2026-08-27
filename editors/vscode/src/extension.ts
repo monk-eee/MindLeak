@@ -25,7 +25,7 @@ import { TerminalCaptureConfig, TerminalSensor } from "./terminalSensor";
 import {
   boardTasks,
   canRetireTask,
-  configuredPathEnvironment,
+  configuredEnvironment,
   conformanceDiagnostic,
   ConformanceRecord,
   evidenceGroups,
@@ -134,6 +134,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
             intent: config.get<string>("lodestarServerPath", "lodestar-mcp"),
             memoryDatabase: config.get<string>("databasePath", ""),
             intentDatabase: config.get<string>("lodestarDatabasePath", ""),
+            embedUrl: config.get<string>("embedUrl", ""),
+            embedModel: config.get<string>("embedModel", ""),
           },
           {
             exists: fs.existsSync,
@@ -167,6 +169,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
           "databasePath",
           "lodestarDatabasePath",
           "agentId",
+          "embedUrl",
+          "embedModel",
         ].some((key) => event.affectsConfiguration(`mindleak.${key}`))
       ) {
         mcpServersChanged.fire();
@@ -178,7 +182,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     serverPath,
     workspace,
     {
-      ...configuredPathEnvironment("MINDLEAK_DB", databasePathOverride),
+      ...configuredEnvironment("MINDLEAK_DB", databasePathOverride),
+      // This client's server runs its own autonomous index loop, so it needs the
+      // endpoint as much as the servers contributed above.
+      ...configuredEnvironment("MINDLEAK_EMBED_URL", config.get<string>("embedUrl", "")),
+      ...configuredEnvironment("MINDLEAK_EMBED_MODEL", config.get<string>("embedModel", "")),
       MINDLEAK_AGENT: agentId,
       MINDLEAK_WORKSPACE: workspace,
       MINDLEAK_AUTONOMOUS_CONSOLIDATION: String(
@@ -268,7 +276,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<MindLe
     lodestarPath,
     workspace,
     {
-      ...configuredPathEnvironment("LODESTAR_DB", lodestarDatabasePathOverride),
+      ...configuredEnvironment("LODESTAR_DB", lodestarDatabasePathOverride),
+      // Lodestar falls back to MINDLEAK_EMBED_* for knowledge recall.
+      ...configuredEnvironment("MINDLEAK_EMBED_URL", config.get<string>("embedUrl", "")),
+      ...configuredEnvironment("MINDLEAK_EMBED_MODEL", config.get<string>("embedModel", "")),
       LODESTAR_AGENT: agentId,
       MINDLEAK_WORKSPACE: workspace,
     },

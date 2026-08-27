@@ -163,6 +163,8 @@ Override with `mindleak.serverPath` / `mindleak.lodestarServerPath`.
 | `mindleak.databasePath` | `` | Explicit graph DB override; empty = shared per-repository user-local store. |
 | `mindleak.lodestarServerPath` | `lodestar-mcp` | Path to the Intent Plane server. |
 | `mindleak.lodestarDatabasePath` | `` | Explicit intent DB override; empty = shared per-repository user-local store. |
+| `mindleak.embedUrl` | `` | OpenAI-compatible embeddings base URL for both planes, e.g. `http://127.0.0.1:1234/v1`; empty = the server default `http://localhost:11434/v1`. |
+| `mindleak.embedModel` | `` | Embedding model id for both planes; empty = the server default `nomic-embed-text`. |
 | `mindleak.agentId` | `vscode` | Base label for one unique per-activation id shared by both child MCP servers. |
 | `mindleak.autoIngestOnSave` | `true` | Ingest a file's symbols on save. |
 | `mindleak.captureExecutions` | `true` | Capture shell-integrated command metadata and outcomes. |

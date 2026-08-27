@@ -157,8 +157,8 @@ export function healthSummary(
   return `${memory} · ${intent} · ${terminal} · ${git}`;
 }
 
-/** Emit one server environment override only when the user configured a path. */
-export function configuredPathEnvironment(
+/** Emit one server environment override only when the user configured it. */
+export function configuredEnvironment(
   variable: string,
   configured: string | undefined
 ): Record<string, string> {
@@ -274,6 +274,28 @@ export interface ConfiguredServers {
   readonly intent: string;
   readonly memoryDatabase?: string;
   readonly intentDatabase?: string;
+  readonly embedUrl?: string;
+  readonly embedModel?: string;
+}
+
+/**
+ * Where a window's servers should look for an embedding model.
+ *
+ * Both planes read `MINDLEAK_EMBED_*` — Lodestar falls back to it for knowledge
+ * recall — so this is one description for both rather than two spellings that
+ * could disagree.
+ *
+ * Without it a server inherits whatever environment the editor launched with,
+ * and a process inherits that once, at launch. So exporting a variable does
+ * nothing for an editor already running, and the server quietly falls back to
+ * the Ollama default: measured here as 121 consecutive `autonomous_index`
+ * skips, each reporting a model it was never configured to use.
+ */
+function embeddingEnvironment(configured: ConfiguredServers): Record<string, string> {
+  return {
+    ...configuredEnvironment("MINDLEAK_EMBED_URL", configured.embedUrl),
+    ...configuredEnvironment("MINDLEAK_EMBED_MODEL", configured.embedModel),
+  };
 }
 
 /**
@@ -308,7 +330,8 @@ export function planMcpServers(
       version: opts.version?.(memoryCommand),
       cwd: workspace,
       env: {
-        ...configuredPathEnvironment("MINDLEAK_DB", configured.memoryDatabase),
+        ...configuredEnvironment("MINDLEAK_DB", configured.memoryDatabase),
+        ...embeddingEnvironment(configured),
         MINDLEAK_AGENT: agentId,
         MINDLEAK_WORKSPACE: workspace,
       },
@@ -320,7 +343,8 @@ export function planMcpServers(
       version: opts.version?.(intentCommand),
       cwd: workspace,
       env: {
-        ...configuredPathEnvironment("LODESTAR_DB", configured.intentDatabase),
+        ...configuredEnvironment("LODESTAR_DB", configured.intentDatabase),
+        ...embeddingEnvironment(configured),
         LODESTAR_AGENT: agentId,
         MINDLEAK_WORKSPACE: workspace,
       },
