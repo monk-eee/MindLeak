@@ -1,0 +1,1 @@
+- **Fixed:** Both planes’ lazy-table lifecycle guards now source-scan all production runtime table declarations and require explicit parent or root-table registration, preventing an unregistered creator from bypassing the foreign-key review that protects derived data.
