@@ -1,0 +1,1 @@
+- **Fixed:** Ackplane now treats a delegated claim as live through its exact recorded expiry consistently across claim release/listing, Fleet, readiness, publication, and Work-command conflict reporting, matching Lodestar's lease arbitration boundary.

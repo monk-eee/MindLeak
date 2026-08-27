@@ -177,7 +177,7 @@ impl ReadinessStore {
                 .query(
                     "SELECT repository_id, COUNT(*)::BIGINT, MIN(lease_expires_at) \
                      FROM delegated_claims \
-                     WHERE tenant_id = $1 AND lease_expires_at > $2 \
+                     WHERE tenant_id = $1 AND lease_expires_at >= $2 \
                        AND repository_id = ANY($3) \
                      GROUP BY repository_id",
                     &[&tenant_id, &now, &repository_ids],
@@ -523,16 +523,17 @@ mod tests {
         let readiness = ReadinessStore::connect(&database_url)
             .await
             .expect("connect readiness store");
+        // The soonest claim reaches its expiry exactly here. Ackplane's
+        // summaries must keep it active until the instant has passed, matching
+        // the local claim authority's inclusive boundary.
+        let at_expiry = now + Duration::from_secs(60);
         let page = readiness
-            .readiness(&tenant_id, 1, 10, now)
+            .readiness(&tenant_id, 1, 10, at_expiry)
             .await
             .expect("query readiness");
 
         assert_eq!(page.items[0].active_claim_count, 2);
-        assert_eq!(
-            page.items[0].soonest_lease_expires_at,
-            Some(now + Duration::from_secs(60))
-        );
+        assert_eq!(page.items[0].soonest_lease_expires_at, Some(at_expiry));
     }
 
     #[tokio::test]
