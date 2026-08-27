@@ -376,13 +376,13 @@ fn extract_json(content: &str) -> &str {
 mod tests {
     use super::*;
     use mindleak_model::test_support::{
-        cold_then_warm_json_endpoint, json_endpoint, status_endpoint,
+        cold_then_warm_json_endpoint, json_endpoint, status_endpoint, COLD_CLIENT_READ_TIMEOUT,
     };
 
     fn model_test_policy() -> HttpPolicy {
         HttpPolicy {
             connect_timeout: Duration::from_millis(100),
-            read_timeout: Duration::from_millis(100),
+            read_timeout: COLD_CLIENT_READ_TIMEOUT,
         }
     }
 
