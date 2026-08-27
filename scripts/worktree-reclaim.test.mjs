@@ -13,6 +13,7 @@ import {
   liveClaimBranches,
   planArtefactSweep,
   PROTECTED_BRANCHES,
+  reclaimEntry,
   reclaimScriptFreshness,
   readLiveClaimState,
   revalidateBeforeReclaim,
@@ -194,6 +195,110 @@ test("apply-time revalidation fails closed when the board disappears", () => {
   });
   assert.equal(verdict.reclaim, false);
   assert.match(verdict.reason, /claim state is unavailable/);
+});
+
+// --- reclaimEntry -----------------------------------------------------------
+
+test("reclaimEntry removes the artifacts then the worktree and its branch", () => {
+  const gitCalls = [];
+  const entry = {
+    worktree: { path: "/repo/wt", branch: "fix/done" },
+    artifacts: [{ dir: "/repo/wt/target" }],
+  };
+  const result = reclaimEntry(entry, {
+    anchor: "/repo",
+    rm: () => ({ ok: true }),
+    git: (args, cwd) => {
+      gitCalls.push({ args, cwd });
+      return { ok: true, out: "" };
+    },
+  });
+  assert.deepEqual(result, { reclaimed: true, artifactsOnly: false });
+  assert.deepEqual(gitCalls, [
+    { args: ["worktree", "remove", "/repo/wt"], cwd: "/repo" },
+    { args: ["branch", "-D", "fix/done"], cwd: "/repo" },
+  ]);
+});
+
+test("reclaimEntry also deletes the remote branch when asked", () => {
+  const gitCalls = [];
+  const entry = {
+    worktree: { path: "/repo/wt", branch: "fix/done" },
+    artifacts: [],
+  };
+  reclaimEntry(entry, {
+    anchor: "/repo",
+    remote: true,
+    rm: () => ({ ok: true }),
+    git: (args) => {
+      gitCalls.push(args);
+      return { ok: true, out: "" };
+    },
+  });
+  assert.deepEqual(gitCalls.at(-1), ["push", "origin", "--delete", "fix/done"]);
+});
+
+test("reclaimEntry in artifacts-only mode never touches the worktree or branch", () => {
+  const gitCalls = [];
+  const entry = {
+    worktree: { path: "/repo/wt", branch: "fix/done" },
+    artifacts: [{ dir: "/repo/wt/target" }],
+  };
+  const result = reclaimEntry(entry, {
+    anchor: "/repo",
+    artifactsOnly: true,
+    rm: () => ({ ok: true }),
+    git: (args) => {
+      gitCalls.push(args);
+      return { ok: true, out: "" };
+    },
+  });
+  assert.deepEqual(result, { reclaimed: true, artifactsOnly: true });
+  assert.deepEqual(gitCalls, []);
+});
+
+test("reclaimEntry reports a directory that will not clear instead of throwing, and never removes the worktree", () => {
+  // Regression: the real removal used to be a bare rmSync in this same loop
+  // with nothing catching its exception -- a directory a build had only just
+  // released (Windows EPERM/EBUSY on a pending-delete file) crashed the
+  // entire reclaim run, silently abandoning every other worktree still
+  // queued behind it, not just the locked one.
+  const gitCalls = [];
+  const entry = {
+    worktree: { path: "/repo/wt", branch: "fix/done" },
+    artifacts: [{ dir: "/repo/wt/target" }],
+  };
+  const error = Object.assign(new Error("permission denied"), {
+    code: "EPERM",
+  });
+  const result = reclaimEntry(entry, {
+    anchor: "/repo",
+    rm: () => ({ ok: false, error }),
+    git: (args) => {
+      gitCalls.push(args);
+      return { ok: true, out: "" };
+    },
+  });
+  assert.equal(result.reclaimed, false);
+  assert.match(result.reason, /\/repo\/wt\/target would not clear \(EPERM\)/);
+  assert.deepEqual(gitCalls, []);
+});
+
+test("reclaimEntry keeps the worktree when git worktree remove itself refuses", () => {
+  const entry = {
+    worktree: { path: "/repo/wt", branch: "fix/done" },
+    artifacts: [],
+  };
+  const result = reclaimEntry(entry, {
+    anchor: "/repo",
+    rm: () => ({ ok: true }),
+    git: () => ({
+      ok: false,
+      out: "fatal: '/repo/wt' contains modified or untracked files\n",
+    }),
+  });
+  assert.equal(result.reclaimed, false);
+  assert.match(result.reason, /modified or untracked files/);
 });
 
 // Everything below is a refusal. A cleanup tool tested only on what it deletes

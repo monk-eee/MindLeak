@@ -20,13 +20,7 @@
 //   ... --artifacts-only   leave worktrees and branches, take only build output
 
 import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  statSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import {
@@ -34,6 +28,7 @@ import {
   resolveServer,
   unreadableBoardGuidance,
 } from "./claim-gate.mjs";
+import { removeTreeSafely } from "./fs-retry.mjs";
 import { MARKER_NAME } from "./worktree-owner.mjs";
 
 /** Branches that are never reclaimed whatever else is true of them. */
@@ -529,6 +524,52 @@ export function revalidateBeforeReclaim(
 }
 
 /**
+ * Remove one already-revalidated entry's build output, then (unless
+ * `artifactsOnly`) the worktree and its branch.
+ *
+ * A directory that still will not clear after `removeTreeSafely`'s own
+ * retries is reported and left in place, and nothing about that entry's
+ * worktree is touched -- the caller moves on to the next entry rather than
+ * letting one locked path abort a run with other, independent worktrees
+ * still queued behind it.
+ */
+export function reclaimEntry(
+  entry,
+  {
+    anchor,
+    remote = false,
+    artifactsOnly = false,
+    rm = removeTreeSafely,
+    git: gitFn = tryGit,
+  } = {},
+) {
+  const { path, branch } = entry.worktree;
+  for (const artifact of entry.artifacts) {
+    const result = rm(artifact.dir);
+    if (!result.ok) {
+      const detail =
+        result.error?.code ?? result.error?.message ?? "unknown error";
+      return {
+        reclaimed: false,
+        reason: `${artifact.dir} would not clear (${detail}); leave it and retry later`,
+      };
+    }
+  }
+  if (artifactsOnly) {
+    return { reclaimed: true, artifactsOnly: true };
+  }
+  const removed = gitFn(["worktree", "remove", path], anchor);
+  if (!removed.ok) {
+    return { reclaimed: false, reason: removed.out.trim().split(/\r?\n/)[0] };
+  }
+  gitFn(["branch", "-D", branch], anchor);
+  if (remote) {
+    gitFn(["push", "origin", "--delete", branch], anchor);
+  }
+  return { reclaimed: true, artifactsOnly: false };
+}
+
+/**
  * Whether every commit on `branch` has landed on `base`, by patch equivalence.
  *
  * NOT `git merge-base --is-ancestor`. A squash or rebase merge lands every line
@@ -786,7 +827,7 @@ function main() {
   }
 
   for (const entry of reclaimable) {
-    const { path, branch } = entry.worktree;
+    const { branch } = entry.worktree;
     const refreshed = revalidateBeforeReclaim(entry.worktree, {
       session,
       readClaimState: () => readLiveClaimState(anchor),
@@ -796,28 +837,15 @@ function main() {
       console.log(`worktree-reclaim: kept ${branch} — ${refreshed.reason}`);
       continue;
     }
-    for (const artifact of entry.artifacts) {
-      rmSync(artifact.dir, { recursive: true, force: true });
-    }
-    if (artifactsOnly) {
-      console.log(
-        `worktree-reclaim: cleaned ${branch} (${formatBytes(entry.bytes)})`,
-      );
+    const result = reclaimEntry(entry, { anchor, remote, artifactsOnly });
+    if (!result.reclaimed) {
+      console.log(`worktree-reclaim: kept ${branch} — ${result.reason}`);
       continue;
-    }
-    const removed = tryGit(["worktree", "remove", path], anchor);
-    if (!removed.ok) {
-      console.log(
-        `worktree-reclaim: kept ${branch} — ${removed.out.trim().split(/\r?\n/)[0]}`,
-      );
-      continue;
-    }
-    tryGit(["branch", "-D", branch], anchor);
-    if (remote) {
-      tryGit(["push", "origin", "--delete", branch], anchor);
     }
     console.log(
-      `worktree-reclaim: reclaimed ${branch} (${formatBytes(entry.bytes)})`,
+      result.artifactsOnly
+        ? `worktree-reclaim: cleaned ${branch} (${formatBytes(entry.bytes)})`
+        : `worktree-reclaim: reclaimed ${branch} (${formatBytes(entry.bytes)})`,
     );
   }
   tryGit(["worktree", "prune"], anchor);

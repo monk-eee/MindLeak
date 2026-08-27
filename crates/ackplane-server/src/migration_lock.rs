@@ -153,6 +153,11 @@ pub(crate) mod key {
     /// `migrations/0053_work_command_directives.sql`. Checked via
     /// `migration-audit.mjs` before picking 53: no live discrepancy above 52.
     pub(crate) const WORK_COMMAND_DIRECTIVES: i64 = 53;
+    /// `migrations/0054_human_decision_requests.sql` (ADR-0115 item 5).
+    /// Key 53 was already applied by concurrent work in the shared
+    /// development database when this slice was written;
+    /// `migration-audit --next` selected 54.
+    pub(crate) const HUMAN_DECISION_REQUESTS: i64 = 54;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
