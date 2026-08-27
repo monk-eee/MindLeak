@@ -150,6 +150,11 @@ pub(crate) mod key {
     pub(crate) const ADMINISTRATION_PURGE_CONFIRMATION_AUTHENTICATION: i64 = 51;
     /// `migrations/0052_administration_purge_confirmation_fingerprint.sql`.
     pub(crate) const ADMINISTRATION_PURGE_CONFIRMATION_FINGERPRINT: i64 = 52;
+    /// `migrations/0054_human_decision_requests.sql` (ADR-0115 item 5).
+    /// Key 53 was already applied by concurrent work in the shared
+    /// development database when this slice was written;
+    /// `migration-audit --next` selected 54.
+    pub(crate) const HUMAN_DECISION_REQUESTS: i64 = 54;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
