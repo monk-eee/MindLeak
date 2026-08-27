@@ -392,6 +392,32 @@ test("facts that cannot be re-read fail closed", () => {
   assert.match(result.abandoned[0].reason, /could not be re-read/);
 });
 
+test("a directory that will not clear is abandoned, not left to crash the rest of the plan", () => {
+  // Regression: `remove` used to be a bare rmSync with nothing catching its
+  // exception, so one locked target/ (a Windows EPERM/EBUSY on a directory a
+  // build had only just released) aborted the whole run, deleting nothing
+  // else in the plan even though every other candidate was independent.
+  const plan = [
+    cache({ path: "/a/target/debug" }),
+    cache({ path: "/b/target/debug" }),
+  ];
+  const result = applySweep(plan, {
+    now: NOW,
+    revalidate: (c) => c,
+    remove: (path) =>
+      path === "/a/target/debug"
+        ? {
+            ok: false,
+            error: Object.assign(new Error("busy"), { code: "EBUSY" }),
+          }
+        : { ok: true },
+  });
+  assert.equal(result.removed.length, 1);
+  assert.equal(result.removed[0].path, "/b/target/debug");
+  assert.equal(result.abandoned.length, 1);
+  assert.match(result.abandoned[0].reason, /removal failed: EBUSY/);
+});
+
 // --- attribution ----------------------------------------------------------
 
 test("a sibling worktree's cache is never attributed to the bare host", () => {
