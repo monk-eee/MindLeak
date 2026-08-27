@@ -210,7 +210,10 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     dot / (left * right)
 }
 
-/// This module owns its table, so adding the index needs no schema migration.
+/// This module owns its table, but not its lifetime: the foreign key is what
+/// keeps a vector from outliving the lesson it describes, matching the cascade
+/// `knowledge_sources` already carries. `db::migrations` rebuilds databases
+/// written before it existed.
 pub(crate) fn ensure_table(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS knowledge_embeddings (
@@ -219,7 +222,8 @@ pub(crate) fn ensure_table(conn: &Connection) -> Result<()> {
              dim          INTEGER NOT NULL,
              vector       BLOB NOT NULL,
              updated_at   INTEGER NOT NULL,
-             PRIMARY KEY (knowledge_id, model)
+             PRIMARY KEY (knowledge_id, model),
+             FOREIGN KEY (knowledge_id) REFERENCES knowledge(id) ON DELETE CASCADE
          );",
         [],
     )?;
@@ -394,9 +398,27 @@ mod tests {
         assert_eq!(cosine(&[1.0, 2.0], &[1.0, 2.0, 3.0]), 0.0);
     }
 
+    /// A vector needs its lesson. `knowledge_embeddings` cascades from
+    /// `knowledge`, so an embedding for an id the ledger does not hold is not a
+    /// state production can reach — and a test that fabricated one was testing
+    /// a shape the schema now refuses.
+    fn ledger_holding(ids: &[&str]) -> Connection {
+        let conn = crate::db::open_in_memory().unwrap();
+        for id in ids {
+            conn.execute(
+                "INSERT INTO knowledge
+                     (id, statement, evidence, weight, half_life_hours, confirmed_at, created_at)
+                 VALUES (?1, 'a lesson', '', 1.0, 720.0, 100, 100)",
+                params![id],
+            )
+            .unwrap();
+        }
+        conn
+    }
+
     #[test]
     fn a_stored_vector_round_trips_through_its_blob() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = ledger_holding(&["knowledge:abc"]);
         store_vector(
             &conn,
             "knowledge:abc",
@@ -414,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_statement_is_embedded_once_per_model_not_once_per_write() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = ledger_holding(&["knowledge:abc"]);
         assert!(needs_vector(&conn, "knowledge:abc", "test-model").unwrap());
 
         store_vector(&conn, "knowledge:abc", "test-model", &[1.0], 100).unwrap();
@@ -426,12 +448,36 @@ mod tests {
 
     #[test]
     fn re_embedding_replaces_rather_than_duplicates() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = ledger_holding(&["knowledge:abc"]);
         store_vector(&conn, "knowledge:abc", "test-model", &[1.0], 100).unwrap();
         store_vector(&conn, "knowledge:abc", "test-model", &[2.0], 200).unwrap();
 
         let stored = vectors_for_model(&conn, "test-model").unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].1, vec![2.0]);
+    }
+
+    /// Bug: this table was created here, away from `schema.sql`, and so was
+    /// written without the cascade `knowledge_sources` already carries onto the
+    /// same parent. A decay prune in `store::knowledge` therefore left a vector
+    /// behind describing a lesson that no longer exists, with nothing to sweep
+    /// it. The Memory Plane shipped the identical defect against its own
+    /// `embeddings` table and reached 48,502 orphans holding 142.1 MiB before
+    /// anyone looked; this one was caught at zero.
+    ///
+    /// Fails against the un-fixed schema: the pruned lesson's vector survives.
+    #[test]
+    fn pruning_a_lesson_takes_its_embedding_with_it() {
+        let conn = ledger_holding(&["knowledge:pruned", "knowledge:kept"]);
+        store_vector(&conn, "knowledge:pruned", "m", &[1.0], 100).unwrap();
+        store_vector(&conn, "knowledge:kept", "m", &[2.0], 100).unwrap();
+
+        conn.execute("DELETE FROM knowledge WHERE id = 'knowledge:pruned'", [])
+            .unwrap();
+
+        // The whole surviving set, so an over-broad cascade fails this too.
+        let stored = vectors_for_model(&conn, "m").unwrap();
+        let surviving: Vec<&str> = stored.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(surviving, vec!["knowledge:kept"]);
     }
 }
