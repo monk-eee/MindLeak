@@ -31,6 +31,8 @@ fn preview_request(
     PurgePreviewRequest {
         policy_id: policy_id.to_owned(),
         requested_by: requested_by.to_owned(),
+        requesting_node_id: format!("node-for-{requested_by}"),
+        requesting_public_key_fingerprint: format!("fingerprint-for-{requested_by}"),
         tenant_id: tenant_id.to_owned(),
         repository_id: repository_id.to_owned(),
         data_category: PurgeDataCategory::TelemetryEvents,
@@ -167,7 +169,9 @@ async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
     let receipt = store
         .confirm_purge(
             &outcome.request.request_id,
-            "a-distinct-reviewer",
+            "signing-key-reviewer",
+            "node-reviewer",
+            "fingerprint-reviewer",
             query_now,
         )
         .await
@@ -175,23 +179,34 @@ async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
     assert!(matches!(receipt.outcome, PurgeOutcome::Succeeded));
     assert_eq!(receipt.rows_deleted, Some(2));
     assert_eq!(
-        receipt.confirming_label.as_deref(),
-        Some("a-distinct-reviewer")
+        receipt.confirming_signing_key_id.as_deref(),
+        Some("signing-key-reviewer")
+    );
+    assert_eq!(receipt.confirming_node_id.as_deref(), Some("node-reviewer"));
+    assert_eq!(
+        receipt.confirming_public_key_fingerprint.as_deref(),
+        Some("fingerprint-reviewer")
     );
 
     // Confirming again must replay the same receipt, not delete a second
     // time (there is nothing left to delete, but the contract holds either
     // way: it must not attempt to).
     let replay = store
-        .confirm_purge(&outcome.request.request_id, "a-different-reviewer", now)
+        .confirm_purge(
+            &outcome.request.request_id,
+            "signing-key-replay",
+            "node-replay",
+            "fingerprint-replay",
+            now,
+        )
         .await
         .expect("re-confirming an already-receipted request should replay");
     assert_eq!(replay.receipt_id, receipt.receipt_id);
     assert_eq!(replay.rows_deleted, Some(2));
     assert_eq!(
-        replay.confirming_label.as_deref(),
-        Some("a-distinct-reviewer"),
-        "a replay must return the label that actually confirmed the purge, not the replay call's own"
+        replay.confirming_signing_key_id.as_deref(),
+        Some("signing-key-reviewer"),
+        "a replay must return the key that actually confirmed the purge, not the replay call's own"
     );
 
     let remaining: i64 = store
@@ -274,7 +289,9 @@ async fn confirming_after_the_window_expires_refuses_without_deleting() {
     let receipt = store
         .confirm_purge(
             &outcome.request.request_id,
-            "a-distinct-reviewer",
+            "signing-key-reviewer",
+            "node-reviewer",
+            "fingerprint-reviewer",
             query_now + Duration::from_secs(120),
         )
         .await
@@ -282,8 +299,9 @@ async fn confirming_after_the_window_expires_refuses_without_deleting() {
     assert!(matches!(receipt.outcome, PurgeOutcome::Expired));
     assert_eq!(receipt.rows_deleted, None);
     assert_eq!(
-        receipt.confirming_label, None,
-        "nothing was validly confirmed before the window lapsed"
+        receipt.confirming_signing_key_id.as_deref(),
+        Some("signing-key-reviewer"),
+        "the verified key is retained even when the confirmation arrives too late"
     );
 
     let remaining: i64 = store
@@ -361,7 +379,9 @@ async fn confirming_after_the_policy_is_revoked_refuses_without_deleting() {
     let receipt = store
         .confirm_purge(
             &outcome.request.request_id,
-            "a-distinct-reviewer",
+            "signing-key-reviewer",
+            "node-reviewer",
+            "fingerprint-reviewer",
             query_now,
         )
         .await
@@ -369,9 +389,9 @@ async fn confirming_after_the_policy_is_revoked_refuses_without_deleting() {
     assert!(matches!(receipt.outcome, PurgeOutcome::Refused));
     assert_eq!(receipt.rows_deleted, None);
     assert_eq!(
-        receipt.confirming_label.as_deref(),
-        Some("a-distinct-reviewer"),
-        "the label was validly distinct; it is recorded even though the policy refused execution"
+        receipt.confirming_signing_key_id.as_deref(),
+        Some("signing-key-reviewer"),
+        "the verified key is retained even though the policy refused execution"
     );
 
     let remaining: i64 = store
@@ -390,7 +410,7 @@ async fn confirming_after_the_policy_is_revoked_refuses_without_deleting() {
 }
 
 #[tokio::test]
-async fn confirming_with_the_requesting_principals_own_label_is_refused_and_retryable() {
+async fn confirming_with_the_requesting_signing_key_is_refused_and_retryable() {
     let Some(database_url) = database_url() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
@@ -436,13 +456,19 @@ async fn confirming_with_the_requesting_principals_own_label_is_refused_and_retr
         .await
         .expect("the preview should succeed");
 
-    // The exact same credential that requested the purge cannot also
-    // confirm it (ADR-0119 decision 7). This must be a plain validation
-    // error, not a persisted receipt: `administration_purge_receipts` allows
-    // only one receipt per request, ever, so a wrong attempt would otherwise
-    // permanently block a later, correct confirmation.
+    // The exact same enrolled credential that requested the purge cannot also
+    // confirm it. This must be a plain validation error, not a persisted
+    // receipt: `administration_purge_receipts` allows only one receipt per
+    // request, ever, so a wrong attempt would otherwise permanently block a
+    // later, correct confirmation.
     let self_confirm = store
-        .confirm_purge(&outcome.request.request_id, "loopback-principal", query_now)
+        .confirm_purge(
+            &outcome.request.request_id,
+            "loopback-principal",
+            "node-for-loopback-principal",
+            "fingerprint-for-loopback-principal",
+            query_now,
+        )
         .await;
     assert!(matches!(
         self_confirm,
@@ -455,7 +481,7 @@ async fn confirming_with_the_requesting_principals_own_label_is_refused_and_retr
         .expect("checking for a receipt should succeed");
     assert!(
         no_receipt.is_none(),
-        "a same-label attempt must not consume the one-shot receipt slot"
+        "a same-key attempt must not consume the one-shot receipt slot"
     );
 
     let remaining_before_retry: i64 = store
@@ -472,21 +498,94 @@ async fn confirming_with_the_requesting_principals_own_label_is_refused_and_retr
         "a refused self-confirmation must not delete anything"
     );
 
-    // A distinct label retries successfully within the same window.
+    // A distinct enrolled key retries successfully within the same window.
     let receipt = store
         .confirm_purge(
             &outcome.request.request_id,
-            "a-distinct-reviewer",
+            "signing-key-reviewer",
+            "node-reviewer",
+            "fingerprint-reviewer",
             query_now,
         )
         .await
-        .expect("retrying with a distinct label should succeed");
+        .expect("retrying with a distinct key should succeed");
     assert!(matches!(receipt.outcome, PurgeOutcome::Succeeded));
     assert_eq!(receipt.rows_deleted, Some(1));
 }
 
 #[tokio::test]
-async fn confirming_with_an_empty_label_is_refused_and_retryable() {
+async fn rotated_key_id_with_the_requesters_fingerprint_is_refused_and_retryable() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("administration-purge-cloned-key");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let mut store = AdministrationStore::connect(&database_url)
+        .await
+        .expect("the test database should accept administration store connections");
+    let policy = store
+        .adopt_policy(&purge_policy_request(
+            "loopback-principal",
+            &tenant_id,
+            &suffix,
+        ))
+        .await
+        .expect("policy adoption should succeed")
+        .policy;
+    let now = SystemTime::now();
+    let outcome = store
+        .preview_purge(
+            &preview_request(
+                &policy.policy_id,
+                "requester-key",
+                &tenant_id,
+                &repository_id,
+                &suffix,
+            ),
+            now,
+        )
+        .await
+        .expect("the preview should succeed");
+
+    let cloned_confirmation = store
+        .confirm_purge(
+            &outcome.request.request_id,
+            "rotated-key-id",
+            "rotated-node",
+            "fingerprint-for-requester-key",
+            now,
+        )
+        .await;
+    assert!(matches!(
+        cloned_confirmation,
+        Err(AdministrationStoreError::SelfConfirmationRefused)
+    ));
+    assert!(
+        store
+            .purge_receipt_for_request(&outcome.request.request_id)
+            .await
+            .expect("checking for a receipt should succeed")
+            .is_none(),
+        "a cloned key must not consume the one-shot receipt slot"
+    );
+
+    let receipt = store
+        .confirm_purge(
+            &outcome.request.request_id,
+            "reviewer-key",
+            "reviewer-node",
+            "fingerprint-for-reviewer-key",
+            now,
+        )
+        .await
+        .expect("a credential with different key material should confirm");
+    assert!(matches!(receipt.outcome, PurgeOutcome::Succeeded));
+}
+
+#[tokio::test]
+async fn confirming_with_an_empty_signing_key_is_refused_and_retryable() {
     let Some(database_url) = database_url() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
@@ -533,11 +632,19 @@ async fn confirming_with_an_empty_label_is_refused_and_retryable() {
         .expect("the preview should succeed");
 
     let empty_confirm = store
-        .confirm_purge(&outcome.request.request_id, "   ", query_now)
+        .confirm_purge(
+            &outcome.request.request_id,
+            "",
+            "node-reviewer",
+            "fingerprint-reviewer",
+            query_now,
+        )
         .await;
     assert!(matches!(
         empty_confirm,
-        Err(AdministrationStoreError::SelfConfirmationRefused)
+        Err(AdministrationStoreError::InvalidIdentifier {
+            field: "confirming_signing_key_id"
+        })
     ));
 
     let no_receipt = store
@@ -546,16 +653,86 @@ async fn confirming_with_an_empty_label_is_refused_and_retryable() {
         .expect("checking for a receipt should succeed");
     assert!(
         no_receipt.is_none(),
-        "an empty-label attempt must not consume the one-shot receipt slot"
+        "an empty-key attempt must not consume the one-shot receipt slot"
     );
 
     let receipt = store
         .confirm_purge(
             &outcome.request.request_id,
-            "a-distinct-reviewer",
+            "signing-key-reviewer",
+            "node-reviewer",
+            "fingerprint-reviewer",
             query_now,
         )
         .await
-        .expect("retrying with a non-empty distinct label should succeed");
+        .expect("retrying with a non-empty distinct key should succeed");
     assert!(matches!(receipt.outcome, PurgeOutcome::Succeeded));
+}
+
+#[tokio::test]
+async fn legacy_unsigned_preview_cannot_be_confirmed() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("administration-purge-legacy-preview");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let mut store = AdministrationStore::connect(&database_url)
+        .await
+        .expect("the test database should accept administration store connections");
+    let policy = store
+        .adopt_policy(&purge_policy_request(
+            "loopback-principal",
+            &tenant_id,
+            &suffix,
+        ))
+        .await
+        .expect("policy adoption should succeed")
+        .policy;
+    let outcome = store
+        .preview_purge(
+            &preview_request(
+                &policy.policy_id,
+                "legacy-requester-key",
+                &tenant_id,
+                &repository_id,
+                &suffix,
+            ),
+            SystemTime::now(),
+        )
+        .await
+        .expect("the preview should succeed before simulating legacy data");
+    store
+        .client
+        .execute(
+            "UPDATE administration_purge_requests \
+             SET requesting_node_id = NULL, requesting_public_key_fingerprint = NULL \
+             WHERE request_id = $1",
+            &[&outcome.request.request_id],
+        )
+        .await
+        .expect("simulating a pre-ADR-0134 preview should succeed");
+
+    let confirmation = store
+        .confirm_purge(
+            &outcome.request.request_id,
+            "signing-key-reviewer",
+            "node-reviewer",
+            "fingerprint-reviewer",
+            SystemTime::now(),
+        )
+        .await;
+    assert!(matches!(
+        confirmation,
+        Err(AdministrationStoreError::LegacyPurgeRequestUnauthenticated)
+    ));
+    assert!(
+        store
+            .purge_receipt_for_request(&outcome.request.request_id)
+            .await
+            .expect("checking for a receipt should succeed")
+            .is_none(),
+        "legacy previews must not gain a synthetic authenticated confirmation"
+    );
 }

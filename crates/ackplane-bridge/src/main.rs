@@ -265,10 +265,11 @@ async fn main() {
         DelegationApiState::new(delegation_store, fleet_store.clone(), tenant_id.clone());
     let work_api_state =
         WorkApiState::new(work_store.clone(), fleet_store.clone(), tenant_id.clone());
-    let administration_api_state = AdministrationApiState::new(
+    let administration_api_state = AdministrationApiState::with_claims(
         fleet_store.clone(),
         tenant_id.clone(),
         administration_store,
+        claim_store.clone(),
         snapshot_config,
         export_config,
     );

@@ -48,6 +48,8 @@ impl PurgeDataCategory {
 pub struct PurgePreviewRequest {
     pub policy_id: String,
     pub requested_by: String,
+    pub requesting_node_id: String,
+    pub requesting_public_key_fingerprint: String,
     pub tenant_id: String,
     pub repository_id: String,
     pub data_category: PurgeDataCategory,
@@ -61,6 +63,8 @@ pub struct PurgeRequest {
     pub request_id: String,
     pub policy_id: String,
     pub requested_by: String,
+    pub requesting_node_id: Option<String>,
+    pub requesting_public_key_fingerprint: Option<String>,
     pub tenant_id: String,
     pub repository_id: String,
     pub data_category: PurgeDataCategory,
@@ -116,10 +120,13 @@ pub struct NewPurgeReceipt {
     pub reason: String,
     pub rows_deleted: Option<i64>,
     pub occurred_at: SystemTime,
-    /// The distinct, attributed label that confirmed this request (ADR-0119
-    /// decision 7). Absent only for an `Expired` receipt: nothing was
-    /// validly confirmed before the window lapsed.
-    pub confirming_label: Option<String>,
+    /// The enrolled key that authenticated confirmation of this request.
+    pub confirming_signing_key_id: Option<String>,
+    /// The enrolled node bound to the confirming signing key.
+    pub confirming_node_id: Option<String>,
+    /// The public-key material fingerprint proving the confirmer differs from
+    /// the requester even after a key-id rotation.
+    pub confirming_public_key_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,13 +138,20 @@ pub struct PurgeReceipt {
     pub rows_deleted: Option<i64>,
     pub occurred_at: SystemTime,
     pub recorded_at: SystemTime,
-    pub confirming_label: Option<String>,
+    pub confirming_signing_key_id: Option<String>,
+    pub confirming_node_id: Option<String>,
+    pub confirming_public_key_fingerprint: Option<String>,
 }
 
 pub(super) fn validate_preview_request(
     request: &PurgePreviewRequest,
 ) -> Result<(), AdministrationStoreError> {
     require_identifier("requested_by", &request.requested_by)?;
+    require_identifier("requesting_node_id", &request.requesting_node_id)?;
+    require_identifier(
+        "requesting_public_key_fingerprint",
+        &request.requesting_public_key_fingerprint,
+    )?;
     require_identifier("tenant_id", &request.tenant_id)?;
     require_identifier("repository_id", &request.repository_id)?;
     require_identifier("idempotency_key", &request.idempotency_key)?;
@@ -159,25 +173,20 @@ pub(super) fn validate_receipt(
     if receipt.occurred_at > now {
         return Err(AdministrationStoreError::InvalidReceiptTime);
     }
-    Ok(())
-}
-
-/// ADR-0119 decision 7: "An agent or model cannot approve its own purge."
-/// Trims the caller-supplied label and requires it to be non-empty and
-/// distinct from `requested_by` -- the same same-string self-review guard
-/// `resolve_task` already applies (ADR-0071), attributed rather than
-/// authenticated since this deployment has no separate identity provider.
-/// Returns the trimmed label on success so callers persist exactly what was
-/// validated, not the raw (possibly padded) input.
-pub(super) fn validate_confirming_label(
-    confirming_label: &str,
-    requested_by: &str,
-) -> Result<String, AdministrationStoreError> {
-    let trimmed = confirming_label.trim();
-    if trimmed.is_empty() || trimmed == requested_by {
-        return Err(AdministrationStoreError::SelfConfirmationRefused);
+    match (
+        receipt.confirming_signing_key_id.as_deref(),
+        receipt.confirming_node_id.as_deref(),
+        receipt.confirming_public_key_fingerprint.as_deref(),
+    ) {
+        (Some(signing_key_id), Some(node_id), Some(fingerprint)) => {
+            require_identifier("confirming_signing_key_id", signing_key_id)?;
+            require_identifier("confirming_node_id", node_id)?;
+            require_identifier("confirming_public_key_fingerprint", fingerprint)?;
+        }
+        (None, None, None) => {}
+        _ => return Err(AdministrationStoreError::IncompleteConfirmationPrincipal),
     }
-    Ok(trimmed.to_string())
+    Ok(())
 }
 
 pub(super) fn assigned_request_id(request: &PurgePreviewRequest) -> String {
@@ -187,6 +196,11 @@ pub(super) fn assigned_request_id(request: &PurgePreviewRequest) -> String {
         b"mindleak.ackplane.administration.purge-request.id.v1",
     );
     append_bytes(&mut hasher, request.requested_by.as_bytes());
+    append_bytes(&mut hasher, request.requesting_node_id.as_bytes());
+    append_bytes(
+        &mut hasher,
+        request.requesting_public_key_fingerprint.as_bytes(),
+    );
     append_bytes(&mut hasher, request.idempotency_key.as_bytes());
     hex_id("administration-purge-request", hasher)
 }
@@ -201,6 +215,11 @@ pub(super) fn preview_request_digest(
     );
     append_bytes(&mut hasher, request.policy_id.as_bytes());
     append_bytes(&mut hasher, request.requested_by.as_bytes());
+    append_bytes(&mut hasher, request.requesting_node_id.as_bytes());
+    append_bytes(
+        &mut hasher,
+        request.requesting_public_key_fingerprint.as_bytes(),
+    );
     append_bytes(&mut hasher, request.tenant_id.as_bytes());
     append_bytes(&mut hasher, request.repository_id.as_bytes());
     hasher.update(request.data_category.as_i16().to_be_bytes());
@@ -237,10 +256,24 @@ pub(super) fn receipt_digest(
         }
         None => hasher.update([0]),
     }
-    match &receipt.confirming_label {
-        Some(label) => {
+    match &receipt.confirming_signing_key_id {
+        Some(signing_key_id) => {
             hasher.update([1]);
-            append_bytes(&mut hasher, label.as_bytes());
+            append_bytes(&mut hasher, signing_key_id.as_bytes());
+        }
+        None => hasher.update([0]),
+    }
+    match &receipt.confirming_node_id {
+        Some(node_id) => {
+            hasher.update([1]);
+            append_bytes(&mut hasher, node_id.as_bytes());
+        }
+        None => hasher.update([0]),
+    }
+    match &receipt.confirming_public_key_fingerprint {
+        Some(fingerprint) => {
+            hasher.update([1]);
+            append_bytes(&mut hasher, fingerprint.as_bytes());
         }
         None => hasher.update([0]),
     }
@@ -253,6 +286,8 @@ pub(super) fn request_from_row(row: &Row) -> Result<PurgeRequest, Administration
         request_id: row.get("request_id"),
         policy_id: row.get("policy_id"),
         requested_by: row.get("requested_by"),
+        requesting_node_id: row.get("requesting_node_id"),
+        requesting_public_key_fingerprint: row.get("requesting_public_key_fingerprint"),
         tenant_id: row.get("tenant_id"),
         repository_id: row.get("repository_id"),
         data_category: PurgeDataCategory::from_i16(row.get("data_category"))?,
@@ -273,6 +308,8 @@ pub(super) fn receipt_from_row(row: &Row) -> Result<PurgeReceipt, Administration
         rows_deleted: row.get("rows_deleted"),
         occurred_at: row.get("occurred_at"),
         recorded_at: row.get("recorded_at"),
-        confirming_label: row.get("confirming_label"),
+        confirming_signing_key_id: row.get("confirming_signing_key_id"),
+        confirming_node_id: row.get("confirming_node_id"),
+        confirming_public_key_fingerprint: row.get("confirming_public_key_fingerprint"),
     })
 }
