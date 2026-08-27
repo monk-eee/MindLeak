@@ -1,0 +1,1 @@
+- **Fixed:** Applied supervisor directive receipts now preserve completed and abandoned Industrial Work tasks instead of reopening them, while the immutable directive receipt remains durable and replay-safe.
