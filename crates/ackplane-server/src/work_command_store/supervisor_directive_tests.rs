@@ -15,7 +15,9 @@ use prost::Message;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use super::model::{WorkCommandKind, WorkCommandOutcome};
-use super::payload::{DirectiveTarget, PausePayload, ResumePayload, WorkCommandPayload};
+use super::payload::{
+    DirectiveTarget, DrainPayload, PausePayload, ResumePayload, WorkCommandPayload,
+};
 use super::service::{VerifiedWorkCommandPrincipal, WorkCommandAuthorization, WorkCommandService};
 use super::{NewWorkCommand, WorkCommandStore};
 use crate::supervisor_store::SupervisorStore;
@@ -177,6 +179,34 @@ fn resume_command(fixture: &Fixture, now: SystemTime) -> (NewWorkCommand, WorkCo
         confirmation_id: None,
         expires_at: now + Duration::from_secs(600),
         idempotency_key: format!("idempotency-{}", fixture.suffix),
+        payload_digest: super::payload::payload_digest(&payload)
+            .expect("a payload digest should always compute"),
+    };
+    (command, payload)
+}
+
+fn drain_command(fixture: &Fixture, now: SystemTime) -> (NewWorkCommand, WorkCommandPayload) {
+    let payload = WorkCommandPayload::Drain(DrainPayload {
+        target: DirectiveTarget {
+            target_node_id: fixture.node_id.clone(),
+            target_session_id: fixture.session_id.clone(),
+        },
+        deadline: now + Duration::from_secs(300),
+    });
+    let command = NewWorkCommand {
+        tenant_id: fixture.tenant_id.clone(),
+        repository_id: fixture.repository_id.clone(),
+        kind: payload.kind(),
+        schema_version: "v1".to_owned(),
+        task_id: Some(fixture.task_id.clone()),
+        issuing_principal_id: format!("principal-{}", fixture.suffix),
+        delegation_id: Some(format!("delegation-{}", fixture.suffix)),
+        policy_refs: vec![format!("policy-{}", fixture.suffix)],
+        rationale: "Drain the worker after its outstanding work completes.".to_owned(),
+        expected_task_version: Some(1),
+        confirmation_id: None,
+        expires_at: now + Duration::from_secs(600),
+        idempotency_key: format!("drain-idempotency-{}", fixture.suffix),
         payload_digest: super::payload::payload_digest(&payload)
             .expect("a payload digest should always compute"),
     };
@@ -561,6 +591,147 @@ async fn the_supervisors_applied_receipt_pauses_the_task_and_is_idempotent() {
         .expect("the same directive is still traceable to its command");
     assert!(replay.idempotent_replay);
     assert_eq!(replay.receipt, applied.receipt);
+}
+
+/// Regression: a directive can be issued while its task is active, then arrive
+/// after another path has completed or abandoned that task. Applying the receipt
+/// must not resurrect the terminal projection, even for Drain which otherwise
+/// clears ownership and reopens it.
+#[tokio::test]
+async fn an_applied_drain_receipt_cannot_reopen_a_terminal_task() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+
+    for (terminal_state, expected_state, label) in [
+        (
+            7_i16,
+            crate::work_store::WorkTaskState::Completed,
+            "completed",
+        ),
+        (
+            8_i16,
+            crate::work_store::WorkTaskState::Abandoned,
+            "abandoned",
+        ),
+    ] {
+        let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Drain]).await;
+        let now = SystemTime::now();
+        let (command, payload) = drain_command(&fixture, now);
+        let authorization = authorization_for(&fixture, vec![WorkCommandKind::Drain]);
+
+        let mut service = WorkCommandService::connect(&database_url)
+            .await
+            .expect("the command service should connect");
+        let submitted = service
+            .submit(authorization.clone(), command, now)
+            .await
+            .expect("submission should record a pending confirmation");
+        let super::service::WorkCommandServiceOutcome::PendingConfirmation { command, .. } =
+            submitted
+        else {
+            panic!("submission must enter pending confirmation");
+        };
+        let executed = service
+            .confirm(
+                authorization,
+                &fixture.tenant_id,
+                &fixture.repository_id,
+                &command.command_id,
+                payload,
+                now,
+            )
+            .await
+            .expect("confirming should issue the directive");
+        let super::service::WorkCommandServiceOutcome::Executed { command, .. } = executed else {
+            panic!("confirming a recorded command must execute");
+        };
+        let directive_id = fetch_command_directive_id(
+            &database_url,
+            &fixture.tenant_id,
+            &fixture.repository_id,
+            &command.command_id,
+        )
+        .await
+        .expect("directive_id set");
+        let directive = fetch_directive(
+            &database_url,
+            &fixture.tenant_id,
+            &fixture.repository_id,
+            &directive_id,
+        )
+        .await;
+
+        let owner_id = format!("owner-{label}-{}", fixture.suffix);
+        let owner_session_id = format!("session-{label}-{}", fixture.suffix);
+        let lease_expires_at = now + Duration::from_secs(900);
+        let client = raw_client(&database_url).await;
+        client
+            .execute(
+                "UPDATE work_tasks
+                 SET state = $4, owner_id = $5, owner_session_id = $6,
+                     lease_expires_at = $7, version = version + 1
+                 WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
+                &[
+                    &fixture.tenant_id,
+                    &fixture.repository_id,
+                    &fixture.task_id,
+                    &terminal_state,
+                    &owner_id,
+                    &owner_session_id,
+                    &lease_expires_at,
+                ],
+            )
+            .await
+            .expect("another path should be able to reach a terminal state");
+
+        let work_store = WorkStore::connect(&database_url)
+            .await
+            .expect("connect work store");
+        let before = work_store
+            .task_detail(&fixture.tenant_id, &fixture.repository_id, &fixture.task_id)
+            .await
+            .expect("reading the terminal task should succeed")
+            .expect("the task should exist");
+        assert_eq!(before.task.state, expected_state);
+
+        let receipt_time = now + Duration::from_secs(30);
+        let receipt = applied_receipt(&directive, receipt_time);
+        let mut store = WorkCommandStore::connect(&database_url)
+            .await
+            .expect("the command store should connect");
+        let applied = store
+            .apply_directive_receipt(&receipt, receipt_time)
+            .await
+            .expect("applying the directive receipt should succeed")
+            .expect("this directive was issued through the command store");
+        assert_eq!(applied.receipt.outcome, WorkCommandOutcome::Applied);
+        assert!(!applied.idempotent_replay);
+
+        let after = work_store
+            .task_detail(&fixture.tenant_id, &fixture.repository_id, &fixture.task_id)
+            .await
+            .expect("reading the task after receipt should succeed")
+            .expect("the task should exist");
+        assert_eq!(
+            after.task, before.task,
+            "an applied directive must not mutate a {label} task"
+        );
+        assert_eq!(
+            after.history.len(),
+            before.history.len(),
+            "an applied directive must not append a state event for a {label} task"
+        );
+
+        let replay = store
+            .apply_directive_receipt(&receipt, receipt_time)
+            .await
+            .expect("replaying the directive receipt should succeed")
+            .expect("the same directive remains traceable to its command");
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.receipt, applied.receipt);
+    }
 }
 
 #[tokio::test]

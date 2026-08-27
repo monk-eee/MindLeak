@@ -164,6 +164,15 @@ async fn apply_task_effect(
         return Ok(());
     };
 
+    const COMPLETED: i16 = 7;
+    const ABANDONED: i16 = 8;
+    if matches!(current.state, COMPLETED | ABANDONED) {
+        // The supervisor may finish a directive after another path terminally
+        // resolves its Work task. Preserve that terminal projection while the
+        // caller still records the supervisor's immutable Applied receipt.
+        return Ok(());
+    }
+
     const OPEN: i16 = 1;
     const CLAIMED: i16 = 2;
     const PAUSED: i16 = 4;
