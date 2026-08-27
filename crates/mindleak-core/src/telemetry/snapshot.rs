@@ -151,7 +151,7 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
     }
 
     let memory_habits = memory_habits(conn)?;
-    let retrospective = usage_retrospective(&by_name, &memory_habits);
+    let retrospective = usage_retrospective(&by_name, &memory_habits, crate::now_unix());
     Ok(Snapshot {
         total_events,
         total_errors,

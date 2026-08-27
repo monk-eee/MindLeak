@@ -9,6 +9,7 @@ use std::{sync::Arc, time::SystemTime};
 
 use ackplane_server::{
     fleet::FleetStore,
+    work_command_vocabulary::WORK_COMMAND_OPERATIONS,
     work_store::{
         ClaimsOnlyWork, WorkDoctorFinding, WorkPublication, WorkStore, WorkStoreError, WorkTask,
         WorkTaskDetail, WorkTaskState,
@@ -190,25 +191,14 @@ struct WorkCommandCapability {
 }
 
 fn command_capabilities() -> Vec<WorkCommandCapability> {
-    [
-        "create_work",
-        "route_work",
-        "release_lease",
-        "answer_wait",
-        "submit_review",
-        "assign",
-        "steer",
-        "pause",
-        "resume",
-        "drain",
-    ]
-    .into_iter()
-    .map(|operation| WorkCommandCapability {
-        operation,
-        state: "authorization_unavailable",
-        reason: COMMAND_AUTHORIZATION_UNAVAILABLE_REASON,
-    })
-    .collect()
+    WORK_COMMAND_OPERATIONS
+        .into_iter()
+        .map(|operation| WorkCommandCapability {
+            operation,
+            state: "authorization_unavailable",
+            reason: COMMAND_AUTHORIZATION_UNAVAILABLE_REASON,
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
