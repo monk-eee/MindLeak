@@ -255,13 +255,16 @@ endpoint and stores vectors in a derived, recall-only `embeddings` table;
 `recall` scores a query embedding against them by cosine similarity and returns
 the nearest node ids to seed traversal. Embeddings are *derived* — regenerable,
 never authoritative, and never consulted on the deterministic ingest/query hot
-path.
+path. The table carries `ON DELETE CASCADE` onto `nodes`, so a vector cannot
+outlive the node it describes: subordinate is a property the schema enforces,
+not a convention each delete site has to remember.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `MINDLEAK_EMBED_URL` | `http://localhost:11434/v1` | OpenAI-compatible embeddings base URL |
 | `MINDLEAK_EMBED_MODEL` | `nomic-embed-text` | embedding model name |
 | `MINDLEAK_EMBED_API_KEY` | *(empty)* | bearer token for hosted servers; Ollama ignores it |
+| `MINDLEAK_EMBED_BATCH` | `64` | vectors per embedding request; lower it for a high-dimension model, whose response would otherwise exceed the 4 MiB optional-HTTP cap |
 | `MINDLEAK_AUTONOMOUS_INDEX` | `true` | refresh missing vectors on a wall-clock cadence |
 | `MINDLEAK_INDEX_INTERVAL_SECS` | `300` | autonomous index cadence (30-86400) |
 | `MINDLEAK_INDEX_BATCH` | `128` | nodes attempted per pass (1-1000) |

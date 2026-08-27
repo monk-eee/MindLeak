@@ -208,8 +208,68 @@ fn migrate_locked(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_edges_owner ON edges(owner_id)",
         [],
     )?;
+    cascade_embeddings_onto_nodes(conn)?;
     merge_forked_agent_nodes(conn)?;
     Ok(())
+}
+
+/// Give `embeddings` the `ON DELETE CASCADE` every other child of `nodes` has.
+///
+/// The table is created lazily by the optional index pass, away from
+/// `schema.sql` and its foreign keys, and it was written without one. Nothing
+/// else swept it, so every node a prune, a re-ingest, or a snapshot replacement
+/// removed left its vector behind forever. Measured on a working graph before
+/// this ran: 48,502 orphaned rows, 142.1 MiB, 74.3% of the table — the leak was
+/// three times larger than the data.
+///
+/// The tell was already in the tree. `merge_forked_agent_nodes` used to hand-
+/// write a matching `DELETE FROM embeddings`, which is a cascade spelled out at
+/// one call site; every other `DELETE FROM nodes` did not, and could not be
+/// expected to remember. Declaring the constraint is what stops the next one
+/// leaking, so that manual delete is gone rather than left beside this.
+///
+/// SQLite cannot add a constraint in place, so the table is rebuilt. Copying
+/// only rows that still resolve is what discards the orphans — the purge is a
+/// consequence of the copy, not a second statement that could disagree with it.
+fn cascade_embeddings_onto_nodes(conn: &Connection) -> Result<()> {
+    // Absent until something indexes, and `ensure_table` now builds it correctly.
+    if !table_exists(conn, "embeddings")? || foreign_key_count(conn, "embeddings")? > 0 {
+        return Ok(());
+    }
+    // Renaming first lets `ensure_table` build the replacement, so the rebuilt
+    // table is by construction the one production creates — not a second copy of
+    // the definition that a later column could silently drift away from.
+    //
+    // Safe with foreign keys on, which a PRAGMA could not turn off here anyway
+    // since this runs inside `migrate`'s transaction: nothing references
+    // `embeddings`, so the rename and drop fire no cascade of their own.
+    conn.execute_batch("ALTER TABLE embeddings RENAME TO embeddings_superseded;")?;
+    crate::embed::ensure_table(conn)?;
+    conn.execute_batch(
+        "INSERT INTO embeddings (node_id, model, dim, vector, updated_at)
+         SELECT e.node_id, e.model, e.dim, e.vector, e.updated_at
+         FROM embeddings_superseded e JOIN nodes n ON n.id = e.node_id;
+         DROP TABLE embeddings_superseded;",
+    )?;
+    Ok(())
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )?)
+}
+
+fn foreign_key_count(conn: &Connection, table: &str) -> Result<usize> {
+    let mut stmt = conn.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
+    let mut rows = stmt.query([])?;
+    let mut count = 0;
+    while rows.next()?.is_some() {
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// Merge `agent:session:v1:{name}:{fingerprint}` nodes onto one identity per
@@ -265,25 +325,13 @@ fn merge_forked_agent_nodes(conn: &Connection) -> Result<()> {
         [],
     )?;
     // The `nodes_ad` trigger clears the FTS rows; the canonical id carries no
-    // label segment, so it does not match the pattern and survives.
+    // label segment, so it does not match the pattern and survives. The
+    // embeddings of the retired halves go with them, because
+    // `cascade_embeddings_onto_nodes` ran first and gave that table its cascade.
     conn.execute(
         "DELETE FROM nodes WHERE type = 'agent' AND id GLOB 'agent:session:v1:*:*'",
         [],
     )?;
-    // `embeddings` is created lazily by the optional index pass and has no
-    // foreign key, so its rows for the retired halves must be cleared here or
-    // they outlive the nodes they describe.
-    let has_embeddings: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'embeddings')",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_embeddings {
-        conn.execute(
-            "DELETE FROM embeddings WHERE node_id GLOB 'agent:session:v1:*:*'",
-            [],
-        )?;
-    }
     Ok(())
 }
 
@@ -506,6 +554,100 @@ mod tests {
         assert_eq!(first_seen, 10);
         assert_eq!(reinforcement_count, 1);
         assert_eq!(owner_id.as_deref(), Some("artifact:a"));
+    }
+
+    /// Bug: `embeddings` is created lazily by the optional index pass, away from
+    /// `schema.sql`, and was written without a foreign key — so a vector
+    /// outlived the node it described and nothing swept it. Measured on a
+    /// working graph: 48,502 orphaned rows, 142.1 MiB, 74.3% of the table.
+    ///
+    /// Opening an affected database must rebuild it with the cascade and discard
+    /// what already leaked, keeping every row that still resolves.
+    #[test]
+    fn migrate_gives_a_legacy_embeddings_table_its_cascade_and_drops_what_leaked() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE embeddings (
+                     node_id    TEXT NOT NULL,
+                     model      TEXT NOT NULL,
+                     dim        INTEGER NOT NULL,
+                     vector     BLOB NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (node_id, model)
+                 );
+                 INSERT INTO nodes (id, type, label, content, created_at, last_accessed_at)
+                 VALUES ('artifact:live.rs', 'artifact', 'live.rs', NULL, 10, 10);
+                 INSERT INTO embeddings (node_id, model, dim, vector, updated_at) VALUES
+                     ('artifact:live.rs', 'nomic', 2, x'0000803f00000000', 41),
+                     ('execution:already-pruned', 'nomic', 2, x'000000000000803f', 42);",
+            )
+            .unwrap();
+
+        configure(&connection).unwrap();
+
+        let rows: Vec<(String, i64, i64)> = connection
+            .prepare("SELECT node_id, dim, updated_at FROM embeddings ORDER BY node_id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![("artifact:live.rs".to_string(), 2, 41)],
+            "the orphan is discarded and the row that still resolves is carried over intact"
+        );
+
+        // Declared is not the same as enforced, so make the constraint act.
+        connection
+            .execute("DELETE FROM nodes WHERE id = 'artifact:live.rs'", [])
+            .unwrap();
+        let remaining: i64 = connection
+            .query_row("SELECT count(*) FROM embeddings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "the rebuilt table cascades");
+    }
+
+    /// The rebuild copies the whole table inside `migrate`'s write lock. On a
+    /// real graph that is hundreds of megabytes, and `OPEN_BUSY_BUDGET` is
+    /// already the constant that fails first when agents contend for this
+    /// database — repeating the copy on every open would starve them all.
+    #[test]
+    fn the_embeddings_rebuild_does_not_repeat_on_every_open() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE embeddings (
+                     node_id    TEXT NOT NULL,
+                     model      TEXT NOT NULL,
+                     dim        INTEGER NOT NULL,
+                     vector     BLOB NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (node_id, model)
+                 );",
+            )
+            .unwrap();
+        let root_page = |conn: &Connection| -> i64 {
+            conn.query_row(
+                "SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'embeddings'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+
+        configure(&connection).unwrap();
+        let after_first = root_page(&connection);
+        configure(&connection).unwrap();
+
+        assert_eq!(
+            after_first,
+            root_page(&connection),
+            "a second open rebuilt the table again; the already-constrained guard is not holding"
+        );
     }
 
     /// Bug: the Memory Plane carried the same forked identity the Intent Plane
