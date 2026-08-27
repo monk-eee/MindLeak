@@ -26,7 +26,7 @@ impl FleetStore {
                 "SELECT task_id, owner_id, branch, claim_started_at, lease_expires_at, \
                         claim_lapses, paths, symbols \
                  FROM delegated_claims \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at > $3 \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at >= $3 \
                    AND ($4::timestamptz IS NULL \
                         OR lease_expires_at > $4 \
                         OR (lease_expires_at = $4 AND task_id > $5)) \
@@ -73,7 +73,7 @@ impl FleetStore {
                 "SELECT task_id, owner_id, branch, claim_started_at, lease_expires_at, \
                         claim_lapses, paths, symbols \
                  FROM delegated_claims \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at <= $3 \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at < $3 \
                    AND ($4::timestamptz IS NULL \
                         OR lease_expires_at > $4 \
                         OR (lease_expires_at = $4 AND task_id > $5)) \
@@ -142,7 +142,7 @@ impl FleetStore {
                     lease_expires_at, claim_lapses, paths, symbols, \
                     COUNT(*) OVER()::BIGINT \
              FROM delegated_claims \
-             WHERE tenant_id = $1 AND lease_expires_at > $2 \
+             WHERE tenant_id = $1 AND lease_expires_at >= $2 \
                AND ($3::text IS NULL OR repository_id ILIKE '%' || $3 || '%' ESCAPE '\\') \
                AND ($4::text IS NULL OR owner_id ILIKE '%' || $4 || '%' ESCAPE '\\') \
              {order_by} \
@@ -379,6 +379,83 @@ mod tests {
             .await
             .expect("query wrong tenant")
             .is_none());
+    }
+
+    /// Regression: the local claim authority defines `lease_expires_at == now`
+    /// as live. Fleet's active, stranded, and cross-repository views must all
+    /// use that same inclusive boundary or they contradict the authority at the
+    /// exact instant an operator needs to decide whether recovery is allowed.
+    #[tokio::test]
+    async fn fleet_views_keep_a_claim_live_at_its_exact_expiry() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let unique_id = uuid_ish();
+        let (tenant_id, repository_id) =
+            crate::test_support::enroll_and_activate(&database_url, &unique_id.to_string()).await;
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let mut claims = ClaimStore::connect(&database_url)
+            .await
+            .expect("connect claim store");
+        claims
+            .delegate(
+                &ClaimLeaseRequest {
+                    tenant_id: tenant_id.clone(),
+                    repository_id: repository_id.clone(),
+                    task_id: "task:boundary".to_string(),
+                    owner_id: "agent:boundary".to_string(),
+                    branch: "work/task:boundary".to_string(),
+                    lease: Duration::from_secs(30),
+                    paths: vec!["src/boundary.rs".to_string()],
+                    symbols: vec!["symbol:boundary".to_string()],
+                },
+                now,
+            )
+            .await
+            .expect("delegate boundary claim");
+        let at_expiry = now + Duration::from_secs(30);
+        let fleet = FleetStore::connect(&database_url)
+            .await
+            .expect("connect fleet store");
+
+        let active = fleet
+            .active_work(&tenant_id, &repository_id, at_expiry, None, 50)
+            .await
+            .expect("query active work")
+            .expect("repository is enrolled");
+        assert_eq!(
+            active
+                .claims
+                .iter()
+                .map(|claim| claim.task_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task:boundary"]
+        );
+
+        let stranded = fleet
+            .stranded_claims(&tenant_id, &repository_id, at_expiry, None, 50)
+            .await
+            .expect("query stranded claims")
+            .expect("repository is enrolled");
+        assert!(
+            stranded.claims.is_empty(),
+            "a claim at its inclusive expiry boundary is not stranded"
+        );
+
+        let page = fleet
+            .fleet_work(
+                &tenant_id,
+                FleetWorkFilter::default(),
+                FleetWorkSort::default_order(),
+                1,
+                50,
+                at_expiry,
+            )
+            .await
+            .expect("query fleet work");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].task_id, "task:boundary");
     }
 
     // Regression: a recovered claim's freshness signal must show its true
