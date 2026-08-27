@@ -75,9 +75,42 @@ fn configure(conn: &Connection) -> Result<()> {
     })?;
     // Safe to re-run: every migration step is conditional, and a busy attempt
     // rolls its transaction back before returning.
-    retry_while_busy(conn, deadline, "migrating the schema", || migrate(conn))?;
+    let rebuilt = retry_while_busy(conn, deadline, "migrating the schema", || migrate(conn))?;
+    if rebuilt {
+        reclaim_free_pages(conn);
+    }
     register_functions(conn)?;
     Ok(())
+}
+
+/// Return the pages a table rebuild freed to the filesystem.
+///
+/// A rebuild leaves the old table's pages on the freelist, so a migration that
+/// *shrinks* the data still grows the file. Measured on a 421.5 MiB copy of a
+/// real graph, the embeddings rebuild produced a file 61.9% free pages; this
+/// takes it to 228.1 MiB. Without it the fix that discards 142 MiB of orphans
+/// hands back a file 39% larger than it found, and only a manual VACUUM would
+/// ever undo that.
+///
+/// The rebuild and this vacuum together add about 11 seconds to the one open
+/// that migrates, against an `OPEN_BUSY_BUDGET` of 15 — enough headroom on a
+/// graph this size, and not enough to assume on a much larger one. Do not widen
+/// that budget to buy more: it went 5s to 15s once already for a different
+/// cause, and a peer that exhausts it gets a named error and succeeds on its
+/// next open, because by then the migration is done.
+///
+/// Best-effort by design, and outside `migrate`'s transaction because VACUUM
+/// cannot run inside one. The rows are already correct by this point and the
+/// space stays reclaimable, so losing a lock race to another process sharing
+/// this database is not a reason to fail an open.
+fn reclaim_free_pages(conn: &Connection) {
+    if let Err(error) = conn.execute_batch("VACUUM") {
+        tracing::warn!(
+            target: "mindleak::db",
+            %error,
+            "could not reclaim free pages after migrating; the data is correct and the space stays reclaimable"
+        );
+    }
 }
 
 /// Retry `operation` while SQLite reports the database busy, until `deadline`.
@@ -165,20 +198,23 @@ fn register_functions(conn: &Connection) -> Result<()> {
 /// Idempotently add columns to a pre-existing `edges` table (fresh databases
 /// already have them from the schema). Backfills signal span and unambiguous
 /// structural ownership without trying to infer artifact paths from symbol ids.
-fn migrate(conn: &Connection) -> Result<()> {
+fn migrate(conn: &Connection) -> Result<bool> {
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = migrate_locked(conn);
     match result {
-        Ok(()) => conn.execute_batch("COMMIT")?,
+        Ok(rebuilt) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(rebuilt)
+        }
         Err(error) => {
             let _ = conn.execute_batch("ROLLBACK");
-            return Err(error);
+            Err(error)
         }
     }
-    Ok(())
 }
 
-fn migrate_locked(conn: &Connection) -> Result<()> {
+/// Reports whether a step rebuilt a table, so the caller can reclaim its pages.
+fn migrate_locked(conn: &Connection) -> Result<bool> {
     if !column_exists(conn, "edges", "first_seen")? {
         conn.execute(
             "ALTER TABLE edges ADD COLUMN first_seen INTEGER NOT NULL DEFAULT 0",
@@ -208,9 +244,9 @@ fn migrate_locked(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_edges_owner ON edges(owner_id)",
         [],
     )?;
-    cascade_embeddings_onto_nodes(conn)?;
+    let rebuilt = cascade_embeddings_onto_nodes(conn)?;
     merge_forked_agent_nodes(conn)?;
-    Ok(())
+    Ok(rebuilt)
 }
 
 /// Give `embeddings` the `ON DELETE CASCADE` every other child of `nodes` has.
@@ -231,10 +267,12 @@ fn migrate_locked(conn: &Connection) -> Result<()> {
 /// SQLite cannot add a constraint in place, so the table is rebuilt. Copying
 /// only rows that still resolve is what discards the orphans — the purge is a
 /// consequence of the copy, not a second statement that could disagree with it.
-fn cascade_embeddings_onto_nodes(conn: &Connection) -> Result<()> {
+///
+/// Reports whether it rebuilt, so the caller can reclaim the pages that freed.
+fn cascade_embeddings_onto_nodes(conn: &Connection) -> Result<bool> {
     // Absent until something indexes, and `ensure_table` now builds it correctly.
     if !table_exists(conn, "embeddings")? || foreign_key_count(conn, "embeddings")? > 0 {
-        return Ok(());
+        return Ok(false);
     }
     // Renaming first lets `ensure_table` build the replacement, so the rebuilt
     // table is by construction the one production creates — not a second copy of
@@ -251,7 +289,7 @@ fn cascade_embeddings_onto_nodes(conn: &Connection) -> Result<()> {
          FROM embeddings_superseded e JOIN nodes n ON n.id = e.node_id;
          DROP TABLE embeddings_superseded;",
     )?;
-    Ok(())
+    Ok(true)
 }
 
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
@@ -648,6 +686,65 @@ mod tests {
             root_page(&connection),
             "a second open rebuilt the table again; the already-constrained guard is not holding"
         );
+    }
+
+    /// Bug: rebuilding a table leaves its old pages on the freelist, so the
+    /// migration that *discards* 142 MiB of orphans handed back a file larger
+    /// than it found. Measured on a 410.2 MiB copy of a real graph: 569.2 MiB
+    /// after the rebuild, 61.9% of it free pages, and only a manual VACUUM
+    /// would ever have undone that. One VACUUM took it to 216.8 MiB in 1.4s.
+    ///
+    /// File-backed on purpose: an in-memory database has no file to shrink, so
+    /// an in-memory version of this test would pass without the fix.
+    #[test]
+    fn the_rebuild_returns_the_pages_it_freed_to_the_filesystem() {
+        let _serialized = serialize_db_test();
+        let path = std::env::temp_dir().join(format!("mindleak-reclaim-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE embeddings (
+                     node_id    TEXT NOT NULL,
+                     model      TEXT NOT NULL,
+                     dim        INTEGER NOT NULL,
+                     vector     BLOB NOT NULL,
+                     updated_at INTEGER NOT NULL,
+                     PRIMARY KEY (node_id, model)
+                 );
+                 -- Orphaned bulk: every node_id here is absent from `nodes`.
+                 WITH RECURSIVE seq(n) AS (
+                     SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 400
+                 )
+                 INSERT INTO embeddings (node_id, model, dim, vector, updated_at)
+                 SELECT 'execution:pruned-' || n, 'm', 1024, zeroblob(4096), 1 FROM seq;",
+            )
+            .unwrap();
+        let pages = |conn: &Connection| -> i64 {
+            conn.query_row("PRAGMA page_count", [], |row| row.get(0))
+                .unwrap()
+        };
+        let before = pages(&connection);
+
+        configure(&connection).unwrap();
+
+        let surviving: i64 = connection
+            .query_row("SELECT count(*) FROM embeddings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(surviving, 0, "every row was an orphan");
+        let free: i64 = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(free, 0, "a vacuumed database keeps no free pages");
+        let after = pages(&connection);
+        assert!(
+            after * 2 < before,
+            "the file kept the pages the rebuild freed: {before} -> {after}"
+        );
+
+        drop(connection);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Bug: the Memory Plane carried the same forked identity the Intent Plane
