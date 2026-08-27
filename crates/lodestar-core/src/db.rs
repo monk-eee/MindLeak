@@ -213,69 +213,108 @@ fn checkpoint_wal(conn: &Connection) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use super::*;
     use crate::design::{DesignActionKind, DesignMaterializationMode, DesignMaterializationPlan};
     use crate::model::{ClauseOrigin, GoalKind, TaskStatus, Verdict};
     use crate::store::{ConformanceAudit, LodestarStore};
 
-    /// Every table this crate creates at runtime rather than in `schema.sql`,
-    /// and the constraint each one must carry.
+    /// Every production table this crate creates outside `schema.sql`.
     ///
-    /// Guard, not documentation. `knowledge_embeddings` is built by an
-    /// `ensure_table` call during the optional index pass, so it never appears
-    /// in the file where foreign keys live and no review of that file can see
-    /// it — which is exactly how it shipped without the cascade
-    /// `knowledge_sources` already carried onto the same parent. The Memory
-    /// Plane lost its `embeddings` table the same way, independently, and got
-    /// to 48,502 orphaned rows before anyone noticed; this one was caught at
-    /// zero only because its decay prune had not yet reached an embedded lesson.
-    ///
-    /// So this pins the *set*: adding another lazily-created table fails here
-    /// until someone says so deliberately, and that is the moment to ask whether
-    /// it needs a parent. Deliberately narrow — asserting that every table
-    /// anywhere declares a foreign key would need a long allowlist of legitimate
-    /// root tables and would decay into a rubber stamp.
+    /// The source scan is the guard: an unregistered runtime table fails before
+    /// its lifecycle is decided. Tables that describe another entity declare that
+    /// parent; root telemetry is explicitly registered as parentless.
     #[test]
-    fn a_table_created_outside_the_schema_file_still_declares_its_parent() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(SCHEMA).unwrap();
-        let declared = table_names(&connection);
-
-        crate::embed::ensure_table(&connection).unwrap();
-
-        let created: Vec<String> = table_names(&connection)
-            .into_iter()
-            .filter(|table| !declared.contains(table))
+    fn runtime_table_creators_are_registered_with_their_lifecycle() {
+        let runtime_tables = [
+            RuntimeTable {
+                name: "knowledge_embeddings",
+                parent: Some("knowledge"),
+                create: crate::embed::ensure_table,
+            },
+            RuntimeTable {
+                name: "model_call_events",
+                parent: None,
+                create: crate::telemetry::ensure_table,
+            },
+        ];
+        let expected: Vec<String> = runtime_tables
+            .iter()
+            .map(|table| table.name.to_owned())
             .collect();
         assert_eq!(
-            created,
-            vec!["knowledge_embeddings".to_string()],
-            "a table appeared that schema.sql never declares; give it a foreign \
-             key onto whatever it describes, then name it here"
+            runtime_table_names(),
+            expected,
+            "every production runtime table must be explicitly registered with its lifecycle"
         );
-        for table in created {
-            let parents = connection
-                .prepare(&format!("PRAGMA foreign_key_list({table})"))
-                .unwrap()
-                .query_map([], |row| row.get::<_, String>(2))
-                .unwrap()
-                .collect::<std::result::Result<Vec<String>, _>>()
-                .unwrap();
-            assert!(
-                !parents.is_empty(),
-                "{table} is created outside schema.sql and declares no parent, \
-                 so nothing deletes its rows when what they describe goes"
-            );
+
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        for table in runtime_tables {
+            (table.create)(&connection).unwrap();
+            let parents = foreign_key_parents(&connection, table.name);
+            match table.parent {
+                Some(parent) => assert_eq!(
+                    parents,
+                    vec![parent.to_owned()],
+                    "{} must declare the parent it describes",
+                    table.name
+                ),
+                None => assert!(
+                    parents.is_empty(),
+                    "{} is deliberately a root table",
+                    table.name
+                ),
+            }
         }
     }
 
-    fn table_names(connection: &Connection) -> Vec<String> {
+    struct RuntimeTable {
+        name: &'static str,
+        parent: Option<&'static str>,
+        create: fn(&Connection) -> Result<()>,
+    }
+
+    fn runtime_table_names() -> Vec<String> {
+        let mut tables = Vec::new();
+        collect_runtime_table_names(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut tables,
+        );
+        tables.sort();
+        tables.dedup();
+        tables
+    }
+
+    fn collect_runtime_table_names(directory: &Path, tables: &mut Vec<String>) {
+        let marker = ["CREATE", "TABLE", "IF", "NOT", "EXISTS"].join(" ") + " ";
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect_runtime_table_names(&path, tables);
+                continue;
+            }
+            if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            for (offset, _) in source.match_indices(&marker) {
+                if !source[..offset].trim_end().ends_with('"') {
+                    continue;
+                }
+                if let Some(name) = source[offset + marker.len()..].split_whitespace().next() {
+                    tables.push(name.trim_end_matches('(').to_ascii_lowercase());
+                }
+            }
+        }
+    }
+
+    fn foreign_key_parents(connection: &Connection, table: &str) -> Vec<String> {
         connection
-            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .prepare(&format!("PRAGMA foreign_key_list({table})"))
             .unwrap()
-            .query_map([], |row| row.get(0))
+            .query_map([], |row| row.get::<_, String>(2))
             .unwrap()
             .collect::<std::result::Result<_, _>>()
             .unwrap()
