@@ -18,6 +18,7 @@
 //! (the aggregate read path), and `tracing_init` (process-wide subscriber).
 
 mod classify;
+mod degradation;
 mod habits;
 mod record;
 mod retrospective;
@@ -25,6 +26,7 @@ mod snapshot;
 mod tracing_init;
 mod types;
 
+pub use degradation::{sustained_degradation, Sustained};
 pub use record::{ensure_table, record};
 pub use snapshot::snapshot;
 pub use tracing_init::init_tracing;
@@ -142,7 +144,7 @@ mod tests {
             },
         ];
 
-        let retrospective = usage_retrospective(&metrics, &habits);
+        let retrospective = usage_retrospective(&metrics, &habits, 10_000);
 
         assert_eq!(retrospective.background_read_calls, 23_771);
         assert_eq!(retrospective.preflight_read_calls, 265);
