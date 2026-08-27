@@ -48,6 +48,7 @@ pub mod evidence_signature;
 pub mod evidence_store;
 pub mod export_provider;
 pub mod fleet;
+pub mod human_decision_store;
 pub mod knowledge_service;
 pub mod knowledge_signature;
 pub mod knowledge_store;
@@ -67,6 +68,7 @@ pub mod telemetry_store;
 #[cfg(test)]
 mod test_support;
 pub(crate) mod work_command_store;
+pub mod work_command_vocabulary;
 pub mod work_store;
 
 use thiserror::Error;
