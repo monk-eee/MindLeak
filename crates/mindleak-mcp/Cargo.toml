@@ -20,9 +20,13 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 
 [features]
-# Off by default (ADR-0094 decision 1's standalone product mode): a
-# repository-local build carries no Ackplane client or async network stack
-# unless this is explicitly requested.
+# Off by default so a plain `cargo build` stays lean: an unadorned
+# repository-local build carries no Ackplane client or async network stack.
+#
+# Shipped release binaries DO enable this (see .github/workflows/release.yml).
+# ADR-0105 decision 3 makes Local vs Industrial a runtime declaration, so a
+# distributed binary must be able to honour either answer. (The previous note
+# here cited ADR-0094 decision 1, which ADR-0105 superseded.)
 federation-client = ["ackplane-core/federation-client"]
 
 [dev-dependencies]

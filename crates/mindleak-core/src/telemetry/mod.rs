@@ -18,7 +18,6 @@
 //! (the aggregate read path), and `tracing_init` (process-wide subscriber).
 
 mod classify;
-mod degradation;
 mod habits;
 mod record;
 mod retrospective;
@@ -26,7 +25,6 @@ mod snapshot;
 mod tracing_init;
 mod types;
 
-pub use degradation::{sustained_degradation, Sustained};
 pub use record::{ensure_table, record};
 pub use snapshot::snapshot;
 pub use tracing_init::init_tracing;
@@ -84,6 +82,7 @@ mod tests {
                 name: "graph_stats".into(),
                 calls: 23_771,
                 errors: 0,
+                refused: 0,
                 total_ms: 9_044_695,
                 min_ms: 0,
                 max_ms: 17_813,
@@ -100,6 +99,7 @@ mod tests {
                 name: "check_overlap".into(),
                 calls: 265,
                 errors: 0,
+                refused: 0,
                 total_ms: 127_561,
                 min_ms: 19,
                 max_ms: 4_247,
@@ -116,6 +116,7 @@ mod tests {
                 name: "record_architectural_decision".into(),
                 calls: 13,
                 errors: 0,
+                refused: 0,
                 total_ms: 4_105,
                 min_ms: 5,
                 max_ms: 1_175,
@@ -144,7 +145,7 @@ mod tests {
             },
         ];
 
-        let retrospective = usage_retrospective(&metrics, &habits, 10_000);
+        let retrospective = usage_retrospective(&metrics, &habits, 2_000_000_000);
 
         assert_eq!(retrospective.background_read_calls, 23_771);
         assert_eq!(retrospective.preflight_read_calls, 265);

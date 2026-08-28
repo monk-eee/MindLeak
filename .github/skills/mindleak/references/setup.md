@@ -49,6 +49,13 @@ From a MindLeak checkout:
 cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
 ```
 
+That build coordinates through the repository-local SQLite stores. Released
+binaries additionally carry the Ackplane client, so they can honour
+`MINDLEAK_COORDINATION_MODE=federated`; to match them from source, add
+`--features mindleak-mcp/federation-client,lodestar-mcp/federation-client`.
+Without it a `federated` declaration is refused rather than downgraded, because
+arbitrating locally would create a second arbiter for claims Ackplane owns.
+
 Register both binaries with absolute paths. Each registration must set its
 matching agent label and `MINDLEAK_WORKSPACE` to the target workspace. VS Code
 uses the `servers` key in `.vscode/mcp.json`; Copilot CLI, Claude Desktop, and

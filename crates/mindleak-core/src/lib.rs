@@ -32,6 +32,7 @@ pub use embed::{Embedder, TextEmbedder};
 pub use error::{
     MindLeakError, ModelCallProvenance, ModelCallSource, ModelFailure, ModelFailureReason, Result,
 };
+pub use facade::observability::ToolOutcome;
 pub use graph::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, BudgetReport, CompiledContext,
     ConformanceEvidence, Digest, DigestSourceSnapshot, DigestStatus, DigestStatusReport, Direction,

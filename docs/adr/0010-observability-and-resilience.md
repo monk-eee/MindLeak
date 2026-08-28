@@ -158,3 +158,36 @@ hang.
   now; stderr tracing, the audit trail, and the breaker are a mechanical
   follow-up that reuses this design unchanged.
 ```
+
+## Amendment (2026-08-28): a refused call is not a failed call
+
+- Decider: MindLeak maintainer
+
+`outcome` gains a fourth value: `'ok' | 'error' | 'refused' | 'skipped'`.
+`reset_database` rejecting a request with the wrong confirmation token is a
+guard doing its job, not the engine faulting -- yet it was recorded as
+`outcome='error'` indistinguishably from a genuine fault, so
+`telemetry_snapshot` reported a 100% lifetime failure rate for a tool that had
+never actually been broken. A gauge that can never read green when its guard
+holds tells an operator nothing, the same shape PR #781 already fixed for
+projection freshness.
+
+`MindLeak::record_tool_call` now takes a `ToolOutcome` (`Ok` | `Refused` |
+`Error`) instead of a bare `bool`. A `MindLeakError::InvalidArgument` --
+`reset_database`'s confirmation check now returns this instead of the
+generic `Other` -- is recorded as `refused` by `mindleak-mcp`'s dispatch
+layer, not `error`. `NameMetric` gained a `refused: i64` lifetime count,
+parallel to `errors`, so the information is re-bucketed rather than dropped;
+`currently_failing` and the lifetime `errors`/`total_errors` tallies exclude
+it, matching how `skipped` already excludes deliberate maintenance no-ops.
+
+The tool-dispatch boundary flattens every error to a plain `String` well
+before `call_with_storage` records it, and retyping that boundary across
+every tool handler was judged out of scope for the one measured symptom.
+Instead, a handler that wants to report a refusal wraps its error string with
+`refused()` (`mindleak-mcp::tools`), a private, single-control-character
+marker (`\u{1}`) stripped before the error ever reaches a client -- `dispatch`
+classifies on the marker's presence, not by matching on error text. Only
+`reset_database` uses it in this change; another tool's similarly-shaped
+guard is free to adopt the same convention later, one call site at a time,
+rather than this change retrofitting all of them speculatively.
