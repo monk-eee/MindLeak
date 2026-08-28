@@ -215,7 +215,12 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build native servers
-        run: cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
+        # Match the release build (see release.yml): CI must exercise the same
+        # binary configuration that ships, or the federated path is never
+        # compiled by any gate.
+        run: >-
+          cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
+          --features mindleak-mcp/federation-client,lodestar-mcp/federation-client
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
@@ -241,7 +246,10 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build native servers
-        run: cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
+        # Match the release build (see release.yml).
+        run: >-
+          cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
+          --features mindleak-mcp/federation-client,lodestar-mcp/federation-client
       - name: Setup Node
         uses: actions/setup-node@v5
         with:
