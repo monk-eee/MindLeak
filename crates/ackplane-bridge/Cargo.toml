@@ -23,9 +23,14 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 ackplane-client = { path = "../ackplane-client" }
+# ADR-0116 slice 3's end-to-end test drives the real local supervisor inbox
+# rather than a stand-in, so the directive round trip is judged by the same
+# code a deployed supervisor runs.
+ackplane-supervisor = { path = "../ackplane-supervisor" }
 ed25519-dalek = "2.1"
 http-body-util = "0.1"
 serde_json = { workspace = true }
+time = { version = "0.3.47", features = ["formatting", "parsing"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
