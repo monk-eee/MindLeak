@@ -7,9 +7,17 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Local durable directive inbox and outbox for an enrolled Ackplane supervisor."
 
+[[bin]]
+name = "ackplane-supervisor"
+path = "src/main.rs"
+
 [dependencies]
+ackplane-client = { path = "../ackplane-client" }
 ackplane-protocol = { path = "../ackplane-protocol" }
 prost = { workspace = true }
 rusqlite = { workspace = true }
 thiserror = { workspace = true }
 time = { version = "0.3.47", features = ["formatting", "parsing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
