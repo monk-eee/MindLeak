@@ -15,6 +15,25 @@ services:
   # data format, nothing else about the topology changes.
   postgres:
     image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    # Development-topology connection ceiling, measured rather than guessed
+    # (2026-08-29). Postgres defaults to 100, which was never a considered
+    # value for this workload and is not enough for it: every store opens its
+    # own connection, so the two long-running service containers alone hold 28
+    # before any test starts (`ackplane-bridge` 17, `ackplane-server` 11 --
+    # one per `::connect(` call site, confirmed against `pg_stat_activity`).
+    # One crate's DB-gated tests then peaked at 73 total, and running two
+    # crates concurrently -- which `cargo test --all` does -- exhausted the
+    # ceiling outright.
+    #
+    # The failure that produces is badly misleading: `SqlState(E53300)` "sorry,
+    # too many clients already" surfaces as a dozen unrelated subsystems
+    # failing at once, and the test names never mention connections, so an
+    # agent validating their own change goes looking for a cause inside it.
+    #
+    # This is a development-stack value only. It is not a production tuning
+    # claim, and it is not a substitute for bounding connections in the code
+    # (see gaps.d/the-postgres-connection-ceiling-fails-the-suite-misleadingly.md).
+    command: ["postgres", "-c", "max_connections=500"]
     environment:
       # Development-only credentials (clause 6). Never used outside this
       # Compose stack, and never the production deployment's answer.
