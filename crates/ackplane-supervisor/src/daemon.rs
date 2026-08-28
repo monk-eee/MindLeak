@@ -270,14 +270,20 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
         Reconciliation::UpToDate { .. } | Reconciliation::Resend { .. } => {}
     }
 
-    connection
-        .exchange_supervisor_frame(registration_frame(&registration))
-        .await
-        .map_err(Box::new)?;
-    connection
-        .exchange_supervisor_frame(session_frame(&session, started_at)?)
-        .await
-        .map_err(Box::new)?;
+    if let Some(exit) = disconnected_on_error(
+        connection
+            .exchange_supervisor_frame(registration_frame(&registration))
+            .await,
+    ) {
+        return Ok(exit);
+    }
+    if let Some(exit) = disconnected_on_error(
+        connection
+            .exchange_supervisor_frame(session_frame(&session, started_at)?)
+            .await,
+    ) {
+        return Ok(exit);
+    }
 
     loop {
         // The session frame delivers this session's pending directives ahead
@@ -303,26 +309,52 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
                 reason = receipt.reason,
                 "receipted a directive"
             );
-            connection
-                .submit_directive_receipt(receipt)
-                .await
-                .map_err(Box::new)?;
+            if let Some(exit) =
+                disconnected_on_error(connection.submit_directive_receipt(receipt).await)
+            {
+                return Ok(exit);
+            }
         }
 
         tokio::time::sleep(config.heartbeat_interval).await;
-        if let Err(error) = connection
-            .exchange_supervisor_frame(heartbeat_frame(&config.supervisor_id))
-            .await
-        {
-            tracing::info!(%error, "the supervisor connection closed");
-            return Ok(DaemonExit::Disconnected);
+        if let Some(exit) = disconnected_on_error(
+            connection
+                .exchange_supervisor_frame(heartbeat_frame(&config.supervisor_id))
+                .await,
+        ) {
+            return Ok(exit);
         }
         // Re-announcing the session is what asks for newly issued directives:
         // delivery is bound to the session frame, so this is the poll.
-        connection
-            .exchange_supervisor_frame(session_frame(&session, started_at)?)
-            .await
-            .map_err(Box::new)?;
+        if let Some(exit) = disconnected_on_error(
+            connection
+                .exchange_supervisor_frame(session_frame(&session, started_at)?)
+                .await,
+        ) {
+            return Ok(exit);
+        }
+    }
+}
+
+/// Treat any transport failure while talking to Ackplane as an ordinary
+/// dropped connection (`Disconnected`) rather than a fatal `DaemonError`.
+///
+/// Registration, the session announcement, and a directive receipt used to
+/// propagate this exact failure with `.map_err(Box::new)?` instead, which
+/// ended the whole daemon (`run`'s `serve_once(config).await?` has nothing to
+/// catch) rather than reconnecting -- even though nothing about their
+/// connection differs from the heartbeat's, which already treated the
+/// identical condition as a plain, retriable disconnect. A supervisor whose
+/// connection happened to drop while registering, announcing a session, or
+/// submitting a receipt therefore stopped permanently instead of retrying,
+/// for no reason tied to what actually failed.
+fn disconnected_on_error<T>(result: Result<T, ClientError>) -> Option<DaemonExit> {
+    match result {
+        Ok(_) => None,
+        Err(error) => {
+            tracing::info!(%error, "the supervisor connection closed");
+            Some(DaemonExit::Disconnected)
+        }
     }
 }
 
@@ -451,5 +483,26 @@ mod tests {
         session.validate().expect("the session must be valid");
         assert_eq!(session.supervisor_id, config.supervisor_id);
         assert!(session.session_id.starts_with(&config.supervisor_id));
+    }
+
+    /// Bug: registering, announcing a session, and submitting a directive
+    /// receipt each propagated a transport failure as a fatal `DaemonError`
+    /// (`.map_err(Box::new)?`), which `run`'s `serve_once(config).await?` has
+    /// no way to catch -- ending the daemon permanently. The heartbeat a few
+    /// lines below already treated the identical failure as an ordinary,
+    /// retriable `Disconnected`. Nothing about those four connections
+    /// differs, so a drop during registration should reconnect exactly like
+    /// a drop during a heartbeat, not end the process.
+    #[test]
+    fn a_transport_failure_disconnects_rather_than_ending_the_daemon() {
+        let ok: Result<(), ClientError> = Ok(());
+        assert!(disconnected_on_error(ok).is_none());
+
+        let dropped: Result<(), ClientError> =
+            Err(ClientError::InvalidEndpoint("unreachable".to_string()));
+        assert!(matches!(
+            disconnected_on_error(dropped),
+            Some(DaemonExit::Disconnected)
+        ));
     }
 }
