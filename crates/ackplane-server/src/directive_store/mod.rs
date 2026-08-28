@@ -1,4 +1,5 @@
-//! Durable ADR-0107 directive and receipt records before delivery wiring.
+//! Durable ADR-0107 directive and receipt records, and the undelivered-directive
+//! read that live NodeSync delivery draws from (ADR-0116 slice 3).
 
 use tokio_postgres::{Client, NoTls};
 
@@ -9,12 +10,14 @@ const SUPERVISOR_MIGRATION: &str =
     include_str!("../../migrations/0024_supervisor_session_projection.sql");
 
 mod model;
+mod read;
 mod write;
 
 pub use model::{
     DirectiveReceiptOutcome, DirectiveReceiptRecord, DirectiveRecord, DirectiveStoreError,
     DirectiveWriteOutcome,
 };
+pub use read::MAX_DELIVERY_BATCH;
 pub(crate) use write::enqueue_in_transaction;
 
 /// PostgreSQL persistence for immutable typed directives and their receipts.
