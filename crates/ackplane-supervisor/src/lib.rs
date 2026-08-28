@@ -7,9 +7,11 @@
 
 mod inbox;
 mod outbox;
+mod reconcile;
 mod storage;
 mod worker_adapter;
 
 pub use inbox::{InboxError, SupervisorInbox};
-pub use outbox::{OutboxError, QueueOutcome, QueuedFrame, SupervisorOutbox};
+pub use outbox::{OutboxError, OutboxPositions, QueueOutcome, QueuedFrame, SupervisorOutbox};
+pub use reconcile::{reconcile, Reconciliation};
 pub use worker_adapter::{AdapterError, ProcessWorkerAdapter, WorkerAdapter, WorkerAssignment};
