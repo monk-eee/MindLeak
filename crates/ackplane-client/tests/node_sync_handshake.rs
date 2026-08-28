@@ -27,6 +27,7 @@ use ackplane_server::{
     enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_service::NodeEnrollmentService,
     enrollment_store::{EnrollmentApproval, EnrollmentStore},
+    envelope_signature::envelope_signing_bytes,
     ledger::LedgerStore,
     service::NodeSyncService,
     signing_keys::{self, KeyRevocation},
@@ -367,4 +368,128 @@ async fn a_revoked_key_is_refused_as_node_revoked() {
     .await;
 
     assert_eq!(error, RejectionReason::NodeRevoked);
+}
+
+// --- the authenticated phase: a refusal is an error, not a frame -----------
+
+async fn connect(server: &TestServer, node: &EnrolledNode) -> NodeSyncConnection {
+    let signer = SeedSigner::new(
+        node.signing_key_id.clone(),
+        node.node_id.clone(),
+        &node.signing_key.to_bytes(),
+    );
+    NodeSyncConnection::open(
+        &server.endpoint,
+        &signer,
+        &node.tenant_id,
+        &node.repository_id,
+        vec!["synchronize".to_string()],
+        0,
+    )
+    .await
+    .expect("an activated node should authenticate")
+}
+
+/// One genuinely signed envelope. `payload_digest` is supplied rather than
+/// derived so a caller can corrupt it and still sign what it actually sends --
+/// the server then refuses it for the digest, not for the signature.
+fn signed_envelope(node: &EnrolledNode, payload: &[u8], payload_digest: Vec<u8>) -> v1::NodeFrame {
+    let mut wire = v1::EventEnvelope {
+        tenant_id: node.tenant_id.clone(),
+        repository_id: node.repository_id.clone(),
+        producer_id: node.node_id.clone(),
+        producer_sequence: 1,
+        payload: payload.to_vec(),
+        payload_digest,
+        schema_version: "1".to_string(),
+        occurred_at: now_rfc3339(),
+        payload_type: "node-sync-handshake.test".to_string(),
+        previous_envelope_digest: Vec::new(),
+        signing_key_id: node.signing_key_id.clone(),
+        signature: Vec::new(),
+        provenance: v1::ProvenanceClass::EnrolledNode as i32,
+    };
+    wire.signature = node
+        .signing_key
+        .sign(&envelope_signing_bytes(&wire))
+        .to_bytes()
+        .to_vec();
+    v1::NodeFrame {
+        frame: Some(v1::node_frame::Frame::EventBatch(v1::EventBatch {
+            events: vec![wire],
+        })),
+    }
+}
+
+#[tokio::test]
+async fn a_signed_event_batch_earns_a_durable_receipt() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let server = start_server(&database_url).await;
+    let node = enroll_and_activate(&server.endpoint, &database_url).await;
+    let mut connection = connect(&server, &node).await;
+
+    let payload = b"node-sync-handshake accepted batch".to_vec();
+    let digest = Sha256::digest(&payload).to_vec();
+    let receipt = connection
+        .exchange_event_batch(signed_envelope(&node, &payload, digest))
+        .await
+        .expect("a correctly signed batch should earn a receipt");
+
+    let record = match receipt.receipts.as_slice() {
+        [record] => record.clone(),
+        other => panic!("expected exactly one record receipt, got {other:?}"),
+    };
+    assert_eq!(
+        (record.disposition, record.position > 0),
+        (v1::ReceiptDisposition::Accepted as i32, true),
+        "the receipt names a durable position, not merely an acknowledgement"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_event_batch_surfaces_the_servers_typed_reason() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let server = start_server(&database_url).await;
+    let node = enroll_and_activate(&server.endpoint, &database_url).await;
+    let mut connection = connect(&server, &node).await;
+
+    // Signed over the wrong digest deliberately: the signature is genuine, so
+    // the refusal is the server's own payload check rather than an auth failure.
+    let payload = b"node-sync-handshake refused batch".to_vec();
+    let wrong_digest = Sha256::digest(b"something else entirely").to_vec();
+    let error = connection
+        .exchange_event_batch(signed_envelope(&node, &payload, wrong_digest))
+        .await
+        .expect_err("a batch whose digest does not match its payload must be refused");
+
+    match error {
+        ClientError::FrameRefused {
+            reason, retryable, ..
+        } => assert_eq!(
+            (reason, retryable),
+            (RejectionReason::Malformed, false),
+            "the caller gets the server's own typed reason, not a raw frame"
+        ),
+        other => panic!("expected a typed FrameRefused, got {other:?}"),
+    }
+
+    // The refusal must not have poisoned the stream: a correct batch on the
+    // very same connection still earns its receipt.
+    let payload = b"node-sync-handshake recovery batch".to_vec();
+    let digest = Sha256::digest(&payload).to_vec();
+    let receipt = connection
+        .exchange_event_batch(signed_envelope(&node, &payload, digest))
+        .await
+        .expect("the connection survives a refused batch");
+    assert_eq!(
+        receipt.receipts.len(),
+        1,
+        "the surviving connection still receipts one record"
+    );
 }

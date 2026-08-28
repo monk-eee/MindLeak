@@ -200,7 +200,7 @@ impl NodeSyncConnection {
         Ok(self.rx.message().await?)
     }
 
-    /// Send one supervisor frame and wait for the receipt it earns.
+    /// Send one frame and wait for the receipt it earns.
     ///
     /// The handshake already turns a refusal into a typed error. Without the
     /// same treatment here the authenticated phase is harder to get right than
@@ -212,16 +212,20 @@ impl NodeSyncConnection {
     /// A directive is buffered for [`Self::next_directive`] rather than
     /// dropped or treated as an error: the server delivers pending directives
     /// right behind the receipt for the session frame that addressed them, so
-    /// they legitimately arrive here.
-    pub async fn exchange_supervisor_frame(
+    /// they legitimately arrive here. Anything else is returned as an error
+    /// naming it, so a frame this caller does not handle is never silently
+    /// dropped.
+    async fn exchange<T>(
         &mut self,
         frame: v1::NodeFrame,
-    ) -> Result<v1::SupervisorFrameReceipt, ClientError> {
+        expected: &'static str,
+        mut receipt: impl FnMut(v1::ackplane_frame::Frame) -> Result<T, v1::ackplane_frame::Frame>,
+    ) -> Result<T, ClientError> {
         self.send(frame).await?;
         loop {
             let Some(envelope) = self.recv().await? else {
                 return Err(ClientError::UnexpectedFrame {
-                    expected: "SupervisorFrameReceipt",
+                    expected,
                     got: "a closed stream",
                 });
             };
@@ -229,7 +233,6 @@ impl NodeSyncConnection {
                 continue;
             };
             match frame {
-                v1::ackplane_frame::Frame::SupervisorFrameReceipt(receipt) => return Ok(receipt),
                 v1::ackplane_frame::Frame::Rejection(rejection) => {
                     return Err(frame_refused(rejection))
                 }
@@ -239,14 +242,41 @@ impl NodeSyncConnection {
                 }
                 v1::ackplane_frame::Frame::FlowControl(_)
                 | v1::ackplane_frame::Frame::Notice(_) => continue,
-                other => {
-                    return Err(ClientError::UnexpectedFrame {
-                        expected: "SupervisorFrameReceipt",
-                        got: frame_name(&other),
-                    })
-                }
+                other => match receipt(other) {
+                    Ok(receipt) => return Ok(receipt),
+                    Err(unexpected) => {
+                        return Err(ClientError::UnexpectedFrame {
+                            expected,
+                            got: frame_name(&unexpected),
+                        })
+                    }
+                },
             }
         }
+    }
+
+    /// Send one supervisor frame and wait for the receipt it earns.
+    pub async fn exchange_supervisor_frame(
+        &mut self,
+        frame: v1::NodeFrame,
+    ) -> Result<v1::SupervisorFrameReceipt, ClientError> {
+        self.exchange(frame, "SupervisorFrameReceipt", |frame| match frame {
+            v1::ackplane_frame::Frame::SupervisorFrameReceipt(receipt) => Ok(receipt),
+            other => Err(other),
+        })
+        .await
+    }
+
+    /// Publish one event batch and wait for its durable receipt.
+    pub async fn exchange_event_batch(
+        &mut self,
+        frame: v1::NodeFrame,
+    ) -> Result<v1::BatchReceipt, ClientError> {
+        self.exchange(frame, "BatchReceipt", |frame| match frame {
+            v1::ackplane_frame::Frame::BatchReceipt(receipt) => Ok(receipt),
+            other => Err(other),
+        })
+        .await
     }
 
     /// The next directive this connection has received, if any is already in
