@@ -15,9 +15,11 @@
 //! `types` (Snapshot and friends), `record` (table lifecycle + write path),
 //! `classify` (name-based event classification), `retrospective` (usage
 //! interpretation), `habits` (memory-read-before-write derivation), `snapshot`
-//! (the aggregate read path), and `tracing_init` (process-wide subscriber).
+//! (the aggregate read path), `degradation` (sustained-outage detection for
+//! `open_session`), and `tracing_init` (process-wide subscriber).
 
 mod classify;
+mod degradation;
 mod habits;
 mod record;
 mod retrospective;
@@ -25,6 +27,7 @@ mod snapshot;
 mod tracing_init;
 mod types;
 
+pub use degradation::{sustained_degradation, Sustained};
 pub use record::{ensure_table, record};
 pub use snapshot::snapshot;
 pub use tracing_init::init_tracing;

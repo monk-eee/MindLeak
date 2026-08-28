@@ -85,6 +85,16 @@ impl MindLeak {
     pub fn telemetry_snapshot(&self, recent_limit: usize) -> Result<telemetry::Snapshot> {
         telemetry::snapshot(&self.store.conn, recent_limit)
     }
+
+    /// Optional work that has been failing long enough to be worth volunteering.
+    ///
+    /// A degraded pass is recorded once and then goes quiet on purpose, which is
+    /// right for a blip and wrong for an outage: the autonomous index went 121
+    /// consecutive passes unreachable and every report of it looked like the
+    /// first. Cheap enough for `open_session` to ask on every call.
+    pub fn sustained_degradation(&self) -> Result<Vec<telemetry::Sustained>> {
+        telemetry::sustained_degradation(&self.store.conn, crate::now_unix())
+    }
 }
 
 #[cfg(test)]

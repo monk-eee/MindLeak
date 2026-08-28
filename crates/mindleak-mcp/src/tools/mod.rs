@@ -260,6 +260,27 @@ fn dispatch(
         if let Some(notice) = running.replaced_notice() {
             body["replaced_binary"] = json!(notice);
         }
+        // Optional work that has been failing long enough that a retry was never
+        // going to fix it. A degraded pass records once and then goes quiet by
+        // design, which is right for a blip and silent for an outage: the
+        // autonomous index went 121 consecutive passes unreachable, and the only
+        // way that surfaced was someone reading the raw event table. Same
+        // reasoning as the two notices above -- tell the agent, not just a log.
+        if let Ok(degraded) = engine.sustained_degradation() {
+            let notices: Vec<Value> = degraded
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "tool": tool.name,
+                        "last_success_at": tool.last_success_at,
+                        "detail": tool.detail,
+                    })
+                })
+                .collect();
+            if !notices.is_empty() {
+                body["degraded"] = json!(notices);
+            }
+        }
         return Ok(text_result(&body));
     }
     if name == "storage_status" {
@@ -459,11 +480,10 @@ mod tests {
         result["content"][0]["text"].as_str().unwrap().to_string()
     }
 
-    fn open_session_body(sessions: &SessionRegistry, arguments: Value) -> Value {
-        let engine = MindLeak::open_in_memory().expect("in-memory engine");
+    fn open_session_body(engine: &MindLeak, sessions: &SessionRegistry, arguments: Value) -> Value {
         let params = json!({ "name": "open_session", "arguments": arguments });
         let bound = bind_session(&params, sessions).expect("session binds");
-        let result = call(&engine, &bound).expect("open_session succeeds");
+        let result = call(engine, &bound).expect("open_session succeeds");
         serde_json::from_str(&content_text(&result)).expect("body is JSON")
     }
 
@@ -473,13 +493,19 @@ mod tests {
     #[test]
     fn open_session_records_declared_context_and_omits_it_when_undeclared() {
         let sessions = SessionRegistry::new("copilot").unwrap();
+        let engine = MindLeak::open_in_memory().expect("in-memory engine");
         const TOKEN: &str = "00112233445566778899aabbccddeeff";
 
-        let undeclared = open_session_body(&sessions, json!({ "session_id": TOKEN }));
+        let undeclared = open_session_body(&engine, &sessions, json!({ "session_id": TOKEN }));
         assert!(undeclared["agent_id"].is_string());
         assert!(undeclared.get("context").is_none());
+        assert!(
+            undeclared.get("degraded").is_none(),
+            "a healthy plane volunteers nothing; the notice must mean something when it appears"
+        );
 
         let declared = open_session_body(
+            &engine,
             &sessions,
             json!({
                 "session_id": TOKEN,
@@ -500,6 +526,41 @@ mod tests {
             sessions.resolve(TOKEN).unwrap().context.branch.unwrap(),
             "fleet/typed-controls"
         );
+    }
+
+    /// Bug: optional work records one degraded pass and then goes quiet, which
+    /// is right for a blip and silent for an outage. The autonomous index went
+    /// 121 consecutive passes unable to reach its embedding model, over four
+    /// hours, and nothing told anyone — it was found by reading the raw event
+    /// table. `open_session` already volunteers a stale build and a replaced
+    /// binary for exactly this reason: a fault the agent cannot see is a fault
+    /// the agent will assume away.
+    #[test]
+    fn open_session_volunteers_optional_work_that_has_been_failing_for_hours() {
+        let sessions = SessionRegistry::new("copilot").unwrap();
+        let engine = MindLeak::open_in_memory().expect("in-memory engine");
+        const TOKEN: &str = "ffeeddccbbaa99887766554433221100";
+
+        // Never succeeded, so no amount of waiting makes this transient.
+        engine.record_maintenance(
+            "autonomous_index",
+            "skipped",
+            1,
+            Some(json!({ "error": "embedding model 'nomic-embed-text' could not be reached" })),
+        );
+
+        let body = open_session_body(&engine, &sessions, json!({ "session_id": TOKEN }));
+
+        let degraded = body["degraded"]
+            .as_array()
+            .expect("a plane that cannot index says so at session start");
+        assert_eq!(degraded.len(), 1);
+        assert_eq!(degraded[0]["tool"], "autonomous_index");
+        assert!(degraded[0]["last_success_at"].is_null(), "it never worked");
+        assert!(degraded[0]["detail"]
+            .as_str()
+            .expect("the remedy travels with the notice")
+            .contains("could not be reached"));
     }
 
     // A malformed declaration is refused rather than silently ignored: the
