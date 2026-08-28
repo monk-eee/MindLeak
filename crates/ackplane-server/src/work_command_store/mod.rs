@@ -1,12 +1,12 @@
 //! Immutable Industrial Work command requests and receipts (ADR-0125).
 //!
-//! The authoritative command service must validate authorization before calling
+//! The authoritative command service validates authorization before calling
 //! this store. It records intent and outcome references, executes the five
 //! server-owned commands' Work/Claim effects, and issues the five
-//! supervisor-directed commands' ADR-0107 directives -- but exposes no
-//! transport of its own; wiring any of this to a Bridge route or the live
-//! NodeSync ingestion path remains a later slice (ADR-0125 decision 11).
-#![allow(dead_code)]
+//! supervisor-directed commands' ADR-0107 directives. [`WorkCommandService`]
+//! is the one authoritative entry point a Bridge route (or any other typed
+//! caller) may use -- a route that reaches [`WorkCommandStore`] directly
+//! without it is the contract violation ADR-0125 decision 11 rejects.
 
 use tokio_postgres::{Client, NoTls};
 
@@ -28,9 +28,20 @@ mod payload;
 mod service;
 mod write;
 
-use model::{
-    NewWorkCommand, NewWorkCommandReceipt, WorkCommand, WorkCommandReceipt,
-    WorkCommandReceiptWriteOutcome, WorkCommandStoreError, WorkCommandWriteOutcome,
+use model::{NewWorkCommandReceipt, WorkCommandReceiptWriteOutcome, WorkCommandWriteOutcome};
+
+pub use model::{
+    NewWorkCommand, WorkCommand, WorkCommandKind, WorkCommandOutcome, WorkCommandReceipt,
+    WorkCommandStoreError,
+};
+pub use payload::{
+    payload_digest, AnswerWaitPayload, AssignPayload, CreateWorkPayload, DirectiveTarget,
+    DrainPayload, PausePayload, ReleaseLeasePayload, ResumePayload, ReviewDisposition,
+    RouteWorkPayload, SteerPayload, SubmitReviewPayload, WorkCommandPayload,
+};
+pub use service::{
+    VerifiedWorkCommandPrincipal, WorkCommandAuthorization, WorkCommandRefusal, WorkCommandService,
+    WorkCommandServiceError, WorkCommandServiceOutcome, AUTHORIZATION_UNAVAILABLE_REASON,
 };
 
 /// PostgreSQL persistence for immutable Work command requests and receipts.
