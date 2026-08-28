@@ -342,9 +342,19 @@ layout itself (`ConnectionChallengeBinding`, `connection_challenge_bytes`)
 moved to `ackplane_protocol::connection_challenge_auth` so the two sides can
 never drift into incompatible encodings of the same signed fields;
 `ackplane_server::enrollment` re-exports it unchanged for its existing
-callers. This slice sends and receives nothing beyond the handshake itself --
-supervisor registration, directive delivery, and reconnect reconciliation are
-later ADR-0116 slices built on the connection this returns.
+callers. Slice 1 sent and received nothing beyond the handshake itself.
+Slice 2 adds `exchange_supervisor_frame`, so a caller can send one supervisor
+frame -- registration, session, or heartbeat -- and await its
+`SupervisorFrameReceipt` without hand-rolling the wait: flow control and
+notices are stepped over as server housekeeping, a `Rejection` surfaces as a
+typed `ClientError::FrameRefused` (carrying the server's own `RejectionReason`,
+distinct from `ConnectionRefused` because the connection itself is healthy and
+reconnecting fixes nothing), and any other frame is a protocol violation
+reported as `ClientError::UnexpectedFrame`. The event-batch `recv` path does
+not yet share this treatment -- a refused `BatchReceipt` still arrives as a
+raw frame a caller must recognize by hand. Directive delivery and reconnect
+reconciliation remain later ADR-0116 slices built on the connection this
+returns.
 
 ### `ackplane-supervisor` (library)
 
