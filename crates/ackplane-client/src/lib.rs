@@ -94,6 +94,27 @@ pub enum ClientError {
         retryable: bool,
         diagnostic: String,
     },
+    /// Ackplane's refusal of one *frame* on a connection that is otherwise
+    /// healthy -- a session naming a supervisor that was never registered, say.
+    /// Deliberately distinct from [`Self::ConnectionRefused`] because the remedy
+    /// differs: the connection is fine, so reconnecting fixes nothing and a
+    /// caller that conflated the two would loop reconnecting over a fact the
+    /// server will refuse just as firmly next time.
+    #[error("Ackplane refused this frame ({reason:?}, retryable={retryable}): {diagnostic}")]
+    FrameRefused {
+        reason: ackplane_protocol::v1::RejectionReason,
+        retryable: bool,
+        diagnostic: String,
+    },
+    /// The server sent something other than the frame an authenticated exchange
+    /// was waiting for. Named separately from
+    /// [`Self::UnexpectedHandshakeFrame`] so a protocol violation after the
+    /// handshake is not reported as one during it.
+    #[error("expected {expected} on the authenticated stream, got {got}")]
+    UnexpectedFrame {
+        expected: &'static str,
+        got: &'static str,
+    },
 }
 
 /// A live connection to one Ackplane deployment's claim-delegation service.
