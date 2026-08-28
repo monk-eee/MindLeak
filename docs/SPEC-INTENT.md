@@ -445,6 +445,19 @@ Every identity-bearing call then includes that registered `session_id`; server
 dispatch resolves and injects the stable `session:v1:<fingerprint>` owner.
 Caller-selected `agent`/`agent_id` values are not part of the public schema.
 
+`open_session`'s response body also carries two advisory fields, each included
+only when non-empty:
+
+- `awaiting_a_human`: tasks that completed into `in_review` with no addressable
+  owner to notify, since completion clears the owner and a human has no agent
+  id (ADR-0046).
+- `rescue_work`: objectively rescuable stalled tasks -- a lapsed claim lease, a
+  pause past its protection grace, or a coordination deadlock. Each entry
+  carries a `next` field naming the concrete follow-up call, e.g.
+  `task_query(view="scope")` then `task_claim(step="claim")` for a lapsed
+  lease, or `task_query(view="thread")` then `task_query(view="drafts")` for a
+  deadlock. Visibility only; no ownership or task state changes.
+
 **Constitution**
 
 1. `constitution_define(action="goal", title, statement, kind, parent_id?)` →
