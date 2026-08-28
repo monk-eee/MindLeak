@@ -21,6 +21,8 @@
 //! reconnect reconciliation are later ADR-0116 slices built on top of the
 //! connection this returns.
 
+use std::collections::VecDeque;
+
 use ackplane_protocol::connection_challenge_auth::{
     connection_challenge_bytes, ConnectionChallengeBinding,
 };
@@ -48,6 +50,15 @@ pub struct NodeSyncConnection {
     accepted_position: u64,
     enabled_capabilities: Vec<String>,
     flow_control: v1::FlowControl,
+    /// Directives that arrived while awaiting a receipt.
+    ///
+    /// The server delivers pending directives immediately after the receipt
+    /// for the session frame that addressed them, so a caller waiting on that
+    /// receipt is the very caller that sees them first. Buffering keeps
+    /// `exchange_supervisor_frame`'s promise that a directive is never
+    /// silently dropped, without forcing every caller to become a directive
+    /// handler.
+    directives: VecDeque<v1::AgentDirective>,
 }
 
 impl NodeSyncConnection {
@@ -154,6 +165,7 @@ impl NodeSyncConnection {
             accepted_position: accepted.accepted_position,
             enabled_capabilities: accepted.enabled_capabilities,
             flow_control,
+            directives: VecDeque::new(),
         })
     }
 
@@ -197,8 +209,10 @@ impl NodeSyncConnection {
     /// and report a timeout instead of the reason the server gave it.
     ///
     /// Flow control and notices are server housekeeping and are stepped over.
-    /// Anything else is returned as an error naming it, so that a directive --
-    /// which this slice does not yet handle -- is never silently dropped.
+    /// A directive is buffered for [`Self::next_directive`] rather than
+    /// dropped or treated as an error: the server delivers pending directives
+    /// right behind the receipt for the session frame that addressed them, so
+    /// they legitimately arrive here.
     pub async fn exchange_supervisor_frame(
         &mut self,
         frame: v1::NodeFrame,
@@ -219,6 +233,10 @@ impl NodeSyncConnection {
                 v1::ackplane_frame::Frame::Rejection(rejection) => {
                     return Err(frame_refused(rejection))
                 }
+                v1::ackplane_frame::Frame::AgentDirective(directive) => {
+                    self.directives.push_back(*directive);
+                    continue;
+                }
                 v1::ackplane_frame::Frame::FlowControl(_)
                 | v1::ackplane_frame::Frame::Notice(_) => continue,
                 other => {
@@ -229,6 +247,33 @@ impl NodeSyncConnection {
                 }
             }
         }
+    }
+
+    /// The next directive this connection has received, if any is already in
+    /// hand.
+    ///
+    /// Non-blocking, and deterministic rather than racy: the server sends a
+    /// session's pending directives *ahead* of the receipt for the frame that
+    /// addressed them, so the receipt is a delivery barrier. A caller holding
+    /// that receipt has necessarily already read every directive delivered
+    /// with it, and draining here cannot miss one that is still in flight.
+    pub fn next_directive(&mut self) -> Option<v1::AgentDirective> {
+        self.directives.pop_front()
+    }
+
+    /// Return the durable receipt for a directive this supervisor processed.
+    ///
+    /// The server answers a `DirectiveReceipt` with an ordinary supervisor
+    /// frame receipt, so this is the same round trip as any other supervisor
+    /// frame -- including its refusal handling.
+    pub async fn submit_directive_receipt(
+        &mut self,
+        receipt: v1::DirectiveReceipt,
+    ) -> Result<v1::SupervisorFrameReceipt, ClientError> {
+        self.exchange_supervisor_frame(v1::NodeFrame {
+            frame: Some(v1::node_frame::Frame::DirectiveReceipt(receipt)),
+        })
+        .await
     }
 }
 
