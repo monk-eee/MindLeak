@@ -64,6 +64,7 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
              SELECT event.name,
                     COUNT(*)                                           AS calls,
                     SUM(CASE WHEN event.outcome = 'error' THEN 1 ELSE 0 END) AS errors,
+                    SUM(CASE WHEN event.outcome = 'refused' THEN 1 ELSE 0 END) AS refused,
                     COALESCE(SUM(event.duration_ms), 0)                AS total_ms,
                     COALESCE(MIN(event.duration_ms), 0)                AS min_ms,
                     COALESCE(MAX(event.duration_ms), 0)                AS max_ms,
@@ -78,19 +79,20 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
         )?;
         let rows = stmt.query_map([], |row| {
             let calls: i64 = row.get(1)?;
-            let total_ms: i64 = row.get(3)?;
+            let total_ms: i64 = row.get(4)?;
             let name: String = row.get(0)?;
-            let last_success_at: Option<i64> = row.get(6)?;
-            let last_error_at: Option<i64> = row.get(7)?;
-            let last_degraded_at: Option<i64> = row.get(8)?;
-            let latest_outcome: String = row.get(9)?;
+            let last_success_at: Option<i64> = row.get(7)?;
+            let last_error_at: Option<i64> = row.get(8)?;
+            let last_degraded_at: Option<i64> = row.get(9)?;
+            let latest_outcome: String = row.get(10)?;
             Ok(NameMetric {
                 name,
                 calls,
                 errors: row.get(2)?,
+                refused: row.get(3)?,
                 total_ms,
-                min_ms: row.get(4)?,
-                max_ms: row.get(5)?,
+                min_ms: row.get(5)?,
+                max_ms: row.get(6)?,
                 avg_ms: if calls > 0 {
                     total_ms as f64 / calls as f64
                 } else {

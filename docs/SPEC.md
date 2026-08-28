@@ -296,10 +296,13 @@ confirms an agent did what was asked. Three parts, all local and all stdout-safe
 - **Durable audit trail.** Every tool call is recorded to an append-only
   `telemetry_events` table the telemetry module owns — never graph state, never
   decayed. The `telemetry_snapshot` tool returns per-tool lifetime counts, error
-  counts, latency, per-tool current health (failing, degraded, or healthy), graph
-  health, recent events, per-session read-before-write habits, and a bounded
-  deterministic usage retrospective. Current failure is distinct from both the
-  cumulative lifetime error tally and skipped optional work.
+  counts, refused counts, latency, per-tool current health (failing, degraded,
+  or healthy), graph health, recent events, per-session read-before-write
+  habits, and a bounded deterministic usage retrospective. Current failure is
+  distinct from both the cumulative lifetime error tally and skipped optional
+  work; a refused call — a working guard rejecting invalid or unconfirmed
+  input, such as `reset_database`'s exact-token check — is distinct from both
+  and never inflates the error tally or current-failure verdict.
 - **Network resilience** (`net`). All optional HTTP (embeddings, consolidation,
   LLM) gets explicit timeouts, bounded retry with backoff, and a per-endpoint
   circuit breaker, so a degraded server fast-fails instead of hanging the agent.

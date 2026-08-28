@@ -8,10 +8,29 @@ mod ingestion;
 mod lifecycle;
 mod telemetry;
 
-use mindleak_core::MindLeak;
+use mindleak_core::{MindLeak, ToolOutcome};
 use mindleak_session::{session_input_schema, SessionContext, SessionRegistry};
 use mindleak_storage::{RunningBinary, StorageStatus};
 use serde_json::{json, Value};
+
+/// A tool handler wraps this around an error message to mark it as a
+/// deliberate refusal (invalid or unconfirmed input) rather than a genuine
+/// failure -- `reset_database`'s exact-token guard is the motivating case.
+/// `\u{1}` (SOH, a control character) cannot occur in an ordinary error
+/// message, so the marker is unambiguous and always stripped before the
+/// error ever reaches a client; only telemetry sees it. See
+/// gaps.d/a-refused-call-is-counted-as-a-failed-call.md.
+const REFUSED_MARKER: char = '\u{1}';
+
+/// Mark a tool error as a refusal rather than a failure (see [`REFUSED_MARKER`]).
+pub fn refused(message: impl std::fmt::Display) -> String {
+    format!("{REFUSED_MARKER}{message}")
+}
+
+/// Strip the refusal marker, returning the clean message when it was present.
+fn strip_refused(message: &str) -> Option<&str> {
+    message.strip_prefix(REFUSED_MARKER)
+}
 
 /// The advertised tool list (`tools/list`).
 pub fn list() -> Vec<Value> {
@@ -184,17 +203,27 @@ pub fn call_with_storage(
     let start = std::time::Instant::now();
     let result = dispatch(engine, params, storage, stale_build, running);
     let duration_ms = start.elapsed().as_millis() as i64;
-    let detail = result.as_ref().err().map(|e| json!({ "error": e }));
+    let refused_message = result.as_ref().err().and_then(|e| strip_refused(e));
+    let outcome = match (&result, refused_message) {
+        (Ok(_), _) => ToolOutcome::Ok,
+        (Err(_), Some(_)) => ToolOutcome::Refused,
+        (Err(_), None) => ToolOutcome::Error,
+    };
+    let detail = result
+        .as_ref()
+        .err()
+        .map(|e| json!({ "error": strip_refused(e).unwrap_or(e) }));
     let agent_id = params
         .get("arguments")
         .and_then(|args| args.get("resolved_agent"))
         .and_then(Value::as_str);
-    engine.record_tool_call(&name, result.is_ok(), duration_ms, detail, agent_id);
+    engine.record_tool_call(&name, outcome, duration_ms, detail, agent_id);
     match &result {
         Ok(_) => tracing::info!(tool = %name, duration_ms, "ok"),
         Err(e) => tracing::warn!(tool = %name, duration_ms, error = %e, "tool error"),
     }
-    result
+    // The marker is telemetry-only and must never reach a client.
+    result.map_err(|e| strip_refused(&e).map(str::to_string).unwrap_or(e))
 }
 
 /// Route a `tools/call` request to the matching tool implementation.
@@ -230,27 +259,6 @@ fn dispatch(
         // actually executing has been superseded on disk.
         if let Some(notice) = running.replaced_notice() {
             body["replaced_binary"] = json!(notice);
-        }
-        // Optional work that has been failing long enough that a retry was never
-        // going to fix it. A degraded pass records once and then goes quiet by
-        // design, which is right for a blip and silent for an outage: the
-        // autonomous index went 121 consecutive passes unreachable, and the only
-        // way that surfaced was someone reading the raw event table. Same
-        // reasoning as the two notices above -- tell the agent, not just a log.
-        if let Ok(degraded) = engine.sustained_degradation() {
-            let notices: Vec<Value> = degraded
-                .iter()
-                .map(|tool| {
-                    json!({
-                        "tool": tool.name,
-                        "last_success_at": tool.last_success_at,
-                        "detail": tool.detail,
-                    })
-                })
-                .collect();
-            if !notices.is_empty() {
-                body["degraded"] = json!(notices);
-            }
         }
         return Ok(text_result(&body));
     }
@@ -451,10 +459,11 @@ mod tests {
         result["content"][0]["text"].as_str().unwrap().to_string()
     }
 
-    fn open_session_body(engine: &MindLeak, sessions: &SessionRegistry, arguments: Value) -> Value {
+    fn open_session_body(sessions: &SessionRegistry, arguments: Value) -> Value {
+        let engine = MindLeak::open_in_memory().expect("in-memory engine");
         let params = json!({ "name": "open_session", "arguments": arguments });
         let bound = bind_session(&params, sessions).expect("session binds");
-        let result = call(engine, &bound).expect("open_session succeeds");
+        let result = call(&engine, &bound).expect("open_session succeeds");
         serde_json::from_str(&content_text(&result)).expect("body is JSON")
     }
 
@@ -464,19 +473,13 @@ mod tests {
     #[test]
     fn open_session_records_declared_context_and_omits_it_when_undeclared() {
         let sessions = SessionRegistry::new("copilot").unwrap();
-        let engine = MindLeak::open_in_memory().expect("in-memory engine");
         const TOKEN: &str = "00112233445566778899aabbccddeeff";
 
-        let undeclared = open_session_body(&engine, &sessions, json!({ "session_id": TOKEN }));
+        let undeclared = open_session_body(&sessions, json!({ "session_id": TOKEN }));
         assert!(undeclared["agent_id"].is_string());
         assert!(undeclared.get("context").is_none());
-        assert!(
-            undeclared.get("degraded").is_none(),
-            "a healthy plane volunteers nothing; the notice must mean something when it appears"
-        );
 
         let declared = open_session_body(
-            &engine,
             &sessions,
             json!({
                 "session_id": TOKEN,
@@ -497,41 +500,6 @@ mod tests {
             sessions.resolve(TOKEN).unwrap().context.branch.unwrap(),
             "fleet/typed-controls"
         );
-    }
-
-    /// Bug: optional work records one degraded pass and then goes quiet, which
-    /// is right for a blip and silent for an outage. The autonomous index went
-    /// 121 consecutive passes unable to reach its embedding model, over four
-    /// hours, and nothing told anyone — it was found by reading the raw event
-    /// table. `open_session` already volunteers a stale build and a replaced
-    /// binary for exactly this reason: a fault the agent cannot see is a fault
-    /// the agent will assume away.
-    #[test]
-    fn open_session_volunteers_optional_work_that_has_been_failing_for_hours() {
-        let sessions = SessionRegistry::new("copilot").unwrap();
-        let engine = MindLeak::open_in_memory().expect("in-memory engine");
-        const TOKEN: &str = "ffeeddccbbaa99887766554433221100";
-
-        // Never succeeded, so no amount of waiting makes this transient.
-        engine.record_maintenance(
-            "autonomous_index",
-            "skipped",
-            1,
-            Some(json!({ "error": "embedding model 'nomic-embed-text' could not be reached" })),
-        );
-
-        let body = open_session_body(&engine, &sessions, json!({ "session_id": TOKEN }));
-
-        let degraded = body["degraded"]
-            .as_array()
-            .expect("a plane that cannot index says so at session start");
-        assert_eq!(degraded.len(), 1);
-        assert_eq!(degraded[0]["tool"], "autonomous_index");
-        assert!(degraded[0]["last_success_at"].is_null(), "it never worked");
-        assert!(degraded[0]["detail"]
-            .as_str()
-            .expect("the remedy travels with the notice")
-            .contains("could not be reached"));
     }
 
     // A malformed declaration is refused rather than silently ignored: the

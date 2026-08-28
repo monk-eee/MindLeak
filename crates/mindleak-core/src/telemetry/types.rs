@@ -18,6 +18,10 @@ pub struct NameMetric {
     pub name: String,
     pub calls: i64,
     pub errors: i64,
+    /// Lifetime count of refused calls -- a working guard rejecting invalid
+    /// or unconfirmed input, never folded into `errors`. See
+    /// gaps.d/a-refused-call-is-counted-as-a-failed-call.md.
+    pub refused: i64,
     pub total_ms: i64,
     pub min_ms: i64,
     pub max_ms: i64,
