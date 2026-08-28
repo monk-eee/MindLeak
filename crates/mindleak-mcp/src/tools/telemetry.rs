@@ -111,13 +111,14 @@ pub(super) fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mindleak_core::ToolOutcome;
 
     #[test]
     fn snapshot_renders_memory_habit_and_keeps_it_structured() {
         let engine = MindLeak::open_in_memory().unwrap();
-        engine.record_tool_call("open_session", true, 0, None, Some("session:a"));
-        engine.record_tool_call("recall", true, 1, None, Some("session:a"));
-        engine.record_tool_call("ingest_file", true, 1, None, Some("session:a"));
+        engine.record_tool_call("open_session", ToolOutcome::Ok, 0, None, Some("session:a"));
+        engine.record_tool_call("recall", ToolOutcome::Ok, 1, None, Some("session:a"));
+        engine.record_tool_call("ingest_file", ToolOutcome::Ok, 1, None, Some("session:a"));
 
         let result = dispatch(&engine, "telemetry_snapshot", &json!({}))
             .unwrap()
@@ -142,8 +143,20 @@ mod tests {
     #[test]
     fn snapshot_turns_a_skipped_memory_preflight_into_an_action() {
         let engine = MindLeak::open_in_memory().unwrap();
-        engine.record_tool_call("open_session", true, 0, None, Some("session:skipped"));
-        engine.record_tool_call("ingest_file", true, 1, None, Some("session:skipped"));
+        engine.record_tool_call(
+            "open_session",
+            ToolOutcome::Ok,
+            0,
+            None,
+            Some("session:skipped"),
+        );
+        engine.record_tool_call(
+            "ingest_file",
+            ToolOutcome::Ok,
+            1,
+            None,
+            Some("session:skipped"),
+        );
 
         let result = dispatch(&engine, "telemetry_snapshot", &json!({}))
             .unwrap()

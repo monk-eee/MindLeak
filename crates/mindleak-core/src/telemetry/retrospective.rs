@@ -133,6 +133,7 @@ mod tests {
             name: name.to_string(),
             calls: 1,
             errors: 0,
+            refused: 0,
             total_ms: 1,
             min_ms: 1,
             max_ms: 1,

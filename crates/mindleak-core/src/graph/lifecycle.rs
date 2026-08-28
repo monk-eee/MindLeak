@@ -127,7 +127,12 @@ impl GraphStore {
     /// schema. The distinct token prevents accidental intent-plane deletion.
     pub fn reset_database(&self, confirmation: &str) -> Result<ResetOutcome> {
         if confirmation != "RESET MINDLEAK" {
-            return Err(MindLeakError::Other(
+            // InvalidArgument, not Other: this is the caller's request being
+            // unconfirmed, not the engine faulting -- see
+            // gaps.d/a-refused-call-is-counted-as-a-failed-call.md. The MCP
+            // tool layer (mindleak-mcp::tools) matches on this variant to
+            // record telemetry as `refused` rather than `error`.
+            return Err(MindLeakError::InvalidArgument(
                 "memory reset requires exact confirmation token: RESET MINDLEAK".to_string(),
             ));
         }

@@ -4,5 +4,5 @@ mod context;
 mod digest;
 mod ingestion;
 mod lifecycle;
-mod observability;
+pub(crate) mod observability;
 mod query;
