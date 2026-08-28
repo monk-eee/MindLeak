@@ -34,7 +34,15 @@ pub fn sustained_degradation(conn: &Connection, now: i64) -> Result<Vec<Sustaine
          )
          SELECT event.name,
                 MAX(CASE WHEN event.outcome = 'ok' THEN event.ts END) AS last_success_at,
-                MAX(CASE WHEN event.outcome = 'skipped' THEN event.detail END) AS detail
+                -- `newest` is already pinned to the one row with this name's
+                -- highest id (and that row is confirmed 'skipped' by the join
+                -- condition below), so its detail is exactly the most recent
+                -- skip's reason. Aggregating over every skip's detail with
+                -- MAX(CASE WHEN outcome = 'skipped' THEN detail END) would
+                -- instead pick the lexicographically greatest JSON string
+                -- across all of this tool's skips, which is not necessarily
+                -- the latest one.
+                MAX(newest.detail) AS detail
          FROM telemetry_events event
          JOIN latest ON latest.name = event.name
          JOIN telemetry_events newest
@@ -137,6 +145,52 @@ mod tests {
         .unwrap();
 
         assert!(sustained_degradation(&c, 999_999).unwrap().is_empty());
+    }
+
+    /// Bug: `detail` was computed as `MAX(CASE WHEN outcome='skipped' THEN
+    /// detail END)` across *every* skip this tool ever recorded, and SQLite's
+    /// `MAX` over a TEXT column is a lexicographic (byte-wise) comparison, not
+    /// a recency one. With two skips recording different reasons, the reason
+    /// shown for a sustained outage could be an older skip's message rather
+    /// than the tool's actual most recent one -- silently misleading whoever
+    /// reads it about why the tool is currently degraded.
+    #[test]
+    fn detail_reflects_the_most_recent_skip_not_the_lexicographically_largest_one() {
+        let c = conn();
+        record(
+            &c,
+            100,
+            "maintenance",
+            "autonomous_index",
+            "skipped",
+            None,
+            // Lexicographically greatest ("z" > "a"), but the *older* skip.
+            Some(&serde_json::json!({ "error": "zzz-earlier-reason" })),
+        )
+        .unwrap();
+        record(
+            &c,
+            200,
+            "maintenance",
+            "autonomous_index",
+            "skipped",
+            None,
+            // Lexicographically smallest, but the tool's actual latest reason.
+            Some(&serde_json::json!({ "error": "aaa-latest-reason" })),
+        )
+        .unwrap();
+
+        let sustained = sustained_degradation(&c, 100_000).unwrap();
+        assert_eq!(sustained.len(), 1);
+        assert!(
+            sustained[0]
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("aaa-latest-reason"),
+            "expected the most recent skip's detail, got {:?}",
+            sustained[0].detail
+        );
     }
 
     /// Never having worked is the strongest case, and subtracting from a
