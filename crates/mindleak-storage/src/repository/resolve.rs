@@ -19,6 +19,7 @@ pub fn resolve_database(
     if let Some(path) = nonblank_path(explicit_database) {
         return Ok(explicit_database_resolution(path));
     }
+    ensure_workspace_exists(workspace)?;
     let Some(common_dir) = git_common_dir(workspace)? else {
         return Ok(workspace_database_resolution(workspace, kind));
     };
@@ -37,10 +38,26 @@ pub fn resolve_database_in(
     if let Some(path) = nonblank_path(explicit_database) {
         return Ok(explicit_database_resolution(path));
     }
+    ensure_workspace_exists(workspace)?;
     let Some(common_dir) = git_common_dir(workspace)? else {
         return Ok(workspace_database_resolution(workspace, kind));
     };
     resolve_repository_database(workspace, &common_dir, kind, state_root)
+}
+
+/// A workspace that is not there is a stale caller argument, not a directory
+/// that happens to sit outside Git. Both make `git rev-parse` unusable, but only
+/// the latter may fall back to a workspace-local database: on Unix the failed
+/// spawn reports `NotFound`, indistinguishable from a missing `git` binary, so
+/// without this guard a reclaimed worktree silently resolves to a fresh empty
+/// database (Windows reports `NotADirectory` and surfaced an opaque IO error).
+fn ensure_workspace_exists(workspace: &Path) -> Result<(), RepositoryStorageError> {
+    if workspace.is_dir() {
+        return Ok(());
+    }
+    Err(RepositoryStorageError::MissingWorkspace(
+        workspace.to_path_buf(),
+    ))
 }
 
 pub fn platform_state_root() -> Result<PathBuf, RepositoryStorageError> {
