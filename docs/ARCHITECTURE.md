@@ -658,6 +658,25 @@ claim lifecycle, and ledger records remain behind Ackplane's typed service
 boundaries. Current routes, each 404 on a repository the tenant has not
 enrolled rather than leaking a distinguishable error:
 
+`crates/ackplane-bridge/Dockerfile` (ADR-0105 decision 3) packages one binary
+onto the same pinned toolchain/runtime pattern `crates/ackplane-server/Dockerfile`
+uses, and `docker-compose.yml`'s `bridge` service brings it up alongside
+`ackplane` so a developer gets both from one `docker compose up`. Bridge never
+gRPC-connects to `ackplane`; every store is a direct Postgres connection to the
+same database `ackplane` migrates, so `bridge` only depends on `migrate`
+completing, not on `ackplane` itself running. `BridgeConfig::resolve` refuses
+any non-loopback listen address until a production authentication verifier
+exists (ADR-0094), so the process always binds `127.0.0.1` inside its
+container -- but Docker's published-port mechanism forwards host traffic to a
+container's real network interface, never to that container's own loopback,
+so a port published straight from that bind is unreachable from the host
+despite the container reporting healthy (a healthcheck runs inside the same
+network namespace, where loopback works regardless). `docker-entrypoint.sh`
+resolves this without touching `BridgeConfig`'s validation at all: it starts a
+`socat` relay on a second in-container port, listening on every interface and
+forwarding to the Bridge process's own loopback bind, and the Compose service
+publishes that relay port to the host rather than Bridge's own.
+
 `administration.rs` is the ADR-0105 decision 6 "Backup / export / reset" parity
 row, scoped by ADR-0119's accepted policy rather than a mechanical copy of the
 VSIX's `mindleak.backup`/`mindleak.export`/`mindleak.resetMemory` commands.
