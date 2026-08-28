@@ -72,6 +72,7 @@ const CAPABILITY_IDS: &[&str] = &[
     "administration",
     "supervisors",
     "delegations",
+    "decisions",
     "live-feed",
 ];
 

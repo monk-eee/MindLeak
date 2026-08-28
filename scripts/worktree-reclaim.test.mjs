@@ -213,7 +213,11 @@ test("reclaimEntry removes the artifacts then the worktree and its branch", () =
       return { ok: true, out: "" };
     },
   });
-  assert.deepEqual(result, { reclaimed: true, artifactsOnly: false });
+  assert.deepEqual(result, {
+    reclaimed: true,
+    artifactsOnly: false,
+    residue: null,
+  });
   assert.deepEqual(gitCalls, [
     { args: ["worktree", "remove", "/repo/wt"], cwd: "/repo" },
     { args: ["branch", "-D", "fix/done"], cwd: "/repo" },
@@ -292,6 +296,9 @@ test("reclaimEntry keeps the worktree when git worktree remove itself refuses", 
   const result = reclaimEntry(entry, {
     anchor: "/repo",
     rm: () => ({ ok: true }),
+    // git refused before touching anything, so the worktree's `.git` link is
+    // still there -- this is a real keep, not a failed final unlink.
+    exists: () => true,
     git: () => ({
       ok: false,
       out: "fatal: '/repo/wt' contains modified or untracked files\n",
@@ -299,6 +306,86 @@ test("reclaimEntry keeps the worktree when git worktree remove itself refuses", 
   });
   assert.equal(result.reclaimed, false);
   assert.match(result.reason, /modified or untracked files/);
+});
+
+/**
+ * Regression: `git worktree remove` deletes the tree's contents and its `.git`
+ * link *before* unlinking the directory, so a Windows handle on the directory
+ * failed the command after the worktree was already dismantled. Reporting that
+ * as `kept` skipped `git branch -D`, and the `git worktree prune` at the end of
+ * the run then deregistered the gutted worktree -- so the branch survived a
+ * worktree that no longer existed, and no later run could ever see it again.
+ * Measured 2026-08-28: three branches orphaned exactly this way in one run.
+ */
+test("reclaimEntry finishes the reclaim when only the final directory unlink failed", () => {
+  const gitCalls = [];
+  const removed = [];
+  const entry = {
+    worktree: { path: "/repo/wt", branch: "fix/done" },
+    artifacts: [],
+  };
+  const error = Object.assign(new Error("permission denied"), {
+    code: "EPERM",
+  });
+  const result = reclaimEntry(entry, {
+    anchor: "/repo",
+    remote: true,
+    rm: (dir) => {
+      removed.push(dir);
+      return { ok: false, error };
+    },
+    // The `.git` link is gone: git dismantled the worktree and only failed to
+    // unlink the now-empty directory.
+    exists: (candidate) => candidate === "/repo/wt",
+    git: (args) => {
+      gitCalls.push(args);
+      return args[0] === "worktree"
+        ? {
+            ok: false,
+            out: "fatal: failed to delete '/repo/wt': Permission denied\n",
+          }
+        : { ok: true, out: "" };
+    },
+  });
+
+  assert.equal(result.reclaimed, true);
+  assert.deepEqual(
+    removed,
+    ["/repo/wt"],
+    "it retries the unlink with fs-retry",
+  );
+  assert.match(result.residue, /empty directory another process still holds/);
+  assert.match(result.residue, /EPERM/);
+  assert.deepEqual(
+    gitCalls,
+    [
+      ["worktree", "remove", "/repo/wt"],
+      ["branch", "-D", "fix/done"],
+      ["push", "origin", "--delete", "fix/done"],
+    ],
+    "the branch must not survive a worktree that is already gone",
+  );
+});
+
+test("reclaimEntry reports no residue when the retried unlink succeeds", () => {
+  const entry = {
+    worktree: { path: "/repo/wt", branch: "fix/done" },
+    artifacts: [],
+  };
+  const result = reclaimEntry(entry, {
+    anchor: "/repo",
+    rm: () => ({ ok: true }),
+    exists: () => false,
+    git: (args) =>
+      args[0] === "worktree"
+        ? {
+            ok: false,
+            out: "fatal: failed to delete '/repo/wt': Permission denied\n",
+          }
+        : { ok: true, out: "" },
+  });
+  assert.equal(result.reclaimed, true);
+  assert.equal(result.residue, null);
 });
 
 // Everything below is a refusal. A cleanup tool tested only on what it deletes
