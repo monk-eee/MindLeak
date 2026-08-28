@@ -186,71 +186,22 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
     }
     let signing_key_id = activation.signing_key_id.as_str();
 
-    let mut sync_client = NodeSyncServiceClient::connect(grpc_endpoint)
-        .await
-        .map_err(|error| format!("could not open NodeSync: {error}"))?;
-    let (tx, rx) = mpsc::channel::<v1::NodeFrame>(4);
-    let outbound = ReceiverStream::new(rx);
-    let response = sync_client
-        .synchronize(Request::new(outbound))
-        .await
-        .map_err(|error| format!("synchronize failed: {error}"))?;
-    let mut inbound = response.into_inner();
-
-    tx.send(v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::Hello(v1::Hello {
-            tenant_id: saved.tenant_id.clone(),
-            repository_id: saved.repository_id.clone(),
-            producer_id: saved.node_id.clone(),
-            last_accepted_position: 0,
-            capabilities: vec!["synchronize".to_string()],
-            signing_key_id: signing_key_id.to_string(),
-        })),
-    })
+    let signer = SeedSigner::new(signing_key_id, &saved.node_id, &signing_key.to_bytes());
+    let mut connection = NodeSyncConnection::open(
+        &grpc_endpoint,
+        &signer,
+        &saved.tenant_id,
+        &saved.repository_id,
+        vec!["synchronize".to_string()],
+        0,
+    )
     .await
-    .map_err(|error| error.to_string())?;
-
-    let challenge_frame = inbound
-        .message()
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or("stream closed before ConnectionChallenge")?;
-    let nonce = match challenge_frame.frame {
-        Some(v1::ackplane_frame::Frame::ConnectionChallenge(challenge)) => challenge.nonce,
-        other => return Err(format!("expected ConnectionChallenge, got {other:?}")),
-    };
-    let connection_signature = signing_key
-        .sign(&connection_challenge_bytes(&ConnectionChallengeBinding {
-            nonce: &nonce,
-            tenant_id: &saved.tenant_id,
-            repository_id: &saved.repository_id,
-            producer_id: &saved.node_id,
-            signing_key_id,
-        }))
-        .to_bytes()
-        .to_vec();
-    tx.send(v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::ChallengeResponse(
-            v1::ChallengeResponse {
-                signature: connection_signature,
-            },
-        )),
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-
-    let accepted_frame = inbound
-        .message()
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or("stream closed before HelloAccepted")?;
-    println!("hello_accepted: {accepted_frame:?}");
-    let flow_control_frame = inbound
-        .message()
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or("stream closed before FlowControl")?;
-    println!("flow_control: {flow_control_frame:?}");
+    .map_err(|error| format!("could not open NodeSync: {error}"))?;
+    println!(
+        "authenticated: accepted_position={} capabilities={:?}",
+        connection.accepted_position(),
+        connection.enabled_capabilities()
+    );
 
     let payload = format!("register-me heartbeat from {}", saved.node_id).into_bytes();
     let payload_digest = Sha256::digest(&payload).to_vec();
@@ -272,20 +223,15 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
     let signing_bytes = envelope_signing_bytes(&event);
     event.signature = signing_key.sign(&signing_bytes).to_bytes().to_vec();
 
-    tx.send(v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::EventBatch(v1::EventBatch {
-            events: vec![event],
-        })),
-    })
-    .await
-    .map_err(|error| error.to_string())?;
-
-    let receipt_frame = inbound
-        .message()
+    let receipt = connection
+        .exchange_event_batch(v1::NodeFrame {
+            frame: Some(v1::node_frame::Frame::EventBatch(v1::EventBatch {
+                events: vec![event],
+            })),
+        })
         .await
-        .map_err(|error| error.to_string())?
-        .ok_or("stream closed before BatchReceipt")?;
-    println!("batch_receipt: {receipt_frame:?}");
+        .map_err(|error| format!("publishing the heartbeat failed: {error}"))?;
+    println!("batch_receipt: {receipt:?}");
     println!();
     println!("{} is enrolled and synchronizing.", saved.node_id);
     Ok(())
