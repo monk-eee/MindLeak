@@ -15,6 +15,7 @@ use ackplane_bridge::live_feed::{live_feed_routes, LiveFeedApiState};
 use ackplane_bridge::shared_assets::shared_asset_routes;
 use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
 use ackplane_bridge::work_api::{work_routes, WorkApiState};
+use ackplane_bridge::work_command_api::{work_command_routes, WorkCommandApiState};
 use ackplane_bridge::BridgeConfig;
 use ackplane_server::administration_store::AdministrationStore;
 use ackplane_server::claim_store::ClaimStore;
@@ -33,6 +34,7 @@ use ackplane_server::readiness::ReadinessStore;
 use ackplane_server::snapshot_provider::SnapshotProviderConfig;
 use ackplane_server::supervisor_store::SupervisorStore;
 use ackplane_server::telemetry_store::TelemetryStore;
+use ackplane_server::work_command_store::WorkCommandService;
 use ackplane_server::work_store::WorkStore;
 use axum::{
     response::{Html, IntoResponse},
@@ -216,6 +218,15 @@ async fn main() {
             return;
         }
     };
+    let work_command_service = match WorkCommandService::connect(config.database_url()).await {
+        Ok(commands) => Arc::new(Mutex::new(commands)),
+        Err(error) => {
+            eprintln!(
+                "ackplane-bridge: could not connect to Ackplane's Work command domain: {error}"
+            );
+            return;
+        }
+    };
     let design_store = match DesignStore::connect(config.database_url()).await {
         Ok(design) => Arc::new(Mutex::new(design)),
         Err(error) => {
@@ -276,6 +287,8 @@ async fn main() {
         HumanDecisionApiState::new(human_decision_store, fleet_store.clone(), tenant_id.clone());
     let work_api_state =
         WorkApiState::new(work_store.clone(), fleet_store.clone(), tenant_id.clone());
+    let work_command_api_state =
+        WorkCommandApiState::new(work_command_service, fleet_store.clone(), tenant_id.clone());
     let administration_api_state = AdministrationApiState::with_claims(
         fleet_store.clone(),
         tenant_id.clone(),
@@ -370,6 +383,7 @@ async fn main() {
         .merge(supervisor_routes(supervisor_api_state))
         .merge(live_feed_routes(live_feed_api_state))
         .merge(work_routes(work_api_state))
+        .merge(work_command_routes(work_command_api_state))
         .merge(design_routes(design_api_state))
         .merge(shared_asset_routes());
     let listener = match tokio::net::TcpListener::bind(config.listen).await {

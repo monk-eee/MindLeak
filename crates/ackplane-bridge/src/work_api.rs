@@ -9,6 +9,7 @@ use std::{sync::Arc, time::SystemTime};
 
 use ackplane_server::{
     fleet::FleetStore,
+    work_command_store::AUTHORIZATION_UNAVAILABLE_REASON as COMMAND_AUTHORIZATION_UNAVAILABLE_REASON,
     work_command_vocabulary::WORK_COMMAND_OPERATIONS,
     work_store::{
         ClaimsOnlyWork, WorkDoctorFinding, WorkPublication, WorkStore, WorkStoreError, WorkTask,
@@ -30,8 +31,6 @@ const DEFAULT_PAGE_SIZE: i64 = 20;
 const MAX_PAGE_SIZE: i64 = 100;
 /// A wait unanswered longer than this is worth an operator's attention.
 const UNANSWERED_WAIT_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
-const COMMAND_AUTHORIZATION_UNAVAILABLE_REASON: &str =
-    "The Bridge loopback developer profile has no verified principal or authorization verifier.";
 
 #[derive(Clone)]
 pub struct WorkApiState {

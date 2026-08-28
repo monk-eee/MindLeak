@@ -111,6 +111,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ackplane-workctl"
+version = "0.1.7-alpha"
+dependencies = [
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
