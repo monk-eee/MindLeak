@@ -187,6 +187,49 @@ impl NodeSyncConnection {
     pub async fn recv(&mut self) -> Result<Option<v1::AckplaneFrame>, ClientError> {
         Ok(self.rx.message().await?)
     }
+
+    /// Send one supervisor frame and wait for the receipt it earns.
+    ///
+    /// The handshake already turns a refusal into a typed error. Without the
+    /// same treatment here the authenticated phase is harder to get right than
+    /// the handshake was: a refusal arrives as an ordinary frame, so a caller
+    /// that only looked for its receipt would wait for one that is never coming
+    /// and report a timeout instead of the reason the server gave it.
+    ///
+    /// Flow control and notices are server housekeeping and are stepped over.
+    /// Anything else is returned as an error naming it, so that a directive --
+    /// which this slice does not yet handle -- is never silently dropped.
+    pub async fn exchange_supervisor_frame(
+        &mut self,
+        frame: v1::NodeFrame,
+    ) -> Result<v1::SupervisorFrameReceipt, ClientError> {
+        self.send(frame).await?;
+        loop {
+            let Some(envelope) = self.recv().await? else {
+                return Err(ClientError::UnexpectedFrame {
+                    expected: "SupervisorFrameReceipt",
+                    got: "a closed stream",
+                });
+            };
+            let Some(frame) = envelope.frame else {
+                continue;
+            };
+            match frame {
+                v1::ackplane_frame::Frame::SupervisorFrameReceipt(receipt) => return Ok(receipt),
+                v1::ackplane_frame::Frame::Rejection(rejection) => {
+                    return Err(frame_refused(rejection))
+                }
+                v1::ackplane_frame::Frame::FlowControl(_)
+                | v1::ackplane_frame::Frame::Notice(_) => continue,
+                other => {
+                    return Err(ClientError::UnexpectedFrame {
+                        expected: "SupervisorFrameReceipt",
+                        got: frame_name(&other),
+                    })
+                }
+            }
+        }
+    }
 }
 
 async fn send(tx: &mpsc::Sender<v1::NodeFrame>, frame: v1::NodeFrame) -> Result<(), ClientError> {
@@ -213,6 +256,16 @@ fn refused(rejection: v1::Rejection) -> ClientError {
     let reason =
         v1::RejectionReason::try_from(rejection.reason).unwrap_or(v1::RejectionReason::Unspecified);
     ClientError::ConnectionRefused {
+        reason,
+        retryable: rejection.retryable,
+        diagnostic: rejection.diagnostic,
+    }
+}
+
+fn frame_refused(rejection: v1::Rejection) -> ClientError {
+    let reason =
+        v1::RejectionReason::try_from(rejection.reason).unwrap_or(v1::RejectionReason::Unspecified);
+    ClientError::FrameRefused {
         reason,
         retryable: rejection.retryable,
         diagnostic: rejection.diagnostic,
