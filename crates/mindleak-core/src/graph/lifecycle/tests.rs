@@ -135,7 +135,14 @@ fn reset_database_requires_exact_token_and_clears_memory_state() {
         .try_acquire_consolidation_lease("reset-test", NOW, 300, 60)
         .unwrap());
 
-    assert!(graph.reset_database("yes").is_err());
+    // Regression: this must be InvalidArgument, not the generic Other, so the
+    // MCP tool layer can record it as `refused` rather than `error` telemetry
+    // -- see gaps.d/a-refused-call-is-counted-as-a-failed-call.md.
+    let rejected = graph.reset_database("yes").unwrap_err();
+    assert!(matches!(
+        rejected,
+        crate::error::MindLeakError::InvalidArgument(_)
+    ));
     assert!(graph.get_node("artifact:a").unwrap().is_some());
 
     let outcome = graph.reset_database("RESET MINDLEAK").unwrap();
