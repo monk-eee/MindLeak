@@ -12,6 +12,7 @@ use crate::{
     supervisor_store::SupervisorStore, work_store::WorkStore,
 };
 
+mod directive_delivery;
 mod directive_receipt;
 mod frame;
 mod handshake;
@@ -19,6 +20,16 @@ mod supervisor;
 mod work_ingress;
 
 use frame::{handle_frame, must_terminate_after};
+
+/// Whether a response frame is an accepted supervisor receipt rather than a
+/// rejection. Directive delivery is gated on this: a session the server just
+/// refused is not a session it may then address work to.
+fn is_supervisor_receipt(frame: &v1::AckplaneFrame) -> bool {
+    matches!(
+        &frame.frame,
+        Some(v1::ackplane_frame::Frame::SupervisorFrameReceipt(_))
+    )
+}
 
 /// What an envelope claims about which key signed it, owned rather than
 /// borrowed so it can cross the injected lookup's async boundary.
@@ -201,12 +212,17 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                             )),
                             _ => None,
                         };
-                        let responses =
-                            match authenticated_identity {
-                                Some((tenant_id, repository_id, node_id))
-                                    if supervisor::is_supervisor_frame(&frame) =>
-                                {
-                                    if let Some(supervisor) = supervisor.as_ref() {
+                        let responses = match authenticated_identity {
+                            Some((tenant_id, repository_id, node_id))
+                                if supervisor::is_supervisor_frame(&frame) =>
+                            {
+                                if let Some(supervisor) = supervisor.as_ref() {
+                                    // Read before the frame is consumed: a
+                                    // session frame names the directive
+                                    // target this connection may now be
+                                    // owed work for.
+                                    let addressed = directive_delivery::addressed_session(&frame);
+                                    let mut responses = {
                                         let mut store = supervisor.lock().await;
                                         supervisor::handle_authenticated_frame(
                                             frame,
@@ -216,56 +232,52 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                             &mut store,
                                         )
                                         .await
-                                    } else {
-                                        vec![supervisor::unavailable_frame()]
-                                    }
-                                }
-                                Some((tenant_id, repository_id, node_id))
-                                    if directive_receipt::is_directive_receipt_frame(&frame) =>
-                                {
-                                    if let (Some(supervisor), Some(directives)) =
-                                        (supervisor.as_ref(), directives.as_ref())
+                                    };
+                                    // Only after the session itself was
+                                    // accepted: delivering against a
+                                    // refused session would address a
+                                    // session the server does not hold.
+                                    if let (Some(agent_session_id), Some(directives)) =
+                                        (addressed, directives.as_ref())
                                     {
-                                        let outcome = {
-                                            let mut store = directives.lock().await;
-                                            directive_receipt::record_authenticated_receipt(
-                                                frame,
+                                        if responses.iter().any(is_supervisor_receipt) {
+                                            let store = directives.lock().await;
+                                            let pending = directive_delivery::pending_frames(
+                                                &store,
                                                 &tenant_id,
                                                 &repository_id,
                                                 &node_id,
-                                                &mut store,
+                                                &agent_session_id,
                                             )
-                                            .await
-                                        };
-                                        match outcome {
-                                            Ok(outcome) => {
-                                                let store = supervisor.lock().await;
-                                                match directive_receipt::acknowledgement(
-                                                    outcome,
-                                                    &tenant_id,
-                                                    &repository_id,
-                                                    &store,
-                                                )
-                                                .await
-                                                {
-                                                    Ok(frame) => vec![frame],
-                                                    Err(error) => {
-                                                        vec![directive_receipt::rejection(error)]
-                                                    }
-                                                }
-                                            }
-                                            Err(error) => vec![directive_receipt::rejection(error)],
+                                            .await;
+                                            // Directives precede the
+                                            // receipt so the receipt acts
+                                            // as a delivery barrier: a
+                                            // client that reads until its
+                                            // receipt has necessarily
+                                            // already seen every directive
+                                            // delivered with it. Sending
+                                            // them afterwards would leave
+                                            // the client guessing how long
+                                            // to wait for frames that may
+                                            // never come.
+                                            responses.splice(0..0, pending);
                                         }
-                                    } else {
-                                        vec![directive_receipt::unavailable_frame()]
                                     }
+                                    responses
+                                } else {
+                                    vec![supervisor::unavailable_frame()]
                                 }
-                                Some((tenant_id, repository_id, node_id))
-                                    if work_ingress::is_work_task_create_frame(&frame) =>
+                            }
+                            Some((tenant_id, repository_id, node_id))
+                                if directive_receipt::is_directive_receipt_frame(&frame) =>
+                            {
+                                if let (Some(supervisor), Some(directives)) =
+                                    (supervisor.as_ref(), directives.as_ref())
                                 {
-                                    if let Some(work) = work.as_ref() {
-                                        let mut store = work.lock().await;
-                                        work_ingress::handle_authenticated_frame(
+                                    let outcome = {
+                                        let mut store = directives.lock().await;
+                                        directive_receipt::record_authenticated_receipt(
                                             frame,
                                             &tenant_id,
                                             &repository_id,
@@ -273,11 +285,49 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                             &mut store,
                                         )
                                         .await
-                                    } else {
-                                        vec![work_ingress::unavailable_frame()]
+                                    };
+                                    match outcome {
+                                        Ok(outcome) => {
+                                            let store = supervisor.lock().await;
+                                            match directive_receipt::acknowledgement(
+                                                outcome,
+                                                &tenant_id,
+                                                &repository_id,
+                                                &store,
+                                            )
+                                            .await
+                                            {
+                                                Ok(frame) => vec![frame],
+                                                Err(error) => {
+                                                    vec![directive_receipt::rejection(error)]
+                                                }
+                                            }
+                                        }
+                                        Err(error) => vec![directive_receipt::rejection(error)],
                                     }
+                                } else {
+                                    vec![directive_receipt::unavailable_frame()]
                                 }
-                                _ => handle_frame(
+                            }
+                            Some((tenant_id, repository_id, node_id))
+                                if work_ingress::is_work_task_create_frame(&frame) =>
+                            {
+                                if let Some(work) = work.as_ref() {
+                                    let mut store = work.lock().await;
+                                    work_ingress::handle_authenticated_frame(
+                                        frame,
+                                        &tenant_id,
+                                        &repository_id,
+                                        &node_id,
+                                        &mut store,
+                                    )
+                                    .await
+                                } else {
+                                    vec![work_ingress::unavailable_frame()]
+                                }
+                            }
+                            _ => {
+                                handle_frame(
                                     frame,
                                     flow_control,
                                     &mut state,
@@ -296,8 +346,9 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                         }
                                     },
                                 )
-                                .await,
-                            };
+                                .await
+                            }
+                        };
                         let terminate =
                             must_terminate_after(&responses) || state == ConnectionState::Rejected;
                         for frame in responses {

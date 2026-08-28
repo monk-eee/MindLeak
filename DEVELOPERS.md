@@ -291,6 +291,25 @@ Then paste newline-delimited JSON-RPC requests on stdin, e.g.:
 > Pipe a request file to the server's stdin from any shell/harness — it reads
 > one JSON object per line: `mindleak-mcp < in.jsonl > out.jsonl`.
 
+A persistent editor MCP connection can break for one client session and not
+recover on its own, even across a window reload (see
+[`gaps.d/mcp-server-processes-accumulate-per-editor-window.md`](gaps.d/mcp-server-processes-accumulate-per-editor-window.md)),
+while the underlying binaries and their SQLite-backed state stay unaffected —
+`scripts/canonical-push.mjs` already drives a fresh instance of them over stdio
+on every publish regardless of any editor's connection. `scripts/mcp-direct.mjs`
+makes that same mechanism runnable on its own:
+
+```bash
+node scripts/mcp-direct.mjs <lodestar|mindleak> <calls.json>
+```
+
+where `calls.json` is `[{"name": "...", "arguments": {...}}, ...]`, the same
+shape `scripts/claim-gate.mjs`'s `callTools` already takes. A batch must be one
+invocation — each server process is stateless across invocations, so
+`open_session` and everything that depends on it have to run in the same call
+to see it. A session that has lost its editor connection is not thereby forced
+to skip claiming, checking overlap, or recording evidence.
+
 ## Debugging the extension
 
 ```bash
