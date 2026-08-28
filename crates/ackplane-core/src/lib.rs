@@ -172,9 +172,10 @@ pub enum CoordinationModeError {
         "MINDLEAK_COORDINATION_MODE is `federated`, but this build carries no Ackplane \
          client, so it cannot reach any arbiter. Continuing locally would create a second \
          arbiter for the claims this repository expects Ackplane to own (ADR-0082, \
-         ADR-0045), so this is refused rather than downgraded. Install a build that \
-         includes the client, or declare `local` to coordinate with the repository-local \
-         stores."
+         ADR-0045), so this is refused rather than downgraded. Released binaries include \
+         the client, so reinstalling from a release resolves this; a build from source \
+         needs `--features federation-client`. Or declare `local` to coordinate with the \
+         repository-local stores."
     )]
     NoFederationClient,
     #[error(
@@ -436,10 +437,23 @@ mod tests {
                 "{readiness:?} must report its own cause"
             );
             let rebuild_is_the_remedy = matches!(readiness, FederationReadiness::NoClient);
+            // Assert the invariant, not one phrasing of it: only the missing
+            // client is fixed by changing the binary, so only that message may
+            // name the concrete way to get a different one. Checking for the
+            // feature flag rather than a sentence fragment keeps this honest
+            // through rewording -- the previous proxy string ("Install a
+            // build") silently stopped matching when the remedy was corrected
+            // to name a release, which is the one place that remedy is now
+            // actually obtainable.
             assert_eq!(
-                message.contains("Install a build"),
+                message.contains("--features federation-client"),
                 rebuild_is_the_remedy,
                 "only a missing client is fixed by changing the binary: {message}"
+            );
+            assert_eq!(
+                message.contains("Rebuilding will not help"),
+                !rebuild_is_the_remedy,
+                "a cause a new binary cannot fix must say so outright: {message}"
             );
         }
     }

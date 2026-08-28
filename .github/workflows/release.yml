@@ -146,9 +146,18 @@ jobs:
       - name: Install extension release dependencies
         run: npm --prefix editors/vscode ci
       - name: Build servers
+        # ADR-0105 decision 3: the Local/Industrial profile is a *runtime*
+        # declaration (MINDLEAK_COORDINATION_MODE / the repository's git
+        # config), so a shipped binary must be able to honour either answer.
+        # Built without this feature, `federated` resolves to
+        # CoordinationModeError::NoFederationClient, whose remedy is "install a
+        # build that includes the client" -- a build no release contained.
+        # Linking the client does not make Local reach the network: the
+        # authority is only constructed when the resolved mode is Federated.
         run: >-
           cargo build --release --locked --target ${{ matrix.target }}
           -p mindleak-mcp -p lodestar-mcp
+          --features mindleak-mcp/federation-client,lodestar-mcp/federation-client
       - name: Smoke test native servers
         uses: actions/github-script@v7
         env:

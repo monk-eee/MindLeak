@@ -101,6 +101,11 @@ The binaries land at `target/release/mindleak-mcp` and
 `target/release/lodestar-mcp` (`.exe` on Windows). Then register them manually —
 the next step.
 
+This build coordinates through the local SQLite stores. Released binaries also
+carry the Ackplane client so they can honour
+`MINDLEAK_COORDINATION_MODE=federated`; to match that from source, add
+`--features mindleak-mcp/federation-client,lodestar-mcp/federation-client`.
+
 ---
 
 ## 2. Register manually (only when not using the installer)
