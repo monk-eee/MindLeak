@@ -62,9 +62,37 @@ fn the_server_completes_a_handshake_and_advertises_its_tool_over_stdio() {
     assert_eq!(responses[0]["id"], 1);
     assert_eq!(responses[0]["result"]["serverInfo"]["name"], "ackplane-mcp");
     assert_eq!(responses[1]["id"], 2);
-    assert_eq!(
-        responses[1]["result"]["tools"][0]["name"],
-        "check_enrollment_status"
+    assert_eq!(responses[1]["result"]["tools"][0]["name"], "open_session");
+}
+
+/// ADR-0137 clause 2 end to end: `open_session` works over the real process's
+/// stdio even with no Ackplane endpoint reachable, because it never dials one.
+#[test]
+fn open_session_returns_a_real_agent_id_over_stdio() {
+    let responses = exchange(
+        &[("ACKPLANE_MCP_ENDPOINT", "http://127.0.0.1:8443")],
+        &[request(
+            1,
+            "tools/call",
+            json!({
+                "name": "open_session",
+                "arguments": { "session_id": "0123456789abcdef0123456789abcdef" }
+            }),
+        )],
+    );
+
+    assert_eq!(responses.len(), 1, "got: {responses:?}");
+    assert_eq!(responses[0]["result"]["isError"], false);
+    let content: Value = responses[0]["result"]["content"][0]["text"]
+        .as_str()
+        .and_then(|text| serde_json::from_str(text).ok())
+        .expect("open_session's content is a JSON body");
+    assert!(
+        content["agent_id"]
+            .as_str()
+            .expect("agent_id is a string")
+            .starts_with("session:v1:"),
+        "got: {content}"
     );
 }
 
