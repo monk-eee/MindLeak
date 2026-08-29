@@ -7,6 +7,9 @@
 - Refines: [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (this
   is the agent/MCP-facing half of feature parity; ADR-0105 defined the
   human/browser-facing half)
+- Refined by: [ADR-0137](0137-ackplane-mcp-authenticates-by-borrowing-an-enrolled-node-key.md)
+  (resolves decision 4's authenticated-principal question: reuse the
+  enrolled node's key rather than minting a new principal type)
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (Ackplane is the standalone service being fronted),
   [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md)
@@ -154,6 +157,9 @@ engine, and it does not fork `mindleak-core`/`lodestar-core` onto Postgres.**
    pending "a real second tenant"; `ackplane-mcp` is plausibly that tenant, but
    the authentication decision itself belongs to its own follow-up ADR.
 
+   > Resolved by [ADR-0137](0137-ackplane-mcp-authenticates-by-borrowing-an-enrolled-node-key.md):
+   > reuse the enrolled-node principal, narrowly, exactly as anticipated above.
+
 5. **Nothing about the Local profile changes.** `mindleak-mcp`/`lodestar-mcp`
    keep their stdio-only, no-network-listener contract — the active
    `local-only-security-boundary` constraint — exactly as-is. A developer who
@@ -193,10 +199,10 @@ engine, and it does not fork `mindleak-core`/`lodestar-core` onto Postgres.**
 - `mindleak-core`/`lodestar-core`'s existing `rusqlite`-only footprint is left
   exactly as it is today — there is no urgency to abstract either crate behind
   a storage trait it was never asked to serve.
-- Follow-up ADRs are needed for: (a) the authenticated principal for a
-  non-enrolled MCP client, (b) task/claim domain parity between Industrial
-  Work and Lodestar's full task board, (c) a `pgvector`-backed recall store
-  for the projected graph.
+- Follow-up ADRs are needed for: (a) ~~the authenticated principal for a
+  non-enrolled MCP client~~ resolved by ADR-0137, (b) task/claim domain parity
+  between Industrial Work and Lodestar's full task board, (c) a
+  `pgvector`-backed recall store for the projected graph.
 
 ## Rejected alternatives
 
