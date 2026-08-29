@@ -192,7 +192,7 @@ which made outlier detection trivial in a way a 19,000-node index is not.
 The constant is deliberately **not** tuned in response. Three nonsense samples
 separated from real questions by a negative margin is precisely the "global
 constant" that
-[the recall floor's own measurement](../gaps.d/the-recall-floor-cannot-rank-and-raising-it.md)
+[the recall floor's own measurement](./KNOWN-LIMITATIONS.md)
 warns against, and tuning to it would repeat that mistake one level up. What the
 result actually says is that distinctiveness-as-a-threshold is the wrong shape
 for "does this query have an answer at all", and that question remains open.
