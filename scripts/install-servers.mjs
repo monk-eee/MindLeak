@@ -91,19 +91,26 @@ export function installOne(source, destination, now = Date.now()) {
  */
 export const SUPERSEDED_SUFFIXES = [".old", ".superseded"];
 
-/** Delete the binaries earlier installs and deploys set aside, once unlocked. */
+/**
+ * Delete the binaries earlier installs and deploys set aside, once unlocked.
+ *
+ * A set-aside binary that refuses to delete is not just "try again later": a
+ * process still holds it, which is the only portable evidence available here
+ * that a server is still running the code this install replaced. Report it.
+ */
 export function pruneSupersededInstalls(directory) {
   let pruned = 0;
+  let held = 0;
   for (const entry of fs.readdirSync(directory)) {
     if (!SUPERSEDED_SUFFIXES.some((suffix) => entry.endsWith(suffix))) continue;
     try {
       fs.rmSync(path.join(directory, entry));
       pruned += 1;
     } catch {
-      // Still held by a running server; the next prune will get it.
+      held += 1;
     }
   }
-  return pruned;
+  return { pruned, held };
 }
 
 function main() {
@@ -113,7 +120,9 @@ function main() {
   // install, and a deploy that copies a fresh build in by hand never performs
   // one — which is how 68 MiB of set-aside binaries accumulated unnoticed.
   if (process.argv.slice(2).includes("--prune")) {
-    reportPruned(pruneSupersededInstalls(directory), directory);
+    const collected = pruneSupersededInstalls(directory);
+    reportPruned(collected, directory);
+    reportHeld(collected.held);
     return;
   }
 
@@ -139,18 +148,38 @@ function main() {
       `install-servers: ${path.relative(workspace, source)} -> ${destination}`,
     );
   }
-  const pruned = pruneSupersededInstalls(directory);
+  const { pruned, held } = pruneSupersededInstalls(directory);
   if (pruned > 0) {
     console.log(`install-servers: removed ${supersededCount(pruned)}`);
   }
   console.log(
     "install-servers: restart the MCP servers (or reload the window) so clients pick these up",
   );
+  reportHeld(held);
 }
 
 const supersededCount = (n) => `${n} superseded binar${n === 1 ? "y" : "ies"}`;
 
-function reportPruned(pruned, directory) {
+/**
+ * Name the servers that are demonstrably still serving the replaced code.
+ *
+ * Windows refuses to delete a binary a live process holds, so a held count is a
+ * direct measurement, not a guess — and the difference matters, because a fixed
+ * binary on disk changes nothing until every process running the old one stops.
+ * Unix unlinks a running binary happily, so a quiet result there means "no
+ * evidence", never "nothing is running".
+ */
+function reportHeld(held) {
+  if (held < 1) return;
+  console.log(
+    `install-servers: ${supersededCount(held)} could not be removed because a process still holds ${
+      held === 1 ? "it" : "them"
+    }.\n` +
+      `  Those servers are still running the code this install replaced, so the change is not live until they restart.`,
+  );
+}
+
+function reportPruned({ pruned }, directory) {
   console.log(
     pruned > 0
       ? `install-servers: removed ${supersededCount(pruned)} from ${directory}`
