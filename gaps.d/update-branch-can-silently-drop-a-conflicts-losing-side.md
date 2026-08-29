@@ -55,10 +55,42 @@
   GitHub behaviour itself, and a merge produced any other way (for example
   the web UI merge button), which no local guard can see.
 
-  **What this changes for now:** do not trust "the PR merged with green checks"
-  as proof a diff landed intact when the branch went through an automated
-  `update-branch` step against a `main` that moved concurrently, unless that
-  step was this queue's own guarded call, or a manual run through
-  `scripts/update-branch-safely.mjs`. Diff the
+  **CLOSED 2026-08-29 for detection, at every call site including the web UI
+  merge button.** Both guards above are prospective and site-local: they check
+  the merge they are about to make. `scripts/merge-audit.mjs` now makes the same
+  comparison retrospectively, against merge commits already on `main`, in the CI
+  job that runs on every push there — so it does not matter which button made
+  the merge, or whether any local script was involved at all. For each merged
+  pull request it recomputes `git merge-tree --write-tree <merge>^1 <merge>^2`
+  and compares that against the merge commit's own tree; a mismatch fails the
+  build and names both trees (`mergeIsFaithful`). Two properties make this the
+  right shape rather than a third copy of the same idea:
+
+  - **It survives branch deletion.** A merge commit keeps both parents, so this
+    works after GitHub deletes the branch — unlike the `git cherry` half of the
+    same audit, which was measured on CI run 99036902566 silently skipping 10 of
+    the 30 pull requests it was asked about while reporting only the 20 it
+    managed. That summary line now states the whole population and names the
+    branches it could not fully check.
+  - **It is quiet.** Verified across `main`'s last 120 merge commits: 115
+    compared and matched, 5 honestly uncomparable (no second parent, or a real
+    conflict a human resolved, where the tree is *supposed* to differ),
+    0 mismatches. An audit that cries wolf gets switched off.
+
+  A first attempt at this recovered the deleted branch's tip from `<merge>^2`
+  and ran `git cherry` against it. That was discarded before it shipped, and the
+  test is why: the recovered tip is an ancestor of the base *by construction*, so
+  the comparison could only ever answer "clean". It would have read as new
+  coverage while checking nothing — worse than the gap it replaced.
+
+  **Still open:** the root cause in GitHub's own merge algorithm, which remains
+  undiagnosed. Detection is now retrospective and complete for merge-commit
+  merges; prevention still depends on GitHub. A squash or rebase merge has no
+  second parent and cannot be checked this way at all, which is one more reason
+  those buttons stay disabled on this repository.
+
+  **What this changes for now:** "the PR merged with green checks" is now
+  actually verified after the fact, so a lossy merge fails `main`'s own build
+  rather than sitting undetected. Until that build has run, still diff the
   actual files on `origin/main` against what the PR's own commits show,
   especially for any file two recently-merged PRs both touched.
