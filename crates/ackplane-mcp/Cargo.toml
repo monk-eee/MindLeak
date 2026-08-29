@@ -1,0 +1,21 @@
+[package]
+name = "ackplane-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "MCP front door that translates tool calls into Ackplane's typed gRPC services (ADR-0136)."
+
+[[bin]]
+name = "ackplane-mcp"
+path = "src/main.rs"
+
+[dependencies]
+ackplane-client = { path = "../ackplane-client" }
+ackplane-protocol = { path = "../ackplane-protocol" }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
