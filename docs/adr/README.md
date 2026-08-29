@@ -146,6 +146,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0138](0138-a-known-limitation-is-not-a-gap.md) | A known limitation is not a gap | Accepted |
 | [0139](0139-ackplane-mcp-task-surface-scopes-to-existing-claim-and-read-authority.md) | `ackplane-mcp`'s task surface scopes to Ackplane's existing claim and read authority, not full Lodestar parity | Accepted |
 | [0140](0140-a-pgvector-recall-store-scoped-to-projected-nodes.md) | A `pgvector` recall store scoped to `projected_nodes`, not the curated `knowledge` domain | Accepted |
+| [0141](0141-ackplane-reports-its-own-supervisor-position.md) | Ackplane reports its own supervisor position, not the client's echo | Proposed |
 
 ## Writing a new ADR
 
