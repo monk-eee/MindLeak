@@ -136,6 +136,26 @@ impl SupervisorOutbox {
     pub fn session(&self) -> &SupervisorSession {
         &self.session
     }
+
+    /// What this outbox can prove about its own progress, for reconnect
+    /// reconciliation (ADR-0116 decision 7).
+    pub fn positions(&self) -> Result<OutboxPositions, OutboxError> {
+        let (acknowledged, last_enqueued) = crate::storage::outbound_positions(&self.conn)?;
+        Ok(OutboxPositions {
+            acknowledged: acknowledged.max(0) as u64,
+            last_enqueued: last_enqueued.max(0) as u64,
+        })
+    }
+}
+
+/// One outbox's durable progress: what it can prove was accepted, and what it
+/// has queued behind that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutboxPositions {
+    /// The highest sequence this supervisor can prove the server accepted.
+    pub acknowledged: u64,
+    /// The highest sequence this supervisor ever enqueued locally.
+    pub last_enqueued: u64,
 }
 
 /// Whether an enqueue inserted a frame or replayed an identical durable frame.

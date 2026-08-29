@@ -33,18 +33,11 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request;
 
-use ackplane_protocol::v1::{
-    self, node_enrollment_service_client::NodeEnrollmentServiceClient,
-    node_sync_service_client::NodeSyncServiceClient,
-};
-use ackplane_server::enrollment::{
-    activation_challenge_bytes, connection_challenge_bytes, public_key_fingerprint,
-    ConnectionChallengeBinding,
-};
+use ackplane_client::{auth::SeedSigner, node_sync::NodeSyncConnection};
+use ackplane_protocol::v1::{self, node_enrollment_service_client::NodeEnrollmentServiceClient};
+use ackplane_server::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::enrollment_store::{EnrollmentApproval, EnrollmentStore};
 use ackplane_server::envelope_signature::envelope_signing_bytes;
 use ackplane_server::projection::{StructuralFact, STRUCTURAL_FACT_PAYLOAD_TYPE};
@@ -190,64 +183,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signing_key_id = activation.signing_key_id.clone();
     println!("assigned signing_key_id = {signing_key_id}");
 
-    // 4. The real NodeSync stream: Hello -> ConnectionChallenge ->
-    // ChallengeResponse -> HelloAccepted -> FlowControl, then one signed event.
-    let mut sync_client = NodeSyncServiceClient::connect(grpc_endpoint).await?;
-    let (tx, rx) = mpsc::channel::<v1::NodeFrame>(4);
-    let response = sync_client
-        .synchronize(Request::new(ReceiverStream::new(rx)))
-        .await?;
-    let mut inbound = response.into_inner();
-
-    tx.send(v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::Hello(v1::Hello {
-            tenant_id: tenant_id.clone(),
-            repository_id: repository_id.clone(),
-            producer_id: node_id.clone(),
-            last_accepted_position: 0,
-            capabilities: vec!["synchronize".to_string()],
-            signing_key_id: signing_key_id.clone(),
-        })),
-    })
+    // 4. The real NodeSync stream: the client's own connection performs
+    // Hello -> ConnectionChallenge -> ChallengeResponse -> HelloAccepted ->
+    // FlowControl, then carries one signed event.
+    let signer = SeedSigner::new(&signing_key_id, &node_id, &signing_key.to_bytes());
+    let mut connection = NodeSyncConnection::open(
+        &grpc_endpoint,
+        &signer,
+        &tenant_id,
+        &repository_id,
+        vec!["synchronize".to_string()],
+        0,
+    )
     .await?;
-
-    let challenge_frame = inbound
-        .message()
-        .await?
-        .ok_or("stream closed before ConnectionChallenge")?;
-    let nonce = match challenge_frame.frame {
-        Some(v1::ackplane_frame::Frame::ConnectionChallenge(challenge)) => challenge.nonce,
-        other => return Err(format!("expected ConnectionChallenge, got {other:?}").into()),
-    };
-    let connection_signature = signing_key
-        .sign(&connection_challenge_bytes(&ConnectionChallengeBinding {
-            nonce: &nonce,
-            tenant_id: &tenant_id,
-            repository_id: &repository_id,
-            producer_id: &node_id,
-            signing_key_id: &signing_key_id,
-        }))
-        .to_bytes()
-        .to_vec();
-    tx.send(v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::ChallengeResponse(
-            v1::ChallengeResponse {
-                signature: connection_signature,
-            },
-        )),
-    })
-    .await?;
-
-    let accepted_frame = inbound
-        .message()
-        .await?
-        .ok_or("stream closed before HelloAccepted")?;
-    println!("hello_accepted -> {accepted_frame:?}");
-    let flow_control_frame = inbound
-        .message()
-        .await?
-        .ok_or("stream closed before FlowControl")?;
-    println!("flow_control -> {flow_control_frame:?}");
+    println!(
+        "authenticated -> accepted_position={} capabilities={:?}",
+        connection.accepted_position(),
+        connection.enabled_capabilities()
+    );
 
     // 5. One real signed event carrying a genuine structural fact -- one node
     // representing this repository -- so the ledger's stream head actually
@@ -283,20 +236,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .to_bytes()
         .to_vec();
 
-    tx.send(v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::EventBatch(v1::EventBatch {
-            events: vec![wire],
-        })),
-    })
-    .await?;
+    let receipt = connection
+        .exchange_event_batch(v1::NodeFrame {
+            frame: Some(v1::node_frame::Frame::EventBatch(v1::EventBatch {
+                events: vec![wire],
+            })),
+        })
+        .await?;
+    println!("batch_receipt -> {receipt:?}");
 
-    let receipt_frame = inbound
-        .message()
-        .await?
-        .ok_or("stream closed before BatchReceipt")?;
-    println!("batch_receipt -> {receipt_frame:?}");
-
-    drop(tx);
     println!("enroll_and_sync example complete");
     Ok(())
 }

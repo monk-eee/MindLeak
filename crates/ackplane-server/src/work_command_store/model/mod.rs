@@ -70,7 +70,7 @@ impl WorkCommandKind {
     /// shared `work_command_vocabulary::WORK_COMMAND_OPERATIONS` constant
     /// by its persisted wire position (ADR-0125 decision 3: one canonical
     /// vocabulary, not a second copy a caller could let drift).
-    pub(crate) fn operation_name(self) -> &'static str {
+    pub fn operation_name(self) -> &'static str {
         crate::work_command_vocabulary::WORK_COMMAND_OPERATIONS[(self.as_i16() - 1) as usize]
     }
 }

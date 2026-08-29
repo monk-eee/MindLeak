@@ -78,7 +78,10 @@ test("an existing server is moved aside rather than overwritten, and its bytes a
   assert.equal(fs.readFileSync(`${destination}.1234.old`, "utf8"), "old build");
 
   // A second install prunes what the first left behind.
-  assert.equal(pruneSupersededInstalls(path.dirname(destination)), 1);
+  assert.deepEqual(pruneSupersededInstalls(path.dirname(destination)), {
+    pruned: 1,
+    held: 0,
+  });
   assert.equal(fs.existsSync(`${destination}.1234.old`), false);
   assert.equal(
     fs.existsSync(destination),
@@ -105,11 +108,42 @@ test("a binary renamed aside by a hand deploy is collected too, not just the ins
   );
   fs.writeFileSync(path.join(bin, "lodestar-mcp-1551270.exe"), "pinned");
 
-  assert.equal(pruneSupersededInstalls(bin), 2);
+  assert.deepEqual(pruneSupersededInstalls(bin), { pruned: 2, held: 0 });
 
   assert.deepEqual(fs.readdirSync(bin).sort(), [
     "lodestar-mcp-1551270.exe",
     "lodestar-mcp.exe",
+  ]);
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a set-aside binary that cannot be removed is reported as still held, not silently dropped", () => {
+  // A running server keeps its old binary open and Windows then refuses the
+  // delete. That refusal is the only portable evidence that the replaced code
+  // is still being served, and it used to be swallowed by a bare `catch`, so a
+  // fixed binary on disk read as a completed install while every live process
+  // carried on running the defect. Simulated with an entry `rmSync` refuses on
+  // every platform, because a genuinely locked file is not reproducible on all
+  // of them.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "install-servers-"));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "lodestar-mcp.exe"), "live");
+  fs.writeFileSync(path.join(bin, "mindleak-mcp.exe.1.old"), "collectable");
+  fs.mkdirSync(path.join(bin, "lodestar-mcp.exe.2.old"));
+  fs.writeFileSync(
+    path.join(bin, "lodestar-mcp.exe.2.old", "holds-it-open"),
+    "x",
+  );
+
+  assert.deepEqual(pruneSupersededInstalls(bin), { pruned: 1, held: 1 });
+
+  // The collectable one is gone, the held one is left for a later run, and the
+  // live binary is untouched either way.
+  assert.deepEqual(fs.readdirSync(bin).sort(), [
+    "lodestar-mcp.exe",
+    "lodestar-mcp.exe.2.old",
   ]);
 
   fs.rmSync(root, { recursive: true, force: true });

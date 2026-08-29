@@ -35,6 +35,10 @@ pub(crate) const RETRY_DELAY: Duration = Duration::from_millis(10);
 pub enum RepositoryStorageError {
     #[error("git command failed: {0}")]
     Git(String),
+    /// The workspace path names a directory that is not there. Distinct from a
+    /// directory that is simply outside Git, which stays a legitimate fallback.
+    #[error("workspace directory does not exist: {0}")]
+    MissingWorkspace(PathBuf),
     #[error("repository id must be exactly 32 lowercase hexadecimal characters: {0}")]
     InvalidRepositoryId(String),
     #[error("repository id bootstrap did not complete at {0}")]
@@ -383,6 +387,51 @@ mod tests {
         assert_eq!(fallback.origin, DatabaseOrigin::Workspace);
         assert_eq!(fallback.repository_id, None);
         assert_eq!(fallback.legacy_path, None);
+    }
+
+    /// Regression: a live session's own worktree can be reclaimed underneath it.
+    /// The workspace path then names a directory that is simply gone, so `git
+    /// rev-parse --git-common-dir` cannot even be spawned there and fails with
+    /// `NotFound` -- the same error kind as "git is not installed". The resolver
+    /// read that as "this was never a Git checkout" and silently handed back a
+    /// fresh, empty, workspace-local database with no repository id. The symptom
+    /// was `lodestar_stats` reporting 0 goals and 0 tasks where it had reported
+    /// hundreds moments before, with no error and no warning anywhere. A
+    /// directory that does not exist is never a legitimate workspace, so it is
+    /// refused instead of fabricated.
+    #[test]
+    fn a_workspace_that_no_longer_exists_is_refused_rather_than_silently_emptied() {
+        let sandbox = Sandbox::new("stale-workspace");
+        let reclaimed = sandbox.root.join("reclaimed");
+        fs::create_dir_all(&reclaimed).unwrap();
+        let state_root = sandbox.root.join("state");
+
+        // Present but outside Git: still a legitimate workspace-local fallback.
+        let present =
+            resolve_database_in(&reclaimed, DatabaseKind::Lodestar, None, &state_root).unwrap();
+        assert_eq!(present.origin, DatabaseOrigin::Workspace);
+
+        // Reclaimed out from under the still-running session.
+        fs::remove_dir_all(&reclaimed).unwrap();
+
+        let error = resolve_database_in(&reclaimed, DatabaseKind::Lodestar, None, &state_root)
+            .expect_err("a vanished workspace must not resolve to a fresh empty database");
+        assert!(
+            matches!(&error, RepositoryStorageError::MissingWorkspace(path) if path == &reclaimed),
+            "expected MissingWorkspace({}), got {error:?}",
+            reclaimed.display()
+        );
+
+        // An explicit database path does not depend on the workspace, so it
+        // still wins and must not be broken by the new refusal.
+        let explicit = resolve_database_in(
+            &reclaimed,
+            DatabaseKind::Lodestar,
+            Some("custom/spec.db"),
+            &state_root,
+        )
+        .unwrap();
+        assert_eq!(explicit.origin, DatabaseOrigin::Explicit);
     }
 
     /// Restores the prior `MINDLEAK_HOME` value on drop so this test cannot

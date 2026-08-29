@@ -82,6 +82,9 @@
   AGENTS.md already asks for — search the catalogue for a fragment covering the
   same gap before correcting one, not just the open pull requests for a file
   collision.
+
+  **Two mechanical checks were tried before concluding none can work, and the
+  measurement is recorded so it is not rebuilt.** Both were greps run over
   every fragment: the first flagged any fragment naming a live symbol near a
   negation word (39 of them), the second required the negation to sit adjacent
   to the symbol (11). Reading the 11 showed essentially all were false
@@ -94,6 +97,10 @@
   truth of a fragment lives in the code it describes, and nothing over its text
   can decide it. Recorded so the next agent does not spend the afternoon
   rebuilding the same two greps.
+
+  (The opening clause of that paragraph was missing — it began mid-sentence at
+  "every fragment:" — and was restored on 2026-08-29 from what the rest of the
+  paragraph states. No claim in it was changed.)
 
   No fix is proposed, because the obvious one is wrong. A status vocabulary rule
   would only ever check that a fragment agrees with itself. What the class needs

@@ -250,3 +250,29 @@ pub(crate) fn acknowledge_outbound_frames(
         params![sequence],
     )
 }
+
+/// The highest sequence this outbox can prove was acknowledged, and the
+/// highest it ever enqueued.
+///
+/// The acknowledged position is derived rather than stored: acknowledgement
+/// deletes frames, so the boundary is the sequence below the oldest surviving
+/// frame, or the whole queue when none survive. A second stored counter would
+/// be a value that can disagree with the rows it summarises, and the disagreement
+/// would only ever be discovered during a reconnect -- the one moment the number
+/// has to be trusted.
+pub(crate) fn outbound_positions(conn: &Connection) -> Result<(i64, i64), rusqlite::Error> {
+    let last_enqueued: i64 = conn.query_row(
+        "SELECT last_sequence FROM outbound_state WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let oldest_pending: Option<i64> =
+        conn.query_row("SELECT MIN(sequence) FROM outbound_frames", [], |row| {
+            row.get(0)
+        })?;
+    let acknowledged = match oldest_pending {
+        Some(oldest) => oldest - 1,
+        None => last_enqueued,
+    };
+    Ok((acknowledged, last_enqueued))
+}

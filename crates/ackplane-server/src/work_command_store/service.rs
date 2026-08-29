@@ -16,12 +16,12 @@ use super::{
     WorkCommandStore,
 };
 
-pub(super) const AUTHORIZATION_UNAVAILABLE_REASON: &str =
+pub const AUTHORIZATION_UNAVAILABLE_REASON: &str =
     "The Bridge loopback developer profile has no verified principal or authorization verifier.";
 
 /// A principal result trusted from a future authentication verifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct VerifiedWorkCommandPrincipal {
+pub struct VerifiedWorkCommandPrincipal {
     pub principal_id: String,
     pub tenant_id: String,
     pub repository_ids: Vec<String>,
@@ -32,7 +32,7 @@ pub(super) struct VerifiedWorkCommandPrincipal {
 
 /// The authentication result the service evaluates before touching a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum WorkCommandAuthorization {
+pub enum WorkCommandAuthorization {
     LoopbackDevelopment,
     MissingPrincipal,
     Verified(VerifiedWorkCommandPrincipal),
@@ -40,7 +40,7 @@ pub(super) enum WorkCommandAuthorization {
 
 /// A refusal that reveals no Work task, claim, or receipt existence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WorkCommandRefusal {
+pub enum WorkCommandRefusal {
     MissingPrincipal,
     ForgedPrincipal,
     TenantOutOfScope,
@@ -52,7 +52,7 @@ pub(super) enum WorkCommandRefusal {
 
 /// The command-service outcome before any Work or Claim state transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum WorkCommandServiceOutcome {
+pub enum WorkCommandServiceOutcome {
     AuthorizationUnavailable {
         reason: &'static str,
     },
@@ -77,7 +77,7 @@ pub(super) enum WorkCommandServiceOutcome {
 }
 
 #[derive(Debug, Error)]
-pub(super) enum WorkCommandServiceError {
+pub enum WorkCommandServiceError {
     #[error("work command store error: {0}")]
     Store(#[from] WorkCommandStoreError),
     #[error("work command connection error: {0}")]
@@ -85,19 +85,19 @@ pub(super) enum WorkCommandServiceError {
 }
 
 /// The authoritative, crate-internal command-service boundary.
-pub(super) struct WorkCommandService {
+pub struct WorkCommandService {
     store: WorkCommandStore,
 }
 
 impl WorkCommandService {
-    pub(super) async fn connect(database_url: &str) -> Result<Self, WorkCommandServiceError> {
+    pub async fn connect(database_url: &str) -> Result<Self, WorkCommandServiceError> {
         Ok(Self {
             store: WorkCommandStore::connect(database_url).await?,
         })
     }
 
     /// Checks identity and scope before the immutable command ledger is read or written.
-    pub(super) async fn submit(
+    pub async fn submit(
         &mut self,
         authorization: WorkCommandAuthorization,
         request: NewWorkCommand,
@@ -150,7 +150,7 @@ impl WorkCommandService {
     /// effect (ADR-0125 decision 8). The confirming principal must be the
     /// same one that issued the command; the payload must be the exact
     /// content the command's digest was fixed against at submission.
-    pub(super) async fn confirm(
+    pub async fn confirm(
         &mut self,
         authorization: WorkCommandAuthorization,
         tenant_id: &str,

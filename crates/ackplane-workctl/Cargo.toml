@@ -1,0 +1,16 @@
+[package]
+name = "ackplane-workctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "A command-line client for the Bridge's ADR-0125 Work command API."
+
+[[bin]]
+name = "ackplane-workctl"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { workspace = true }
+ureq = { workspace = true }
