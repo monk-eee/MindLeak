@@ -183,13 +183,24 @@ style nit.
   for later. **We never silently drop bugs.** Fragments rather than one shared
   section because two branches must never write the same path; close a gap by
   deleting its fragment in the commit that fixes it.
+- **A gap is something you could fix here; a limitation is not.** Before filing,
+  ask whether there is anything in this repository you could change to make the
+  observation stop being true. If yes, it is a gap. If no — because the behaviour
+  is designed to work that way, or because the defect belongs to a tool we do not
+  own — it goes in [`docs/KNOWN-LIMITATIONS.md`](docs/KNOWN-LIMITATIONS.md)
+  instead. This is not filing pedantry: `gaps.d/` is read as a list of
+  outstanding jobs, and half of it once held entries with no job in them, which
+  devalued the half that did. Both files record the same evidence to the same
+  standard; only the implied call to action differs. A limitation that later
+  becomes fixable moves back.
 
 ### Pre-commit hooks (NON-NEGOTIABLE)
 - **Hooks run on every commit** — rustfmt, clippy (`-D warnings`), eslint,
   prettier, whitespace, and JSON/TOML validity; the test suite runs on push.
-- **Install once:** `make setup` (or `pre-commit install && pre-commit install
-  --hook-type pre-push`). If you skip it the hooks are silently bypassed and debt
-  accumulates.
+- **Install once:** `make setup`. It runs both installers —
+  `pre-commit install --install-hooks` and `node scripts/install-hooks.mjs` —
+  because `post-checkout` is deliberately not pre-commit's (see that script's
+  header). If you skip it the hooks are silently bypassed and debt accumulates.
 - **Do your laundry locally.** CI is the safety net, not the first line of
   defence. **Never use `--no-verify`** — a skipped hook is deferred cost with
   interest.
@@ -398,8 +409,8 @@ MindLeak/
 ## Commands (identical on every OS)
 
 Run these directly rather than through the Unit Test MCP tool. Four separate
-gap fragments (`gaps.d/unit-test-mcp-*.md`,
-`gaps.d/the-unit-test-mcp-cargo-adapter-hides-the.md`) measured it reporting
+measurements, recorded under *External tools* in
+[`docs/KNOWN-LIMITATIONS.md`](docs/KNOWN-LIMITATIONS.md), found it reporting
 `PASSED` for `scripts/*.test.mjs` suites it never executes, silently running
 Cargo instead of Vitest for the extension (and vice versa), hiding a failing
 test's own name and assertion behind a bare compile-error-shaped message, and

@@ -9,6 +9,10 @@ setup: ## Install pre-commit hooks and extension deps
 	# declares default_install_hook_types, so no hook depends on someone
 	# remembering an extra flag. post-commit is the one that records evidence.
 	pre-commit install --install-hooks
+	# post-checkout deliberately does NOT go through pre-commit: it would
+	# snapshot and restore the whole working tree around a checkout that
+	# commits nothing. Idempotent, and replaces pre-commit's old shim.
+	node scripts/install-hooks.mjs
 	cargo install cargo-llvm-cov --locked
 	npm --prefix editors/vscode install
 

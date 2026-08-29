@@ -7,12 +7,17 @@ minimum_pre_commit_version: "3.5.0"
 # has to be installed with an extra flag is a hook most checkouts do not have,
 # and `post-commit` is the one that records evidence -- if it is missing, the
 # work is unattributable and nothing says so until `complete_task` refuses,
-# hours later, with no way left to repair it (ADR-0048). `post-checkout` fires
-# on `git worktree add` itself (confirmed: git treats a new worktree's initial
-# checkout the same as any other), which is what lets ownership be recorded at
-# creation instead of waiting for a first commit that may never come.
-default_install_hook_types:
-  [pre-commit, pre-push, post-commit, post-checkout]
+# hours later, with no way left to repair it (ADR-0048).
+#
+# `post-checkout` is deliberately absent from this list, and is installed by
+# `node scripts/install-hooks.mjs` instead. It still runs the same
+# `worktree-owner --stage=post-checkout` check at `git worktree add`; what
+# changes is that it no longer runs it through pre-commit, which snapshots the
+# whole working tree to a shared cache file and restores it around every hook
+# run. A checkout commits nothing, so there is nothing for that snapshot to
+# isolate -- and it was measured disturbing trees a checkout was never asked to
+# touch. See that script's header for the measurement.
+default_install_hook_types: [pre-commit, pre-push, post-commit]
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -38,20 +43,15 @@ repos:
         always_run: true
         pass_filenames: false
 
-      # A worktree that has been created and declared, but never committed in,
-      # has no owner marker -- the `worktree-owner` hook above only writes one
-      # from `git commit`. `post-checkout` fires the moment `git worktree add`
-      # completes, so the creating session's marker is written immediately,
+      # `git worktree add` fires `post-checkout` the moment it completes, which
+      # is what lets the creating session's marker be written immediately —
       # before any peer could walk in and find the checkout reading as
-      # unclaimed. Reuses the same script and the same unchanged verdict logic;
-      # only the trigger differs.
-      - id: worktree-owner-on-create
-        name: worktree ownership is recorded at creation, not only at first commit
-        entry: node scripts/worktree-owner.mjs --stage=post-checkout
-        language: system
-        always_run: true
-        pass_filenames: false
-        stages: [post-checkout]
+      # unclaimed — rather than waiting for a first commit that may never come.
+      #
+      # This one hook is installed by `node scripts/install-hooks.mjs` rather
+      # than by pre-commit, so it is defined there and not here. Reusing this
+      # same script and the same unchanged verdict logic; only the trigger and
+      # the installer differ.
 
       - id: commit-identity
         name: the commit author is a real contributor
