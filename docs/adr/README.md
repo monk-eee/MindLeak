@@ -140,7 +140,9 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0132](0132-a-bind-address-is-not-a-reachable-interface.md) | A bind address is not a reachable interface | Accepted |
 | [0133](0133-a-shared-test-database-is-not-a-test-database.md) | A shared test database is not a test database | Accepted |
 | [0134](0134-enrolled-signing-keys-authenticate-lifecycle-purge-confirmations.md) | Enrolled signing keys authenticate Lifecycle purge confirmations | Accepted |
+| [0135](0135-a-directive-receipt-survives-a-dropped-connection.md) | A directive receipt survives a dropped connection | Accepted |
 | [0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md) | Ackplane gains an MCP front door; it does not duplicate the local planes' storage core | Accepted |
+| [0138](0138-a-known-limitation-is-not-a-gap.md) | A known limitation is not a gap | Accepted |
 
 ## Writing a new ADR
 
