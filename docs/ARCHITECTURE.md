@@ -342,19 +342,23 @@ layout itself (`ConnectionChallengeBinding`, `connection_challenge_bytes`)
 moved to `ackplane_protocol::connection_challenge_auth` so the two sides can
 never drift into incompatible encodings of the same signed fields;
 `ackplane_server::enrollment` re-exports it unchanged for its existing
-callers. Slice 1 sent and received nothing beyond the handshake itself.
-Slice 2 adds `exchange_supervisor_frame`, so a caller can send one supervisor
-frame -- registration, session, or heartbeat -- and await its
-`SupervisorFrameReceipt` without hand-rolling the wait: flow control and
-notices are stepped over as server housekeeping, a `Rejection` surfaces as a
-typed `ClientError::FrameRefused` (carrying the server's own `RejectionReason`,
+callers. `exchange_supervisor_frame` sends one supervisor frame --
+registration, session, or heartbeat -- and awaits its `SupervisorFrameReceipt`
+without hand-rolling the wait: flow control and notices are stepped over as
+server housekeeping, a `Rejection` surfaces as a typed
+`ClientError::FrameRefused` (carrying the server's own `RejectionReason`,
 distinct from `ConnectionRefused` because the connection itself is healthy and
 reconnecting fixes nothing), and any other frame is a protocol violation
-reported as `ClientError::UnexpectedFrame`. The event-batch `recv` path does
-not yet share this treatment -- a refused `BatchReceipt` still arrives as a
-raw frame a caller must recognize by hand. Directive delivery and reconnect
-reconciliation remain later ADR-0116 slices built on the connection this
-returns.
+reported as `ClientError::UnexpectedFrame`. `exchange_event_batch` gives the
+same typed treatment to a published event batch, returning its
+`BatchReceipt`. `next_directive` drains the connection's already-buffered
+`AgentDirective`s non-blockingly -- the server delivers a session's pending
+directives ahead of the receipt for the frame that addressed them, so a
+caller holding that receipt has necessarily already read every directive
+delivered with it -- and `submit_directive_receipt` answers one back over the
+same `exchange_supervisor_frame` round trip. Reconnect reconciliation is a
+separate concern the daemon owns, not this connection: see
+`ackplane-supervisor` below and [ADR-0135](adr/0135-a-directive-receipt-survives-a-dropped-connection.md).
 
 ### `ackplane-supervisor` (library and binary)
 
@@ -403,13 +407,15 @@ ADR-0107's control channel. It accepts only the closed `AgentDirective` wire
 family for an already registered supervisor session, validates the shared
 directive-to-capability mapping and domain-separated typed payload digest,
 assigns server time and per-target sequence, and retains bounded encoded
-directive envelopes before any future sender can deliver them. `DirectiveReceipt` records append separately only when their
+directive envelopes before a live sender delivers them. `DirectiveReceipt` records append separately only when their
 tenant, repository, node, session, sequence, and payload digest bind exactly
-to the stored directive; identical retries replay their original record. This
-foundation has no Bridge command route, does not issue a directive from an
-unauthenticated principal, and does not yet send an outbound stream frame.
+to the stored directive; identical retries replay their original record. `service/directive_delivery.rs` (ADR-0116 slice 3) is that sender: it attaches
+undelivered directives ahead of the `SupervisorSession` frame's own receipt,
+so that receipt becomes a delivery barrier a reconnecting supervisor also
+redelivers through -- at-least-once, and honest that a frame put on a stream
+is not evidence a supervisor acted; only the directive's own later receipt is.
 
-Authenticated `NodeSync` streams now ingest `DirectiveReceipt` frames through that same ledger only after their tenant, repository, and node match the completed connection challenge. Ackplane returns a typed `SupervisorFrameReceipt` for a durable write or exact replay, resolving the supervisor only from the receipt's scoped session; unknown or cross-scope directives receive a generic refusal rather than a directive-existence disclosure. This remains receipt ingress only: it adds neither outbound directive delivery nor a Bridge issuance route.
+Authenticated `NodeSync` streams ingest `DirectiveReceipt` frames through that same ledger only after their tenant, repository, and node match the completed connection challenge. Ackplane returns a typed `SupervisorFrameReceipt` for a durable write or exact replay, resolving the supervisor only from the receipt's scoped session; unknown or cross-scope directives receive a generic refusal rather than a directive-existence disclosure. Outbound delivery (above) and the Bridge's own issuance route (`WorkCommandStore`/`work_command_api/` below) close the two ends this ingress path originally left open.
 
 `ContextPacketCompiler` (`context_packet_compiler.rs`) is ADR-0114's pure deterministic envelope compiler. It validates every candidate before selection, reserves mandatory governance, task, and evidence context under the requested token budget, and refuses when that mandatory set cannot fit. Optional candidates sort by relevance then stable identifier; each is included whole or retained as a typed budget exclusion. It returns the existing validated `ContextPacket` protocol contract and makes no model call, persistent write, authenticated transport, or action-authority decision; later service slices own those boundaries.
 
@@ -606,8 +612,11 @@ transition is a separate `record_decision` call appending one more history
 row and moving the design's own `lifecycle_state` to match, in one
 transaction — nothing in this store enforces which transitions are legal or
 who may request one; ADR-0121 decision 3 defers that authorization to a
-future typed command. Nothing here yet exposes an RPC/HTTP route or a
-Bridge Design Board (decision 7) — those are separate follow-on slices.
+future typed command. The Bridge's `design_api.rs` now exposes this store
+directly (`GET`/`POST /api/v1/repositories/:repository_id/designs`, its
+`:design_id` detail, and a `/decisions` route) -- an unauthenticated write
+surface today, exactly as unenforced as the store itself, since decision 3's
+authorization command remains future work.
 
 `MaterializationStore` (`design_materialization_store.rs`, a separate file
 from `design_store/` to stay under the module-length ratchet) is ADR-0121
@@ -629,8 +638,9 @@ resubmitted with any different field is refused as a conflict. A genuinely
 new submission (a fresh `idempotency_key`) always gets the next
 `revision_number` for that design, even if its content happens to match an
 earlier revision -- revisions are never deduplicated by content, only by
-idempotency key. Nothing here yet exposes an RPC/HTTP route or a Bridge
-Design Board (decision 7).
+idempotency key. The Bridge's `design_api.rs` exposes this too
+(`POST .../designs/:design_id/materializations`), sharing the same
+unauthenticated-actor caveat as the decision route above.
 
 `TelemetryService` (`telemetry_store.rs`/`telemetry_service.rs`) is Ackplane's
 typed operational-telemetry domain (ADR-0105 decision 6): `RecordTelemetry`
@@ -654,10 +664,18 @@ A separate axum HTTP server for the Bridge (assurance operations, ADR-0090):
 tenant-scoped Fleet views over Ackplane's accepted Postgres state for one
 development tenant, resolved from a loopback-only salt file
 (`ACKPLANE_BRIDGE_SALT_PATH`). It links `ackplane-server::fleet` directly and
-is predominantly read-only. ADR-0111's tenant-scoped, reason-required
-stranded-claim recovery is the sole current Bridge mutation; enrolment, normal
-claim lifecycle, and ledger records remain behind Ackplane's typed service
-boundaries. Current routes, each 404 on a repository the tenant has not
+started as a predominantly read-only service. ADR-0111's tenant-scoped, reason-required
+stranded-claim recovery was the first Bridge mutation; the loopback developer
+profile's own Administration (`administration/`), Design (`design_api.rs`),
+Constitution proposal (`propose_clause`/`withdraw_proposal`), and Work command
+(`work_command_api/`) routes below have since added their own bounded write
+paths, each under its own authorization model -- an adopted policy for
+Administration, an author-gated withdrawal for a Constitution proposal, and a
+typed `authorization_unavailable` refusal for every Work command until a real
+verified-principal authenticator exists (ADR-0125 decision 2). Enrolment and
+normal node-signed claim lifecycle (`delegate`/`renew`/`release`) remain
+behind Ackplane's typed gRPC service boundaries; the Bridge never reaches
+them. Current routes, each 404 on a repository the tenant has not
 enrolled rather than leaking a distinguishable error:
 
 `crates/ackplane-bridge/Dockerfile` (ADR-0105 decision 3) packages one binary
@@ -758,6 +776,13 @@ ADR-0111's claim recovery is unchanged.
 | `GET /work` | The bounded Industrial Work page. It labels each repository's projection as `current`, `claims_only`, or `not_published`, so an empty native Work list never masquerades as a clean task board. Claims-only rows remain lease records with their Ackplane owner, branch, expiry, and declared scope; Bridge never invents Local task title, acceptance, or lifecycle data. A declared path is already an `artifact:` node id, so each row's declared scope links into `GET /graph` seeded on exactly those nodes — declared symbols come along only when they already carry their path, since a bare name has no unambiguous node id. |
 | `GET /api/v1/repositories/:repository_id/work` | One bounded page of native Industrial Work records plus a bounded claims-only publication summary. It reads Work and ClaimStore state only after tenant/repository visibility succeeds; it neither imports Local Lodestar tasks nor exposes a mutation. |
 | `GET /api/v1/repositories/:repository_id/work/doctor` | Bounded, read-only Work/claim consistency findings including claims without a native Work projection. |
+| `POST /api/v1/repositories/:repository_id/work/commands` | ADR-0125: submits one of the ten closed Work commands (`CreateWork`/`RouteWork`/`ReleaseLease`/`AnswerWait`/`SubmitReview`/`Assign`/`Steer`/`Pause`/`Resume`/`Drain`, tagged by `kind` in one JSON envelope) through `WorkCommandService` -- never `WorkStore`/`ClaimStore` directly. Under the Bridge's loopback developer profile every command resolves to a typed `authorization_unavailable` outcome (decision 2): the route and its full request/response contract are real, the authority to execute is not. |
+| `POST /api/v1/repositories/:repository_id/work/commands/:command_id/confirm` | Confirms a previously submitted command against its exact payload digest. Same `authorization_unavailable` outcome as submit under the current profile. |
+| `GET /design` | The Design Board page (static HTML/JS). |
+| `GET`/`POST /api/v1/repositories/:repository_id/designs` | Lists designs, or proposes a new one (`DesignStore::register`) -- a digest-checked idempotent insert of an opaque design record with bounded title/summary/source_version and a closed lifecycle state. |
+| `GET /api/v1/repositories/:repository_id/designs/:design_id` | One design's detail. |
+| `POST /api/v1/repositories/:repository_id/designs/:design_id/decisions` | Appends a lifecycle transition (`DesignStore::record_decision`) to a design's append-only decision history; nothing here authorizes who may request one (ADR-0121 decision 3 defers that to a future typed command). |
+| `POST /api/v1/repositories/:repository_id/designs/:design_id/materializations` | Records a materialization revision (`MaterializationStore::record_materialization`) against a design, idempotency-key-scoped exactly like `evidence_store`. |
 | `GET /api/v1/repositories/:repository_id/signing-keys` | Every enrolled signing key, judged as of now (`FleetStore::signing_keys`), reusing `signing_keys::judge` — the same rule an accepted envelope's own verification applies — rather than a second judgment invented for the health view. |
 | `GET /delegations` | A tenant-scoped, read-only human delegation authority view. It displays active, expired, and revoked delegation projections with their immutable grant/revocation history; the bounded use-decision subresource below provides the corresponding live authorization audit. It exposes no grant, revoke, approval, credential, idempotency, payload, or remote-execution control. |
 | `GET /api/v1/repositories/:repository_id/delegations` | One bounded page of delegation projections in durable `(source_event_position ASC, delegation_id ASC)` order. Optional `limit` is clamped to 1-100; `after_source_event_position` and `after_delegation_id` must be supplied together, and a nonterminal response returns the next boundary in `next_after`. Revoked authority remains visible in the projection rather than disappearing from an operator's review. |
@@ -786,16 +811,21 @@ ADR-0111's claim recovery is unchanged.
 
 Neither Ackplane nor Bridge speak MCP today — the former is gRPC-only, the
 latter HTTP-only — so no MCP client (an AI coding agent, not a browser) can
-reach the Industrial profile directly. ADR-0136 (Proposed) closes that gap
-with a planned `ackplane-mcp` binary: a thin protocol adapter translating MCP
-tool calls into calls against these same gRPC services, never a second,
-Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s business
-rules. It is gated on an unresolved authenticated-principal decision (neither
-today's enrolled-node proof nor Bridge's loopback developer token fits an
-arbitrary MCP client) and on closing remaining domain gaps — task/claim
-parity with Industrial Work, and a `pgvector`-backed recall store scoped to
-`projected_nodes` rather than the curated `knowledge` domain — before it is
-usable end-to-end.
+reach the Industrial profile directly. ADR-0136 (Accepted) closes that gap
+with `ackplane-mcp`: an MCP stdio server over the same gRPC services, never a
+second, Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s
+business rules -- every handler translates to an Ackplane RPC that already
+exists and is already authorized, deciding nothing about enrolment or
+signatures itself. Its first slice translates exactly one tool,
+`check_enrollment_status` (ADR-0122), and holds itself to a local-loopback
+Ackplane endpoint until the authenticated-principal decision lands: neither
+today's enrolled-node possession proof nor Bridge's loopback developer token
+fits an arbitrary MCP client, so `endpoint::resolve_endpoint` refuses a
+non-loopback target rather than send that proof somewhere the decision has
+not been made about yet. Full task/claim parity with Industrial Work, and a
+`pgvector`-backed recall store scoped to `projected_nodes` rather than the
+curated `knowledge` domain, remain open before this front door is usable
+end-to-end beyond that one tool.
 
 ### `editors/vscode` (extension)
 
