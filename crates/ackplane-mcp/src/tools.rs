@@ -11,6 +11,7 @@ use ackplane_client::identity::{
 };
 use ackplane_client::{ActiveClaimsRequest, ClaimClient, EnrollmentClient};
 use ackplane_protocol::v1::EnrollmentState;
+use mindleak_session::{SessionContext, SessionRegistry};
 use serde_json::{json, Value};
 
 /// Named for the RPC it translates rather than for a local tool, because
@@ -23,6 +24,13 @@ pub const CHECK_ENROLLMENT_STATUS: &str = "check_enrollment_status";
 /// question -- which claims this arbiter holds -- rather than the local board's.
 pub const ACTIVE_CLAIMS: &str = "active_claims";
 
+/// ADR-0137 clause 2: identity is the session, not the process, exactly as it
+/// already is on `mindleak-mcp`/`lodestar-mcp`. Node-level connection trust
+/// (`endpoint::resolve_endpoint`'s loopback pilot) authenticates *this
+/// process*; `open_session` layers an independently-declared agent identity
+/// on top, distinguishing concurrent callers behind one long-lived front door.
+pub const OPEN_SESSION: &str = "open_session";
+
 const TENANT_ID_ENV: &str = "MINDLEAK_ACKPLANE_TENANT_ID";
 const REPOSITORY_ID_ENV: &str = "MINDLEAK_ACKPLANE_REPOSITORY_ID";
 
@@ -32,6 +40,17 @@ const DEFERRED_BY_ADR_0120: &[&str] = &["task_create", "task_transition"];
 
 pub fn advertised() -> Vec<Value> {
     vec![
+        json!({
+            "name": OPEN_SESSION,
+            "description":
+                "Register this MCP client session's identity, exactly as open_session already \
+                 works on mindleak-mcp/lodestar-mcp (ADR-0030, amended by ADR-0054): identity is \
+                 the session, not the process, so one long-lived ackplane-mcp process serves \
+                 multiple concurrent callers distinguished only by their registered session_id. \
+                 Optional working-context fields (branch, head_sha, base, dirty, behind) are \
+                 declared by the client and never detected by the server (ADR-0137).",
+            "inputSchema": mindleak_session::session_input_schema()
+        }),
         json!({
             "name": CHECK_ENROLLMENT_STATUS,
             "description":
@@ -51,7 +70,32 @@ pub fn advertised() -> Vec<Value> {
     ]
 }
 
+/// Register (or re-register) this session's identity (ADR-0137 clause 2).
+///
+/// Intercepted by the server ahead of [`call`] -- exactly how `mindleak-mcp`
+/// and `lodestar-mcp` already special-case `open_session` -- because it needs
+/// the session registry, not an Ackplane endpoint: no arbiter is consulted to
+/// open a session, matching the local planes' contract byte for byte.
+pub fn open_session(sessions: &SessionRegistry, arguments: &Value) -> Result<Value, String> {
+    let token = arguments
+        .get("session_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "missing required string arg: session_id".to_string())?;
+    let context = SessionContext::from_arguments(arguments)?;
+    let identity = sessions.open_session(token, context)?;
+    let mut body = json!({ "agent_id": identity.agent_id });
+    if let Some(context) = identity.context.declared_json() {
+        body["context"] = context;
+    }
+    Ok(body)
+}
+
 /// Dispatch one tool call, or say plainly that the name is not served here.
+///
+/// [`OPEN_SESSION`] is deliberately absent from this match: the server
+/// intercepts it before ever calling here (see [`open_session`]'s doc
+/// comment), so it never reaches the "unknown tool" branch below despite
+/// being one of [`advertised`]'s three names.
 pub fn call<F>(endpoint: &str, name: &str, environment: &F) -> Result<Value, String>
 where
     F: Fn(&str) -> Option<String>,
@@ -69,9 +113,9 @@ where
              the operation client-side and reporting a state Ackplane never recorded."
         )),
         other => Err(format!(
-            "unknown tool: {other}. This front door serves {CHECK_ENROLLMENT_STATUS} and \
-             {ACTIVE_CLAIMS}; it refuses a name it does not translate rather than approximating \
-             one."
+            "unknown tool: {other}. This front door serves {OPEN_SESSION}, \
+             {CHECK_ENROLLMENT_STATUS}, and {ACTIVE_CLAIMS}; it refuses a name it does not \
+             translate rather than approximating one."
         )),
     }
 }
@@ -206,12 +250,57 @@ mod tests {
         None
     }
 
+    fn sessions() -> SessionRegistry {
+        SessionRegistry::new("test").unwrap()
+    }
+
     #[test]
-    fn the_advertised_surface_is_exactly_this_slice_s_one_tool() {
+    fn the_advertised_surface_is_exactly_this_slice_s_three_tools() {
         let advertised = advertised();
-        assert_eq!(advertised.len(), 2);
-        assert_eq!(advertised[0]["name"], CHECK_ENROLLMENT_STATUS);
-        assert_eq!(advertised[1]["name"], ACTIVE_CLAIMS);
+        assert_eq!(advertised.len(), 3);
+        assert_eq!(advertised[0]["name"], OPEN_SESSION);
+        assert_eq!(advertised[1]["name"], CHECK_ENROLLMENT_STATUS);
+        assert_eq!(advertised[2]["name"], ACTIVE_CLAIMS);
+    }
+
+    /// ADR-0137 clause 2's contract, in one call: a session opens and returns
+    /// the same `session:v1:<hex>` identity form the local planes already use.
+    #[test]
+    fn open_session_returns_the_local_planes_identity_form() {
+        let body = open_session(
+            &sessions(),
+            &json!({ "session_id": "0123456789abcdef0123456789abcdef" }),
+        )
+        .expect("a well-formed token opens a session");
+        assert!(
+            body["agent_id"]
+                .as_str()
+                .expect("agent_id is a string")
+                .starts_with("session:v1:"),
+            "got: {body}"
+        );
+        assert!(body.get("context").is_none(), "nothing was declared");
+    }
+
+    #[test]
+    fn open_session_reports_the_declared_working_context() {
+        let body = open_session(
+            &sessions(),
+            &json!({
+                "session_id": "0123456789abcdef0123456789abcdef",
+                "branch": "feat/x",
+                "head_sha": "abc123"
+            }),
+        )
+        .expect("a declared context is accepted");
+        assert_eq!(body["context"]["branch"], "feat/x");
+        assert_eq!(body["context"]["head_sha"], "abc123");
+    }
+
+    #[test]
+    fn open_session_without_a_token_is_refused_by_name() {
+        let error = open_session(&sessions(), &json!({})).expect_err("session_id is required");
+        assert!(error.contains("session_id"), "got: {error}");
     }
 
     /// ADR-0139 clause 3: Ackplane does not accept these, so the front door

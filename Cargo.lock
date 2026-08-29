@@ -64,6 +64,7 @@ dependencies = [
  "ackplane-client",
  "ackplane-protocol",
  "anyhow",
+ "mindleak-session",
  "serde_json",
  "thiserror",
  "tokio",

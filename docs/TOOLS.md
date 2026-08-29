@@ -232,8 +232,18 @@ possession proof off the machine under an authentication model that has not
 been decided yet. Set `ACKPLANE_MCP_ENDPOINT` to point at a local arbiter;
 it defaults to `http://127.0.0.1:8443`.
 
+**Session identity (ADR-0137 clause 2):** node-level connection trust
+(the loopback pilot above) authenticates this *process*; `open_session`
+layers an independently-declared agent identity on top, exactly like
+`mindleak-mcp`/`lodestar-mcp` already do — identity is the session, not the
+process, so one long-lived `ackplane-mcp` binary serves multiple concurrent
+callers distinguished only by their registered `session_id`. Set
+`ACKPLANE_MCP_AGENT` to label this process's sessions in reports; it is
+never part of the agent id.
+
 | Tool                       | Purpose                                                                                                                                                                                                                                                                                        |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `open_session`             | Register this MCP client session's identity (ADR-0137 clause 2), using the same shared `mindleak-session` registry and `session:v1:<hex>` identity form `mindleak-mcp`/`lodestar-mcp` already use. Optional working-context fields (`branch`, `head_sha`, `base`, `dirty`, `behind`) are declared by the client, never detected by the server, and echoed back only when declared. No Ackplane endpoint is consulted: opening a session grants no arbiter-side authority by itself. |
 | `check_enrollment_status`  | Ask Ackplane whether this repository's candidate (node, key) binding is enrolled right now, translating `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122). The verdict is the arbiter's and is never recomputed locally. A repository that has never run `register-me request` is reported as unable to ask rather than as "not enrolled" — no arbiter was consulted, and those are different facts. `state` is returned only when `verified` is true, because ADR-0122 decision 5 makes it meaningless otherwise. |
 | `active_claims`            | List the claims Ackplane currently arbitrates for this repository, translating `ClaimDelegationService.ListActiveClaims` (ADR-0096, ADR-0139 clause 1). Read-only and unsigned: the request carries no `ClaimAuthentication` because it asks only what the arbiter already states about its own arbitration, and grants no authority. Scope comes from `MINDLEAK_ACKPLANE_TENANT_ID` and `MINDLEAK_ACKPLANE_REPOSITORY_ID`; either being unset is refused by name rather than asked with a blank scope, which would return an empty list indistinguishable from "no claims". This reports the arbiter's view, not Lodestar's board — the two answer different questions. |
 

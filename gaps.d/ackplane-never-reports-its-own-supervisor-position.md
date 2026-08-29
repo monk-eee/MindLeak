@@ -31,3 +31,33 @@
   `(tenant_id, repository_id, supervisor_id)` beside the existing registration
   row, and degrading to today's undetected behaviour rather than to a false
   verdict when either side is older. `reconcile()` is unchanged by it.
+- **ADR-0141 is accepted but NOT yet implementable as written — found while
+  starting the implementation, 2026-08-30.** It says the server reports "the
+  highest supervisor frame sequence it has durably accepted from this
+  supervisor". The server is never told that number. The outbox sequence is
+  allocated locally in `daemon::enqueue_receipt` as
+  `positions().last_enqueued + 1` and appears on no wire field: `DirectiveReceipt`
+  carries `directive_sequence`, which is the *server-issued directive's* number,
+  not the supervisor's frame sequence, and `SupervisorHeartbeat`/
+  `SupervisorSession`/`SupervisorLifecycleReceipt` carry no sequence at all. So
+  the receipt has no truthful value to populate.
+  Two further details make this worse than a missing field. A server-side
+  *count* of accepted frames is not a substitute: it would only coincide with
+  the supervisor's sequence through an unstated invariant — that the outbox
+  contains exactly directive receipts, forever, and that none is ever accepted
+  out of band — and it would diverge silently the moment ADR-0135's outbox
+  carries any other frame type. Reporting it anyway would be the confident wrong
+  answer ADR-0141 was written to prevent, arrived at by a different route. And
+  the receipt cannot ride on `HelloAccepted` as the ADR's context implies, since
+  `Hello` identifies only `producer_id`; `supervisor_id` first appears in the
+  registration frame.
+  **What is actually needed:** the supervisor must stamp its outbox sequence on
+  the frames it sends, so the server has something real to record and echo back
+  as its own accepted high-water mark. That is an additional outbound wire
+  change ADR-0141 does not sanction, and ADRs here are immutable, so it needs a
+  superseding or follow-up decision rather than being folded in quietly during
+  implementation. The partial implementation (a `supervisor_frame_position`
+  field on `SupervisorFrameReceipt`, and a nullable `frame_position` column on
+  `supervisor_registrations`) was written, found to have no truthful source, and
+  reverted rather than shipped as a field the server could only populate by
+  guessing.
