@@ -12,6 +12,8 @@ mod endpoint;
 mod server;
 mod tools;
 
+use mindleak_session::SessionRegistry;
+
 fn main() -> anyhow::Result<()> {
     let environment = |name: &str| std::env::var(name).ok();
 
@@ -26,6 +28,14 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    server::run(endpoint, refusal, environment)?;
+    // Display name for this process's sessions in reports (ADR-0137 clause 2,
+    // mirroring `mindleak-mcp`/`lodestar-mcp`'s own `MINDLEAK_AGENT`/
+    // `LODESTAR_AGENT`). Since ADR-0054 it is no part of the agent id, so two
+    // processes may disagree about it without forking the identity of a
+    // session they both host.
+    let display_name = std::env::var("ACKPLANE_MCP_AGENT").unwrap_or_else(|_| "agent".to_string());
+    let sessions = SessionRegistry::new(&display_name).map_err(anyhow::Error::msg)?;
+
+    server::run(endpoint, refusal, sessions, environment)?;
     Ok(())
 }
