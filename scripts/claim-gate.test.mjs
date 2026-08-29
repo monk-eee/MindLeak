@@ -11,7 +11,9 @@ import {
   missingClaimAdvice,
   parseCallResult,
   publishVerdict,
+  readOwnClaims,
   reconciliationOf,
+  uncoveredCommitNotice,
   withReconciliationCandidates,
 } from "./claim-gate.mjs";
 
@@ -491,4 +493,128 @@ test("a result with neither structuredContent nor a text block is undefined", ()
 test("a null structuredContent falls through to the text block", () => {
   const result = { content: [{ text: "[1,2]" }], structuredContent: null };
   assert.deepEqual(parseCallResult(result), [1, 2]);
+});
+
+// --- the commit-time claim advisory (uncoveredCommitNotice / readOwnClaims) ---
+
+/// Silence is the common case and must stay silent, or the notice becomes noise
+/// on every commit and readers learn to skip the whole line.
+test("a live claim of this session means nothing is said", () => {
+  assert.equal(
+    uncoveredCommitNotice({
+      tasks: [claimed(COLLAPSED)],
+      agent: COLLAPSED,
+      now: NOW,
+    }),
+    null,
+  );
+});
+
+/// The defect this catches. A claim taken after the commit does not reach back
+/// over it, so the notice has to arrive while stopping is still an option --
+/// and has to say that claiming afterwards is not a repair, because that is the
+/// intuitive and wrong response.
+test("no live claim warns, and says a later claim will not repair it", () => {
+  const notice = uncoveredCommitNotice({
+    tasks: [],
+    agent: COLLAPSED,
+    now: NOW,
+  });
+  assert.match(notice, /no live claim of this session/);
+  assert.match(notice, /claiming after it will not repair it/);
+  assert.match(notice, /NOT blocked/);
+});
+
+/// Another session's claim, and an expired one of this session's, are both
+/// "no claim covers you" -- neither may read as covered.
+test("a peer's claim and an expired claim both count as uncovered", () => {
+  assert.ok(
+    uncoveredCommitNotice({
+      tasks: [claimed(`session:v1:${"a".repeat(32)}`)],
+      agent: COLLAPSED,
+      now: NOW,
+    }),
+    "a peer's live claim does not cover this session's commit",
+  );
+  assert.ok(
+    uncoveredCommitNotice({
+      tasks: [{ ...claimed(COLLAPSED), lease_expires_at: NOW - 1 }],
+      agent: COLLAPSED,
+      now: NOW,
+    }),
+    "an expired claim of this session's does not cover it either",
+  );
+});
+
+/// An unreadable ledger and an empty board are indistinguishable from here.
+/// Reporting the first as the second would teach the reader that silence means
+/// claimed, which is the failure this whole file exists to avoid.
+test("an unreadable board says so rather than passing silently", () => {
+  const notice = uncoveredCommitNotice({ reachable: false });
+  assert.match(notice, /could not be read/);
+  assert.match(notice, /Committing anyway/);
+});
+
+test("a malformed or absent session token reads as unreachable, never as covered", () => {
+  assert.deepEqual(readOwnClaims({ repoRoot: ".", sessionId: "" }), {
+    reachable: false,
+  });
+  assert.deepEqual(readOwnClaims({ repoRoot: ".", sessionId: "not-hex" }), {
+    reachable: false,
+  });
+});
+
+test("a server that cannot be resolved reads as unreachable", () => {
+  assert.deepEqual(
+    readOwnClaims({
+      repoRoot: ".",
+      sessionId: FINGERPRINT,
+      resolveServer: () => null,
+    }),
+    { reachable: false },
+  );
+});
+
+/// A server that answers without an agent id cannot tell us whose claims the
+/// board holds, so its answer is unusable rather than empty.
+test("a reply with no agent id reads as unreachable, not as an empty board", () => {
+  assert.deepEqual(
+    readOwnClaims({
+      repoRoot: ".",
+      sessionId: FINGERPRINT,
+      resolveServer: () => "/fake/lodestar",
+      callTools: () => [{}, []],
+    }),
+    { reachable: false },
+  );
+});
+
+test("a live claim read off the board is reported with this session's agent id", () => {
+  const state = readOwnClaims({
+    repoRoot: ".",
+    sessionId: FINGERPRINT,
+    resolveServer: () => "/fake/lodestar",
+    callTools: () => [{ agent_id: COLLAPSED }, { tasks: [claimed(COLLAPSED)] }],
+  });
+  assert.equal(state.reachable, true);
+  assert.equal(state.agent, COLLAPSED);
+  assert.equal(
+    uncoveredCommitNotice({ ...state, now: NOW }),
+    null,
+    "the fetched state feeds the notice unchanged",
+  );
+});
+
+test("a throwing server reads as unreachable rather than crashing the commit", () => {
+  assert.deepEqual(
+    readOwnClaims({
+      repoRoot: ".",
+      sessionId: FINGERPRINT,
+      resolveServer: () => "/fake/lodestar",
+      callTools: () => {
+        throw new Error("server died");
+      },
+    }),
+    { reachable: false },
+  );
 });
