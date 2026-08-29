@@ -49,9 +49,10 @@ pub mod node_sync;
 pub use node_sync::NodeSyncConnection;
 
 pub use ackplane_protocol::v1::{
-    ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest,
-    ClaimReleaseRequest, ClaimReleaseResult, ClaimRenewRequest, EnrollmentState,
-    EnrollmentStatusAuthentication, EnrollmentStatusRequest, EnrollmentStatusResult,
+    ActiveClaimSummary, ActiveClaimsRequest, ActiveClaimsResult, ClaimLeaseOutcome,
+    ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest, ClaimReleaseRequest,
+    ClaimReleaseResult, ClaimRenewRequest, EnrollmentState, EnrollmentStatusAuthentication,
+    EnrollmentStatusRequest, EnrollmentStatusResult,
 };
 
 /// How long a connection attempt is given before it counts as unreachable.
@@ -167,6 +168,19 @@ impl ClaimClient {
         request: ClaimRecoverRequest,
     ) -> Result<ClaimLeaseResult, ClientError> {
         Ok(self.inner.recover_claim(request).await?.into_inner())
+    }
+
+    /// Read the claims this arbiter currently holds for one repository
+    /// (`ClaimDelegationService.ListActiveClaims`).
+    ///
+    /// Unlike every mutating call on this client, the request carries no
+    /// `ClaimAuthentication`: it asks what the arbiter is already willing to
+    /// state about its own arbitration, and grants no authority.
+    pub async fn list_active_claims(
+        &mut self,
+        request: ActiveClaimsRequest,
+    ) -> Result<ActiveClaimsResult, ClientError> {
+        Ok(self.inner.list_active_claims(request).await?.into_inner())
     }
 }
 
