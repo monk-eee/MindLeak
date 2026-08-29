@@ -8,6 +8,16 @@
 - Refines: [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (this
   is the agent/MCP-facing half of feature parity; ADR-0105 defined the
   human/browser-facing half)
+- Refined by: [ADR-0137](0137-ackplane-mcp-authenticates-by-borrowing-an-enrolled-node-key.md)
+  (resolves decision 4's authenticated-principal question: reuse the
+  enrolled node's key rather than minting a new principal type),
+  [ADR-0139](0139-ackplane-mcp-task-surface-scopes-to-existing-claim-and-read-authority.md)
+  (resolves decision 3's task/claim parity question: compose existing claim
+  arbitration and read-only Work projection, expose no unsupported command),
+  [ADR-0140](0140-a-pgvector-recall-store-scoped-to-projected-nodes.md)
+  (resolves decision 3's graph/recall parity question: a new
+  `projected_node_embeddings` table with local `recall`'s discrimination
+  pipeline, not a bare `pgvector` distance query)
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (Ackplane is the standalone service being fronted),
   [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md)
@@ -129,11 +139,21 @@ engine, and it does not fork `mindleak-core`/`lodestar-core` onto Postgres.**
      `knowledge_embeddings` table), so `ackplane-mcp`'s `recall` has a real
      graph-wide backing store instead of reusing a domain scoped for a
      different purpose.
+
+     > Resolved by [ADR-0140](0140-a-pgvector-recall-store-scoped-to-projected-nodes.md):
+     > a new `projected_node_embeddings` table, ranked through the same
+     > kind-prior/distinctive-field discrimination pipeline local `recall`
+     > already implements — not a bare `pgvector` distance `ORDER BY`, which
+     > measurably regresses below today's SQLite-backed behavior.
    - **Task/claim parity.** Decide whether `work_tasks` (ADR-0120) grows the
      missing claim-transfer/renew/recover/goal-decomposition semantics, or
      whether `ackplane-mcp`'s task tools deliberately compose Ackplane's
      already-federated claim arbitration with Industrial Work rather than
      pretending Industrial Work already equals Lodestar's full task board.
+
+     > Resolved by [ADR-0139](0139-ackplane-mcp-task-surface-scopes-to-existing-claim-and-read-authority.md):
+     > compose the existing claim arbitration and read-only Work projection;
+     > expose no tool ADR-0120 decision 8 itself does not yet support.
    - **Ingestion authority.** Deterministic git/AST/execution ingestion
      (`mindleak-core`'s `ingest/` tree) is already pure, portable Rust with no
      SQL coupling; it needs a repository-side publisher — a thin sensor
@@ -154,6 +174,9 @@ engine, and it does not fork `mindleak-core`/`lodestar-core` onto Postgres.**
    already-enrolled node and borrows its key"). ADR-0098 deferred OIDC
    pending "a real second tenant"; `ackplane-mcp` is plausibly that tenant, but
    the authentication decision itself belongs to its own follow-up ADR.
+
+   > Resolved by [ADR-0137](0137-ackplane-mcp-authenticates-by-borrowing-an-enrolled-node-key.md):
+   > reuse the enrolled-node principal, narrowly, exactly as anticipated above.
 
 5. **Nothing about the Local profile changes.** `mindleak-mcp`/`lodestar-mcp`
    keep their stdio-only, no-network-listener contract — the active
@@ -194,10 +217,12 @@ engine, and it does not fork `mindleak-core`/`lodestar-core` onto Postgres.**
 - `mindleak-core`/`lodestar-core`'s existing `rusqlite`-only footprint is left
   exactly as it is today — there is no urgency to abstract either crate behind
   a storage trait it was never asked to serve.
-- Follow-up ADRs are needed for: (a) the authenticated principal for a
-  non-enrolled MCP client, (b) task/claim domain parity between Industrial
-  Work and Lodestar's full task board, (c) a `pgvector`-backed recall store
-  for the projected graph.
+- Follow-up ADRs are needed for: (a) ~~the authenticated principal for a
+  non-enrolled MCP client~~ resolved by ADR-0137, (b) ~~task/claim domain
+  parity between Industrial Work and Lodestar's full task board~~ resolved by
+  ADR-0139, (c) ~~a `pgvector`-backed recall store for the projected graph~~
+  resolved by ADR-0140. All three follow-ups this ADR named are now resolved;
+  what remains is implementation, not further design.
 
 ## Rejected alternatives
 
