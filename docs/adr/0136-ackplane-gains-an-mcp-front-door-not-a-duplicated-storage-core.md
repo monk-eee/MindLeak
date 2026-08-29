@@ -9,7 +9,10 @@
   human/browser-facing half)
 - Refined by: [ADR-0137](0137-ackplane-mcp-authenticates-by-borrowing-an-enrolled-node-key.md)
   (resolves decision 4's authenticated-principal question: reuse the
-  enrolled node's key rather than minting a new principal type)
+  enrolled node's key rather than minting a new principal type),
+  [ADR-0139](0139-ackplane-mcp-task-surface-scopes-to-existing-claim-and-read-authority.md)
+  (resolves decision 3's task/claim parity question: compose existing claim
+  arbitration and read-only Work projection, expose no unsupported command)
 - Depends on: [ADR-0082](0082-ackplane-is-a-standalone-federation-service.md)
   (Ackplane is the standalone service being fronted),
   [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md)
@@ -136,6 +139,10 @@ engine, and it does not fork `mindleak-core`/`lodestar-core` onto Postgres.**
      whether `ackplane-mcp`'s task tools deliberately compose Ackplane's
      already-federated claim arbitration with Industrial Work rather than
      pretending Industrial Work already equals Lodestar's full task board.
+
+     > Resolved by [ADR-0139](0139-ackplane-mcp-task-surface-scopes-to-existing-claim-and-read-authority.md):
+     > compose the existing claim arbitration and read-only Work projection;
+     > expose no tool ADR-0120 decision 8 itself does not yet support.
    - **Ingestion authority.** Deterministic git/AST/execution ingestion
      (`mindleak-core`'s `ingest/` tree) is already pure, portable Rust with no
      SQL coupling; it needs a repository-side publisher — a thin sensor
@@ -200,9 +207,9 @@ engine, and it does not fork `mindleak-core`/`lodestar-core` onto Postgres.**
   exactly as it is today — there is no urgency to abstract either crate behind
   a storage trait it was never asked to serve.
 - Follow-up ADRs are needed for: (a) ~~the authenticated principal for a
-  non-enrolled MCP client~~ resolved by ADR-0137, (b) task/claim domain parity
-  between Industrial Work and Lodestar's full task board, (c) a
-  `pgvector`-backed recall store for the projected graph.
+  non-enrolled MCP client~~ resolved by ADR-0137, (b) ~~task/claim domain
+  parity between Industrial Work and Lodestar's full task board~~ resolved by
+  ADR-0139, (c) a `pgvector`-backed recall store for the projected graph.
 
 ## Rejected alternatives
 

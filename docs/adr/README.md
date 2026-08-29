@@ -142,6 +142,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0134](0134-enrolled-signing-keys-authenticate-lifecycle-purge-confirmations.md) | Enrolled signing keys authenticate Lifecycle purge confirmations | Accepted |
 | [0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md) | Ackplane gains an MCP front door; it does not duplicate the local planes' storage core | Proposed |
 | [0137](0137-ackplane-mcp-authenticates-by-borrowing-an-enrolled-node-key.md) | `ackplane-mcp` authenticates by borrowing an enrolled node's key | Proposed |
+| [0139](0139-ackplane-mcp-task-surface-scopes-to-existing-claim-and-read-authority.md) | `ackplane-mcp`'s task surface scopes to Ackplane's existing claim and read authority, not full Lodestar parity | Proposed |
 
 ## Writing a new ADR
 
