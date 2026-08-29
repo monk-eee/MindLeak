@@ -171,6 +171,22 @@ impl Lodestar {
                     .ok_or_else(|| crate::LodestarError::NotFound(act_id.to_string()))?;
                 (amendment.amended_by, amendment.created_at)
             }
+            crate::LedgerActKind::GoalSuperseded => {
+                // The goal must exist AND carry a recorded supersession. A
+                // clause retired before ADR-0142 has neither actor nor
+                // timestamp, and the honest answer there is a refusal naming
+                // the reason -- not this agent's id standing in for whoever
+                // actually did it.
+                if self.store.get_goal(act_id)?.is_none() {
+                    return Err(crate::LodestarError::NotFound(act_id.to_string()));
+                }
+                self.store.goal_supersession(act_id)?.ok_or_else(|| {
+                    crate::LodestarError::Invalid(format!(
+                        "{act_id} has no recorded supersession to verify against; it is either \
+                         still active or was superseded before the actor was recorded (ADR-0142)"
+                    ))
+                })?
+            }
         };
 
         if recorded_actor != agent {
@@ -674,6 +690,127 @@ mod tests {
                 .ledger_act_evidence(&task_id, LedgerActKind::DesignRegistered, &id, "agent-a")
                 .unwrap_err();
             assert!(err.to_string().contains("before the claim opened"));
+        }
+        /// ADR-0142. Superseding a clause is the only way governing intent
+        /// changes, and it was the one act that could never be proved: the
+        /// write recorded which version replaced the clause and a free-form
+        /// reason, but no actor -- so `ledger_act_evidence` had nothing to
+        /// verify against the claiming agent and ADR-0110 correctly excluded
+        /// the variant. An agent whose whole task was to retire a clause had
+        /// no honest completion path and routed to human review every time.
+        #[test]
+        fn superseding_a_clause_is_evidence_for_the_agent_who_did_it() {
+            let engine = engine();
+            let goal = engine
+                .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+                .unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            engine
+                .supersede_goal(&goal.id, "ship it, carefully", "learned more", "agent-a")
+                .unwrap();
+
+            // The act is recorded on the RETIRED clause, not its replacement:
+            // the new version records why it was written, the old one records
+            // who retired it.
+            let evidence = engine
+                .ledger_act_evidence(&task_id, LedgerActKind::GoalSuperseded, &goal.id, "agent-a")
+                .unwrap();
+            assert_eq!(
+                evidence.ledger_act_ids,
+                vec![format!("ledger_act:goal_superseded:{}", goal.id)]
+            );
+            assert!(evidence.changed_node_ids.is_empty());
+        }
+
+        /// A ledger act proves who performed it, not who may claim credit for
+        /// it -- the same rule the other four kinds enforce.
+        #[test]
+        fn another_agents_supersession_is_not_evidence_for_this_one() {
+            let engine = engine();
+            let goal = engine
+                .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+                .unwrap();
+            engine
+                .supersede_goal(&goal.id, "ship it, carefully", "learned more", "agent-b")
+                .unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(&task_id, LedgerActKind::GoalSuperseded, &goal.id, "agent-a")
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("does not match"),
+                "expected an actor-mismatch refusal, got: {err}"
+            );
+        }
+
+        /// The honest floor. A clause retired before ADR-0142 has no recorded
+        /// actor, and the claiming agent must never be accepted as a stand-in
+        /// -- that is exactly the fabricated attribution ADR-0110 refused to
+        /// build. The refusal names the reason so the reader is not left
+        /// guessing whether the id was wrong.
+        #[test]
+        fn a_supersession_recorded_before_the_actor_existed_is_refused_not_attributed() {
+            let engine = engine();
+            let goal = engine
+                .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+                .unwrap();
+            engine
+                .supersede_goal(&goal.id, "ship it, carefully", "learned more", "agent-a")
+                .unwrap();
+            // Exactly what a pre-ADR-0142 row looks like: superseded, with the
+            // replacement recorded, and no actor.
+            engine
+                .store()
+                .clear_supersession_actor_for_test(&goal.id)
+                .unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(&task_id, LedgerActKind::GoalSuperseded, &goal.id, "agent-a")
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("no recorded supersession"),
+                "expected a refusal naming the missing attribution, got: {err}"
+            );
+        }
+
+        /// An active clause has no supersession act at all. Distinct from the
+        /// case above only in cause; both must refuse rather than invent one.
+        #[test]
+        fn an_active_clause_is_not_a_supersession_act() {
+            let engine = engine();
+            let goal = engine
+                .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+                .unwrap();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(&task_id, LedgerActKind::GoalSuperseded, &goal.id, "agent-a")
+                .unwrap_err();
+            assert!(err.to_string().contains("no recorded supersession"));
+        }
+
+        /// A goal id that names nothing is a NotFound, not a missing-actor
+        /// error: the two send the reader to different places.
+        #[test]
+        fn an_unknown_goal_id_is_not_found_rather_than_unattributed() {
+            let engine = engine();
+            let task_id = claimed_task(&engine, "agent-a");
+
+            let err = engine
+                .ledger_act_evidence(
+                    &task_id,
+                    LedgerActKind::GoalSuperseded,
+                    "goal:never-existed",
+                    "agent-a",
+                )
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("goal:never-existed"),
+                "expected the unknown id named, got: {err}"
+            );
         }
     }
 }

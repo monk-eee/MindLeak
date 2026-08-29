@@ -263,13 +263,39 @@ impl LodestarStore {
         Ok(())
     }
 
+    /// Strip a supersession's recorded actor, reproducing a row written before
+    /// ADR-0142 added the columns.
+    ///
+    /// Test-only seam, and it exists because the alternative is worse: the
+    /// behaviour under test is a refusal that must fire on real legacy rows, and
+    /// the only other way to reach that state is to reach into the private
+    /// connection from a test in another module. There is no production path
+    /// that clears an attribution, and there must not be one — an act that
+    /// recorded who performed it never stops having done so.
+    #[cfg(test)]
+    pub fn clear_supersession_actor_for_test(&self, goal_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE goals SET superseded_by_agent = NULL, superseded_at = NULL WHERE id = ?1",
+            params![goal_id],
+        )?;
+        Ok(())
+    }
+
     /// Supersede a goal: write a new active version and mark the old one
     /// superseded. Intent changes only through this explicit, attributed step.
+    ///
+    /// `agent` is recorded on the *old* row, because that is where the act
+    /// belongs: the new version records why it was written (`reason`), the old
+    /// one records who retired it and when. Before ADR-0142 only the reason was
+    /// kept, which left the supersession unattributable and therefore unusable
+    /// as conformance evidence — the doc comment above claimed "attributed"
+    /// while the code recorded no actor at all.
     pub fn supersede_goal(
         &self,
         old_id: &str,
         new_statement: &str,
         reason: &str,
+        agent: &str,
         now: i64,
     ) -> Result<Goal> {
         let old = self
@@ -304,10 +330,36 @@ impl LodestarStore {
         };
         self.insert_goal(&new_goal)?;
         self.conn.execute(
-            "UPDATE goals SET status = 'superseded', superseded_by = ?2 WHERE id = ?1",
-            params![old_id, new_id],
+            "UPDATE goals
+                SET status = 'superseded',
+                    superseded_by = ?2,
+                    superseded_at = ?3,
+                    superseded_by_agent = ?4
+              WHERE id = ?1",
+            params![old_id, new_id, now, agent],
         )?;
         Ok(new_goal)
+    }
+
+    /// The recorded supersession act on a goal: who retired it and when.
+    ///
+    /// `None` when the goal is not superseded, or when it was superseded before
+    /// ADR-0142 added the columns. Those two cases are deliberately not
+    /// distinguished here — both mean "this ledger holds no attributable act",
+    /// which is the only question the caller has.
+    pub fn goal_supersession(&self, goal_id: &str) -> Result<Option<(String, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT superseded_by_agent, superseded_at FROM goals WHERE id = ?1")?;
+        let mut rows = stmt.query(params![goal_id])?;
+        match rows.next()? {
+            Some(row) => {
+                let agent: Option<String> = row.get(0)?;
+                let at: Option<i64> = row.get(1)?;
+                Ok(agent.zip(at))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn goals_by_status(&self, status: GoalStatus) -> Result<Vec<Goal>> {
@@ -1012,7 +1064,13 @@ mod tests {
             .unwrap();
 
         let v2 = s
-            .supersede_goal(&g.id, "Do it even better", "learned more", NOW)
+            .supersede_goal(
+                &g.id,
+                "Do it even better",
+                "learned more",
+                "agent:test",
+                NOW,
+            )
             .unwrap();
         assert_eq!(v2.scope.as_deref(), Some("crates/**"));
         assert_eq!(v2.evidence_contract.as_deref(), Some("tests pass"));
@@ -1027,7 +1085,13 @@ mod tests {
         let s = store();
         let g = goal(&s);
         let v2 = s
-            .supersede_goal(&g.id, "Do it even better", "learned more", NOW)
+            .supersede_goal(
+                &g.id,
+                "Do it even better",
+                "learned more",
+                "agent:test",
+                NOW,
+            )
             .unwrap();
 
         assert_eq!(v2.version, 2);

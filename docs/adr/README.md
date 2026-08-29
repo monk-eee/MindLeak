@@ -144,6 +144,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md) | Ackplane gains an MCP front door; it does not duplicate the local planes' storage core | Accepted |
 | [0138](0138-a-known-limitation-is-not-a-gap.md) | A known limitation is not a gap | Accepted |
 | [0141](0141-ackplane-reports-its-own-supervisor-position.md) | Ackplane reports its own supervisor position, not the client's echo | Proposed |
+| [0142](0142-a-superseded-clause-records-who-retired-it.md) | A superseded clause records who retired it | Accepted |
 
 ## Writing a new ADR
 
