@@ -293,7 +293,7 @@ Then paste newline-delimited JSON-RPC requests on stdin, e.g.:
 
 A persistent editor MCP connection can break for one client session and not
 recover on its own, even across a window reload (see
-[`gaps.d/mcp-server-processes-accumulate-per-editor-window.md`](gaps.d/mcp-server-processes-accumulate-per-editor-window.md)),
+[`docs/KNOWN-LIMITATIONS.md`](docs/KNOWN-LIMITATIONS.md)),
 while the underlying binaries and their SQLite-backed state stay unaffected —
 `scripts/canonical-push.mjs` already drives a fresh instance of them over stdio
 on every publish regardless of any editor's connection. `scripts/mcp-direct.mjs`
@@ -393,3 +393,13 @@ task id as tracking metadata.
 
 **Close a gap:** delete its fragment in the commit that fixes it, so the fix and
 the retraction are one reviewable change rather than two that can drift apart.
+
+**Not everything rough is a gap.** A gap fragment asserts that something here
+could be fixed. If the answer to "is there anything in this repository I could
+change to make this stop being true?" is no — because the behaviour is designed
+that way, or because the defect belongs to a tool we do not own — it belongs in
+[`docs/KNOWN-LIMITATIONS.md`](docs/KNOWN-LIMITATIONS.md) instead. Both hold
+evidence to the same standard; only the implied call to action differs. Filing a
+limitation as a gap is not harmless: `--triage` will then report it ageing and
+untracked forever, because there is no repair for it to be waiting on, and that
+noise is exactly what stops anyone reading the number.
