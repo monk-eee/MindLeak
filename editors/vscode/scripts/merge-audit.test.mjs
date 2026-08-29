@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   auditBranches,
   classifyCommits,
+  mergeIsFaithful,
   reviewingRef,
   splitByReview,
 } from "../../../scripts/merge-audit.mjs";
@@ -142,17 +143,93 @@ describe("merge-audit", () => {
     expect([...missing, ...replaced].some((c) => c.startsWith("Merge "))).toBe(false);
   }, 30_000);
 
-  // "We cannot tell" and "nothing was lost" are different answers. A deleted
-  // branch is unverifiable, and reporting it as clean would be the audit
-  // itself lying — the exact failure it exists to catch.
+  // "We cannot tell" and "nothing was lost" are different answers. A branch
+  // that is gone cannot be checked for commits pushed after it merged, and
+  // reporting it as clean would be the audit itself lying — the exact failure
+  // it exists to catch.
   it("reports a missing branch as unverifiable rather than clean", () => {
     const { repo } = sandbox();
 
-    const [result] = auditBranches(repo, "main", ["origin/never-existed"]);
+    const [result] = auditBranches(repo, "main", [{ ref: "origin/never-existed" }]);
 
     expect(result.verifiable).toBe(false);
     expect(result.missing).toEqual([]);
     expect(result.replaced).toEqual([]);
+  }, 30_000);
+
+  // The PR #507 shape, and the reason this check exists. `gh pr update-branch`
+  // produced a merge commit that reported clean while its tree kept only one
+  // side, silently dropping the branch's contribution. Nothing else in the
+  // system can see it: the pull request says merged, the branch still shows the
+  // code, and CI was green on both. `git cherry` cannot see it either, because
+  // the branch tip is an ancestor of the base by construction once it merges.
+  it("detects a merge commit whose tree drops one side's work", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "dropped"]);
+    commitFile(repo, "kept.txt", "k\n", "work the merge will drop");
+    git(repo, ["checkout", "main"]);
+    commitFile(repo, "other.txt", "o\n", "main moves on");
+
+    git(repo, ["merge", "--no-ff", "--no-commit", "dropped"]);
+    git(repo, ["rm", "--quiet", "-f", "--", "kept.txt"]);
+    git(repo, ["commit", "-m", "Merge branch 'dropped'"]);
+    const mergeCommit = git(repo, ["rev-parse", "HEAD"]);
+
+    const verdict = mergeIsFaithful(repo, mergeCommit);
+
+    expect(verdict.compared).toBe(true);
+    expect(verdict.faithful).toBe(false);
+    expect(verdict.expected).not.toBe(verdict.actual);
+  }, 30_000);
+
+  // The same check must stay quiet on an honest merge, or it is noise that
+  // gets switched off. Measured over main's last 120 merges: 0 mismatches.
+  it("accepts a merge commit that is the merge of its own parents", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "honest"]);
+    commitFile(repo, "kept.txt", "k\n", "work that survives");
+    git(repo, ["checkout", "main"]);
+    commitFile(repo, "other.txt", "o\n", "main moves on");
+    git(repo, ["merge", "--no-ff", "--no-edit", "honest"]);
+
+    const verdict = mergeIsFaithful(repo, git(repo, ["rev-parse", "HEAD"]));
+
+    expect(verdict.compared).toBe(true);
+    expect(verdict.faithful).toBe(true);
+  }, 30_000);
+
+  // A merge commit survives its branch, so this half of the audit keeps working
+  // after GitHub deletes the branch on merge — which is what blinds the
+  // `git cherry` half, and was measured dropping 10 of 30 pull requests.
+  it("checks the merge commit even when the branch is gone", () => {
+    const { repo } = sandbox();
+    git(repo, ["checkout", "-b", "deleted-after-merge"]);
+    commitFile(repo, "kept.txt", "k\n", "work the merge will drop");
+    git(repo, ["checkout", "main"]);
+    commitFile(repo, "other.txt", "o\n", "main moves on");
+    git(repo, ["merge", "--no-ff", "--no-commit", "deleted-after-merge"]);
+    git(repo, ["rm", "--quiet", "-f", "--", "kept.txt"]);
+    git(repo, ["commit", "-m", "Merge branch 'deleted-after-merge'"]);
+    const mergeCommit = git(repo, ["rev-parse", "HEAD"]);
+    git(repo, ["branch", "-D", "deleted-after-merge"]);
+
+    const [result] = auditBranches(repo, "main", [{ ref: "deleted-after-merge", mergeCommit }]);
+
+    expect(result.verifiable).toBe(false);
+    expect(result.merge.compared).toBe(true);
+    expect(result.merge.faithful).toBe(false);
+  }, 30_000);
+
+  // A squash or rebase merge has one parent, so there is no branch side to
+  // compare against, and a human conflict resolution is *supposed* to differ
+  // from the automatic merge. Both must read as "cannot tell", never as a
+  // verdict — a check that reports on evidence it does not have is worse than
+  // one that admits the gap.
+  it("declines to judge a merge it cannot reconstruct", () => {
+    const { repo } = sandbox();
+
+    expect(mergeIsFaithful(repo, git(repo, ["rev-parse", "HEAD"])).compared).toBe(false);
+    expect(mergeIsFaithful(repo, null).compared).toBe(false);
   }, 30_000);
 
   it("audits several branches independently", () => {
@@ -165,7 +242,7 @@ describe("merge-audit", () => {
     git(repo, ["checkout", "-b", "leaky", "main"]);
     commitFile(repo, "leaky.txt", "l\n", "stranded work");
 
-    const results = auditBranches(repo, "main", ["clean", "leaky"]);
+    const results = auditBranches(repo, "main", [{ ref: "clean" }, { ref: "leaky" }]);
 
     expect(results[0].missing).toEqual([]);
     expect(results[1].missing).toHaveLength(1);
