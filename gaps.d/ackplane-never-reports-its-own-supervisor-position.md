@@ -21,3 +21,13 @@
   `accepted_position` is about the ledger's event stream, while the supervisor
   outbox has its own local frame sequence, so a fix has to say which one it is
   reporting rather than reusing a field that already means something else.
+- **The review this asks for is now proposed as
+  [ADR-0141](../docs/adr/0141-ackplane-reports-its-own-supervisor-position.md);
+  the gap stays OPEN until it is accepted and implemented.** It takes the
+  sequence-space warning above as its central constraint: a new
+  `supervisor_frame_position` naming the outbox sequence rather than any reuse
+  of `accepted_position`, optional so that "never seen this supervisor" stays
+  distinguishable from "seen at zero", persisted per
+  `(tenant_id, repository_id, supervisor_id)` beside the existing registration
+  row, and degrading to today's undetected behaviour rather than to a false
+  verdict when either side is older. `reconcile()` is unchanged by it.

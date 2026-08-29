@@ -16,9 +16,45 @@
   can still walk into it, because the stash happens inside `pre-commit` itself
   and no hook can observe the tree as it was before its own framework moved it.
   The real fix is ADR-0038 isolation — one worktree per workstream.
-  **Narrower than that fix implies — reproduced 24 Aug with proper isolation
-  already in place.** One agent, two worktrees, each holding exactly one
-  workstream (`docs/claim-transfers-drill-result` and
+  **The checkout half is CLOSED, 2026-08-29 — measured, not reasoned.**
+  `post-checkout` no longer runs through pre-commit at all. It is installed
+  directly by `node scripts/install-hooks.mjs` (wired into `make setup`), so the
+  one hook this repository runs at that stage — `worktree-owner
+  --stage=post-checkout`, which writes an ownership marker and never reads the
+  working tree — runs without a snapshot.
+
+  Before and after on the same single-file `git checkout HEAD -- <path>` with an
+  otherwise identical tree: **22 lines of output, a patch written to the shared
+  user-level cache (`~/.cache/pre-commit/patch<ts>-<pid>`), the tree discarded,
+  20 hooks evaluated, and the patch reapplied — versus 0 lines and no snapshot
+  at all.** For an operation that changes no index and makes no commit.
+
+  This removes the window rather than narrowing it: on the checkout path there
+  is now no patch file, no shared cache directory, and no interval in which the
+  tree lives outside the repository, so nothing can collide there regardless of
+  the precise mechanism by which the 24 Aug cross-worktree copy occurred. That
+  mechanism was never pinned down and is deliberately *not* claimed as fixed —
+  the fragment above attributes it to `refs/stash` being repository-wide, which
+  is an inference: pre-commit does not use `git stash`, it writes a patch file,
+  so the `git stash list` evidence cited there is about unrelated manual
+  stashes. The honest statement is that the checkout no longer opens a window,
+  not that the window's contents were understood.
+
+  `hook-health` was taught the difference between "no hook" and "the wrong
+  installer's hook", because every clone made before this change still has
+  pre-commit's `post-checkout` shim sitting there — running, reporting healthy,
+  and doing exactly the thing being removed.
+
+  **Still OPEN for `pre-commit` and `pre-push`.** Those stages genuinely need
+  the tree to hold exactly what is staged, so the snapshot is the price of
+  admission and cannot simply be dropped. A bare `git commit` in a shared
+  checkout can still hit the original race; `scoped-commit.mjs` remains the
+  guarded path (exit 3), and ADR-0038 isolation remains the standing advice.
+
+  **The observation that motivated the fix — reproduced 24 Aug with proper
+  isolation already in place.** One agent, two worktrees, each holding exactly
+  one workstream (`docs/claim-transfers-drill-result` and
+  `docs/gap-fragment-restaleness-sweep`), no other agent attached to either. A
   `docs/gap-fragment-restaleness-sweep`), no other agent attached to either. A
   plain `git checkout -- <file>` in worktree A (discarding a local edit, not a
   commit) fired the `post-checkout` hook chain, printed pre-commit's
@@ -33,8 +69,9 @@
   in this checkout. **This means one-worktree-per-workstream is necessary but
   not sufficient**: it stops two agents racing the same checkout, but it does
   not stop a single, disciplined agent's own `git checkout` in one worktree
-  from tripping a stash push/pop that can read or write across every worktree
-  sharing the same `refs/stash`. Left for later: not fixed this run — a real
-  fix would need either a per-worktree stash scope (git has no such thing) or
-  the hook chain avoiding `git stash` in favour of a mechanism that cannot
-  cross worktree boundaries.
+  from tripping a snapshot/restore that can read or write across every worktree.
+  (The `refs/stash` attribution above is an inference and reads as fact; it is
+  almost certainly wrong in its specifics, since pre-commit writes a patch file
+  rather than using `git stash`, and those ten stash entries are unrelated
+  manual ones. The *observation* — worktree A briefly holding worktree B's
+  uncommitted edit — stands; the mechanism named for it does not.)
