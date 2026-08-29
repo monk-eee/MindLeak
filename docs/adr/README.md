@@ -149,6 +149,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0141](0141-ackplane-reports-its-own-supervisor-position.md) | Ackplane reports its own supervisor position, not the client's echo | Proposed |
 | [0142](0142-loopback-verified-principal-extends-to-work-design-and-constitution.md) | The hardened loopback profile is also the verified principal for Work commands, Design mutations, and Constitution proposals | Accepted |
 | [0143](0143-postgres-access-goes-through-one-bounded-pool-per-process.md) | Postgres access goes through one bounded pool per process | Accepted |
+| [0145](0145-recovery-rehearsal-is-real-restore-execution-is-single-tenant-only.md) | Recovery rehearsal is real; production recovery execution is single-tenant only | Accepted |
 
 ## Writing a new ADR
 
