@@ -173,7 +173,7 @@ impl Lodestar {
             }
             crate::LedgerActKind::GoalSuperseded => {
                 // The goal must exist AND carry a recorded supersession. A
-                // clause retired before ADR-0142 has neither actor nor
+                // clause retired before ADR-0144 has neither actor nor
                 // timestamp, and the honest answer there is a refusal naming
                 // the reason -- not this agent's id standing in for whoever
                 // actually did it.
@@ -183,7 +183,7 @@ impl Lodestar {
                 self.store.goal_supersession(act_id)?.ok_or_else(|| {
                     crate::LodestarError::Invalid(format!(
                         "{act_id} has no recorded supersession to verify against; it is either \
-                         still active or was superseded before the actor was recorded (ADR-0142)"
+                         still active or was superseded before the actor was recorded (ADR-0144)"
                     ))
                 })?
             }
@@ -691,7 +691,7 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("before the claim opened"));
         }
-        /// ADR-0142. Superseding a clause is the only way governing intent
+        /// ADR-0144. Superseding a clause is the only way governing intent
         /// changes, and it was the one act that could never be proved: the
         /// write recorded which version replaced the clause and a free-form
         /// reason, but no actor -- so `ledger_act_evidence` had nothing to
@@ -745,7 +745,7 @@ mod tests {
             );
         }
 
-        /// The honest floor. A clause retired before ADR-0142 has no recorded
+        /// The honest floor. A clause retired before ADR-0144 has no recorded
         /// actor, and the claiming agent must never be accepted as a stand-in
         /// -- that is exactly the fabricated attribution ADR-0110 refused to
         /// build. The refusal names the reason so the reader is not left
@@ -759,7 +759,7 @@ mod tests {
             engine
                 .supersede_goal(&goal.id, "ship it, carefully", "learned more", "agent-a")
                 .unwrap();
-            // Exactly what a pre-ADR-0142 row looks like: superseded, with the
+            // Exactly what a pre-ADR-0144 row looks like: superseded, with the
             // replacement recorded, and no actor.
             engine
                 .store()

@@ -1,4 +1,4 @@
-- Superseding a goal now records who retired it and when (ADR-0142). That makes
+- Superseding a goal now records who retired it and when (ADR-0144). That makes
   the act attributable, and `ledger_act_evidence` accepts a new
   `goal_superseded` kind — so an agent whose task was to retire a clause can
   complete it with real evidence instead of routing to human review every time.

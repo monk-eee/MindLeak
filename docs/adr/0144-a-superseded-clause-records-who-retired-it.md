@@ -1,4 +1,4 @@
-# ADR-0142: A superseded clause records who retired it
+# ADR-0144: A superseded clause records who retired it
 
 - Status: Accepted
 - Date: 2026-08-29

@@ -149,7 +149,7 @@ pub enum LedgerActKind {
     /// A clause was retired and replaced
     /// (`goals.superseded_by_agent`/`superseded_at`).
     ///
-    /// Added by ADR-0142, which supplied the prerequisite ADR-0110 named:
+    /// Added by ADR-0144, which supplied the prerequisite ADR-0110 named:
     /// `supersede_goal` used to record only a free-form reason, so there was no
     /// actor to verify against the claiming agent and wiring it in would have
     /// meant fabricating an attribution. A clause superseded before that

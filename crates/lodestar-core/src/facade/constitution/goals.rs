@@ -22,7 +22,7 @@ impl Lodestar {
     ///
     /// `agent` is recorded against the retired clause so the act is
     /// attributable, which is what makes it usable as conformance evidence
-    /// (`LedgerActKind::GoalSuperseded`, ADR-0142). It is resolved through the
+    /// (`LedgerActKind::GoalSuperseded`, ADR-0144). It is resolved through the
     /// same session path every other identity-bearing call uses, so a caller
     /// cannot name someone else as the one who did it.
     pub fn supersede_goal(

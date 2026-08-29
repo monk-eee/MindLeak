@@ -264,7 +264,7 @@ impl LodestarStore {
     }
 
     /// Strip a supersession's recorded actor, reproducing a row written before
-    /// ADR-0142 added the columns.
+    /// ADR-0144 added the columns.
     ///
     /// Test-only seam, and it exists because the alternative is worse: the
     /// behaviour under test is a refusal that must fire on real legacy rows, and
@@ -286,7 +286,7 @@ impl LodestarStore {
     ///
     /// `agent` is recorded on the *old* row, because that is where the act
     /// belongs: the new version records why it was written (`reason`), the old
-    /// one records who retired it and when. Before ADR-0142 only the reason was
+    /// one records who retired it and when. Before ADR-0144 only the reason was
     /// kept, which left the supersession unattributable and therefore unusable
     /// as conformance evidence — the doc comment above claimed "attributed"
     /// while the code recorded no actor at all.
@@ -344,7 +344,7 @@ impl LodestarStore {
     /// The recorded supersession act on a goal: who retired it and when.
     ///
     /// `None` when the goal is not superseded, or when it was superseded before
-    /// ADR-0142 added the columns. Those two cases are deliberately not
+    /// ADR-0144 added the columns. Those two cases are deliberately not
     /// distinguished here — both mean "this ledger holds no attributable act",
     /// which is the only question the caller has.
     pub fn goal_supersession(&self, goal_id: &str) -> Result<Option<(String, i64)>> {

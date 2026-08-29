@@ -97,7 +97,7 @@ fn migrate_locked(connection: &Connection) -> Result<bool> {
         ("goals", "external_id", "TEXT"),
         ("goals", "source_ref", "TEXT"),
         ("goals", "source_digest", "TEXT"),
-        // Who superseded a clause, and when (ADR-0142). NULL on every
+        // Who superseded a clause, and when (ADR-0144). NULL on every
         // pre-existing row is the honest answer: those supersessions recorded
         // only a free-form reason, and naming any agent as the one who
         // performed them would invent an attribution the ledger never held.

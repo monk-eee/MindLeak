@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(replacement["statement"], "Revised text");
         assert_ne!(replacement["id"], original.id);
 
-        // ADR-0142: the act is attributable, which is what makes it usable as
+        // ADR-0144: the act is attributable, which is what makes it usable as
         // conformance evidence. Recorded on the retired clause, not on the
         // replacement -- the new version records why it was written, the old
         // one records who retired it.
