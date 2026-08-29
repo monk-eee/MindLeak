@@ -197,9 +197,10 @@ style nit.
 ### Pre-commit hooks (NON-NEGOTIABLE)
 - **Hooks run on every commit** — rustfmt, clippy (`-D warnings`), eslint,
   prettier, whitespace, and JSON/TOML validity; the test suite runs on push.
-- **Install once:** `make setup` (or `pre-commit install && pre-commit install
-  --hook-type pre-push`). If you skip it the hooks are silently bypassed and debt
-  accumulates.
+- **Install once:** `make setup`. It runs both installers —
+  `pre-commit install --install-hooks` and `node scripts/install-hooks.mjs` —
+  because `post-checkout` is deliberately not pre-commit's (see that script's
+  header). If you skip it the hooks are silently bypassed and debt accumulates.
 - **Do your laundry locally.** CI is the safety net, not the first line of
   defence. **Never use `--no-verify`** — a skipped hook is deferred cost with
   interest.

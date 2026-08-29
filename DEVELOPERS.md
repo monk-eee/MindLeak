@@ -27,6 +27,11 @@ pip install pre-commit
 # old two-line form omitted post-commit — leaves commits with no provenance,
 # which the pre-push hook-health check now refuses.
 pre-commit install --install-hooks
+# post-checkout is installed separately and on purpose: routed through
+# pre-commit it wrapped every `git checkout` in a discard-and-reapply of the
+# whole working tree, for an operation that commits nothing. Idempotent, and
+# it replaces pre-commit's old shim on an existing clone.
+node scripts/install-hooks.mjs
 
 # Extension dependencies
 npm --prefix editors/vscode install
