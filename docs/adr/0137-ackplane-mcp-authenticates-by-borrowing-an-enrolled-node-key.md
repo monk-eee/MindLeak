@@ -1,9 +1,10 @@
 # ADR-0137: `ackplane-mcp` authenticates by borrowing an enrolled node's key
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-29
-- Deciders: MindLeak maintainers (proposed in session; awaiting repository-owner
-  review per this repo's adoption convention)
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-29 by the repository owner, authorized directly in session
+  — attributed human adoption after review.
 - Refines: [ADR-0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md)
   (decision 4 named this as an open, blocking decision; this ADR resolves it)
 - Depends on: [ADR-0085](0085-node-enrolment-requires-proof-of-possession.md)

@@ -1,9 +1,10 @@
 # ADR-0140: A `pgvector` recall store scoped to `projected_nodes`, not the curated `knowledge` domain
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-29
-- Deciders: MindLeak maintainers (proposed in session; awaiting repository-owner
-  review per this repo's adoption convention)
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-29 by the repository owner, authorized directly in session
+  — attributed human adoption after review.
 - Refines: [ADR-0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md)
   (decision 3 named this as one of three follow-up gaps; this ADR resolves
   the recall-store question, the last of the three)
