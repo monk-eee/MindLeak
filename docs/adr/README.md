@@ -143,6 +143,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md) | Ackplane gains an MCP front door; it does not duplicate the local planes' storage core | Proposed |
 | [0137](0137-ackplane-mcp-authenticates-by-borrowing-an-enrolled-node-key.md) | `ackplane-mcp` authenticates by borrowing an enrolled node's key | Proposed |
 | [0139](0139-ackplane-mcp-task-surface-scopes-to-existing-claim-and-read-authority.md) | `ackplane-mcp`'s task surface scopes to Ackplane's existing claim and read authority, not full Lodestar parity | Proposed |
+| [0140](0140-a-pgvector-recall-store-scoped-to-projected-nodes.md) | A `pgvector` recall store scoped to `projected_nodes`, not the curated `knowledge` domain | Proposed |
 
 ## Writing a new ADR
 
