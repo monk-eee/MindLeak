@@ -1,9 +1,10 @@
 # ADR-0136: Ackplane gains an MCP front door; it does not duplicate the local planes' storage core
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-29
-- Deciders: MindLeak maintainers (proposed in session; awaiting repository-owner
-  review per this repo's adoption convention)
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-29 by the repository owner, authorized directly in session
+  — attributed human adoption after review.
 - Refines: [ADR-0105](0105-bridge-is-the-server-version-of-the-vsix.md) (this
   is the agent/MCP-facing half of feature parity; ADR-0105 defined the
   human/browser-facing half)
