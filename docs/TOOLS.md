@@ -235,3 +235,11 @@ it defaults to `http://127.0.0.1:8443`.
 | Tool                       | Purpose                                                                                                                                                                                                                                                                                        |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `check_enrollment_status`  | Ask Ackplane whether this repository's candidate (node, key) binding is enrolled right now, translating `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122). The verdict is the arbiter's and is never recomputed locally. A repository that has never run `register-me request` is reported as unable to ask rather than as "not enrolled" — no arbiter was consulted, and those are different facts. `state` is returned only when `verified` is true, because ADR-0122 decision 5 makes it meaningless otherwise. |
+| `active_claims`            | List the claims Ackplane currently arbitrates for this repository, translating `ClaimDelegationService.ListActiveClaims` (ADR-0096, ADR-0139 clause 1). Read-only and unsigned: the request carries no `ClaimAuthentication` because it asks only what the arbiter already states about its own arbitration, and grants no authority. Scope comes from `MINDLEAK_ACKPLANE_TENANT_ID` and `MINDLEAK_ACKPLANE_REPOSITORY_ID`; either being unset is refused by name rather than asked with a blank scope, which would return an empty list indistinguishable from "no claims". This reports the arbiter's view, not Lodestar's board — the two answer different questions. |
+
+Per ADR-0139 clause 3, this surface deliberately has no `task_create`, and no
+`task_transition` accepting a terminal state. Ackplane does not accept those
+commands (ADR-0120 decision 8), so calling one earns a typed refusal naming
+that decision rather than a client-side approximation that reports a state
+Ackplane never recorded. Signed claim mutation (`claim`/`renew`/`release`/
+`recover`) and the Work projection read surface are later slices.
