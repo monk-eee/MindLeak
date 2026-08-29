@@ -140,8 +140,10 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0132](0132-a-bind-address-is-not-a-reachable-interface.md) | A bind address is not a reachable interface | Accepted |
 | [0133](0133-a-shared-test-database-is-not-a-test-database.md) | A shared test database is not a test database | Accepted |
 | [0134](0134-enrolled-signing-keys-authenticate-lifecycle-purge-confirmations.md) | Enrolled signing keys authenticate Lifecycle purge confirmations | Accepted |
-| [0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md) | Ackplane gains an MCP front door; it does not duplicate the local planes' storage core | Proposed |
+| [0135](0135-a-directive-receipt-survives-a-dropped-connection.md) | A directive receipt survives a dropped connection | Accepted |
+| [0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md) | Ackplane gains an MCP front door; it does not duplicate the local planes' storage core | Accepted |
 | [0137](0137-ackplane-mcp-authenticates-by-borrowing-an-enrolled-node-key.md) | `ackplane-mcp` authenticates by borrowing an enrolled node's key | Proposed |
+| [0138](0138-a-known-limitation-is-not-a-gap.md) | A known limitation is not a gap | Accepted |
 | [0139](0139-ackplane-mcp-task-surface-scopes-to-existing-claim-and-read-authority.md) | `ackplane-mcp`'s task surface scopes to Ackplane's existing claim and read authority, not full Lodestar parity | Proposed |
 | [0140](0140-a-pgvector-recall-store-scoped-to-projected-nodes.md) | A `pgvector` recall store scoped to `projected_nodes`, not the curated `knowledge` domain | Proposed |
 

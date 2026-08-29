@@ -103,6 +103,55 @@ export const splitByReview = (cwd, missing, openRefs) => {
 };
 
 /**
+ * Whether a merge commit's tree is the one merging its two parents produces.
+ *
+ * This is the retrospective form of the guard in `delivery-queue.mjs`, and it
+ * closes that guard's stated blind spot. `gh pr update-branch` was measured on
+ * 2026-08-18 producing a merge commit that reported clean while its tree kept
+ * only one side, silently dropping PR #507's `ListActiveClaims` — no conflict
+ * marker, no failed check, and the work simply never reached `main`. The
+ * delivery queue now compares trees before it merges, but only at its own call
+ * site: a merge made through the web UI, or by anything else, was invisible.
+ *
+ * A merge commit keeps both parents, so this works long after the branch is
+ * deleted — which matters, because branch deletion is what blinds the
+ * `git cherry` audit above.
+ *
+ * Returns `compared: false` rather than a verdict when the merge has no second
+ * parent (a squash or rebase merge) or when the parents do not merge cleanly
+ * (a human resolved a real conflict, and their tree is *supposed* to differ).
+ * Measured over `main`'s last 120 merges: 115 compared and matched, 5 honestly
+ * uncomparable, 0 mismatches — so a mismatch is a signal, not noise.
+ */
+export const mergeIsFaithful = (cwd, mergeCommitSha) => {
+  if (!mergeCommitSha) return { compared: false };
+  let second;
+  try {
+    second = capture(
+      "git",
+      ["rev-parse", "--verify", "--quiet", `${mergeCommitSha}^2^{commit}`],
+      { cwd },
+    );
+  } catch {
+    return { compared: false };
+  }
+  try {
+    const first = capture("git", ["rev-parse", `${mergeCommitSha}^1`], { cwd });
+    const expected = capture(
+      "git",
+      ["merge-tree", "--write-tree", first, second],
+      { cwd },
+    );
+    const actual = capture("git", ["rev-parse", `${mergeCommitSha}^{tree}`], {
+      cwd,
+    });
+    return { compared: true, faithful: expected === actual, expected, actual };
+  } catch {
+    return { compared: false };
+  }
+};
+
+/**
  * Audit each merged branch against the base.
  *
  * A branch whose tip is already an ancestor of the base is clean by
@@ -110,28 +159,36 @@ export const splitByReview = (cwd, missing, openRefs) => {
  * branches are reported as unverifiable rather than clean: "we cannot tell" and
  * "nothing was lost" are different answers, and printing the second when the
  * first is true is how an audit starts lying.
+ *
+ * `branches` are `{ ref, mergeCommit }`. The `git cherry` half needs the branch
+ * to still exist; the `mergeIsFaithful` half does not, which is the only reason
+ * a deleted branch is still worth asking about at all.
  */
-export const auditBranches = (cwd, baseRef, branchRefs) =>
-  branchRefs.map((branchRef) => {
+export const auditBranches = (cwd, baseRef, branches) =>
+  branches.map(({ ref, mergeCommit }) => {
     let exists = true;
     try {
-      capture(
-        "git",
-        ["rev-parse", "--verify", "--quiet", `${branchRef}^{commit}`],
-        {
-          cwd,
-        },
-      );
+      capture("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+        cwd,
+      });
     } catch {
       exists = false;
     }
+    const merge = mergeIsFaithful(cwd, mergeCommit);
     if (!exists) {
-      return { branchRef, verifiable: false, missing: [], replaced: [] };
+      return {
+        branchRef: ref,
+        verifiable: false,
+        missing: [],
+        replaced: [],
+        merge,
+      };
     }
     return {
-      branchRef,
+      branchRef: ref,
       verifiable: true,
-      ...classifyCommits(cwd, baseRef, branchRef),
+      merge,
+      ...classifyCommits(cwd, baseRef, ref),
     };
   });
 
@@ -157,7 +214,7 @@ if (invokedDirectly) {
         "--limit",
         limit,
         "--json",
-        "number,headRefName",
+        "number,headRefName,mergeCommit",
       ]),
     );
   } catch {
@@ -168,8 +225,12 @@ if (invokedDirectly) {
   }
 
   const byBranch = new Map();
+  const mergeCommitByBranch = new Map();
   for (const pr of merged) {
-    if (!byBranch.has(pr.headRefName)) byBranch.set(pr.headRefName, pr.number);
+    if (!byBranch.has(pr.headRefName)) {
+      byBranch.set(pr.headRefName, pr.number);
+      mergeCommitByBranch.set(pr.headRefName, pr.mergeCommit?.oid ?? null);
+    }
   }
 
   // The open pull requests, so a commit still on its way in is not mistaken for
@@ -205,14 +266,33 @@ if (invokedDirectly) {
   const results = auditBranches(
     cwd,
     base,
-    branches.map((name) => `origin/${name}`),
+    branches.map((name) => ({
+      ref: `origin/${name}`,
+      mergeCommit: mergeCommitByBranch.get(name),
+    })),
   );
 
   let lost = 0;
   let rewritten = 0;
   let waiting = 0;
+  let lossy = 0;
+  let treeChecked = 0;
   for (const result of results) {
     const name = result.branchRef.replace(/^origin\//, "");
+    // Asked of every merged pull request, verifiable branch or not: a merge
+    // commit keeps both parents, so this is the half that still works once the
+    // branch is deleted.
+    if (result.merge.compared) {
+      treeChecked += 1;
+      if (!result.merge.faithful) {
+        lossy += 1;
+        console.error(
+          `merge-audit: PR #${byBranch.get(name)} (${name}) merged, but its merge commit's tree is not the\n` +
+            `    one merging its two parents produces — content was changed or dropped by the merge itself.\n` +
+            `    expected tree ${result.merge.expected}, actual tree ${result.merge.actual}`,
+        );
+      }
+    }
     if (!result.verifiable) continue;
     if (result.missing.length) {
       const { stranded, inReview } = splitByReview(
@@ -253,6 +333,19 @@ if (invokedDirectly) {
     );
     process.exit(1);
   }
+  if (lossy) {
+    // Failed, unlike a rewritten merge, because there is a green move: the
+    // dropped hunk can be re-applied in a fresh pull request. This is the one
+    // failure mode where every other signal reads healthy — the pull request
+    // says merged, the branch still shows the code, and CI was green on both —
+    // so nothing else in the system will ever raise it.
+    console.error(
+      `\nmerge-audit: ${lossy} merge commit(s) do not match the merge of their own parents. Work that the\n` +
+        "branch plainly contained may not be on the base. Diff the merge commit against its second parent\n" +
+        "and re-apply anything missing in a new pull request; do not trust 'merged with green checks' here.",
+    );
+    process.exit(1);
+  }
   if (rewritten) {
     // Reported, not failed. The commit identities are gone and no commit can
     // bring them back, so failing here would mean a red build with no green
@@ -278,7 +371,30 @@ if (invokedDirectly) {
         "reopens, so a commit pushed there survives only for as long as something else carries it.",
     );
   }
+  const verifiable = results.filter((r) => r.verifiable).length;
+  const unverifiable = results.length - verifiable;
   console.log(
-    `merge-audit: ${results.filter((r) => r.verifiable).length} merged branch(es) fully landed on ${base}`,
+    `merge-audit: ${verifiable} of ${results.length} merged branch(es) fully landed on ${base}; ` +
+      `${treeChecked} of ${results.length} merge commit(s) faithfully merged their own parents`,
   );
+  if (unverifiable) {
+    // Named and counted, not skipped. Printing only what was checked reads as
+    // an all-clear over the whole population, which is the one thing an audit
+    // must never imply: the branches it could not check are exactly where lost
+    // work would hide. Measured on CI run 99036902566 (2026-08-29), 10 of 30
+    // pull requests were dropped this way and the summary mentioned none of
+    // them. The tree check above still covers these, because a merge commit
+    // keeps both parents after the branch is gone — but `git cherry` cannot,
+    // so commits pushed to a branch after it merged and before it was deleted
+    // remain genuinely undetectable.
+    console.warn(
+      `merge-audit: ${unverifiable} merged branch(es) no longer exist, so commits pushed onto them after\n` +
+        "they merged cannot be detected. Their merge commits were still tree-checked above. This is not an\n" +
+        "all-clear for them; keep branches until the audit has run if that distinction matters:",
+    );
+    for (const result of results.filter((r) => !r.verifiable)) {
+      const name = result.branchRef.replace(/^origin\//, "");
+      console.warn(`    PR #${byBranch.get(name)} (${name})`);
+    }
+  }
 }
