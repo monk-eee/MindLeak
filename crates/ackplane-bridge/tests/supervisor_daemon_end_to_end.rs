@@ -27,7 +27,7 @@ use ackplane_server::{
 };
 use ackplane_supervisor::{
     config::{SignerSource, SupervisorConfig},
-    daemon, SupervisorInbox,
+    daemon, SupervisorInbox, SupervisorOutbox,
 };
 use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -110,6 +110,101 @@ fn config(
 
 fn database_url() -> Option<String> {
     std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
+}
+
+async fn connect(server: &TestServer, config: &SupervisorConfig) -> NodeSyncConnection {
+    let signer = SeedSigner::new(
+        config.signing_key_id.clone(),
+        config.node_id.clone(),
+        match &config.signer_source {
+            SignerSource::Seed(seed) => seed.as_ref(),
+            SignerSource::CredentialFacility { .. } => panic!("the fixture uses a seed"),
+        },
+    );
+    NodeSyncConnection::open(
+        &server.endpoint,
+        &signer,
+        &config.tenant_id,
+        &config.repository_id,
+        vec!["synchronize".to_string()],
+        0,
+    )
+    .await
+    .expect("the supervisor's node should authenticate")
+}
+
+fn registration_frame(
+    registration: &ackplane_protocol::supervisor::SupervisorRegistration,
+) -> v1::NodeFrame {
+    v1::NodeFrame {
+        frame: Some(v1::node_frame::Frame::SupervisorRegistration(
+            v1::SupervisorRegistration {
+                supervisor_id: registration.supervisor_id.clone(),
+                node_id: registration.identity.node_id.clone(),
+                supervisor_version: registration.supervisor_version.clone(),
+                protocol_version: registration.protocol_version.clone(),
+                supported_directives: vec![v1::SupervisorDirectiveCapability::Notify as i32],
+                supports_checkpoint: false,
+                supports_force_termination: false,
+                outbox_durability: v1::SupervisorOutboxDurability::Persistent as i32,
+                recoverable_outbox: true,
+            },
+        )),
+    }
+}
+
+fn session_frame(session: &ackplane_protocol::supervisor::SupervisorSession) -> v1::NodeFrame {
+    v1::NodeFrame {
+        frame: Some(v1::node_frame::Frame::SupervisorSession(
+            v1::SupervisorSession {
+                supervisor_id: session.supervisor_id.clone(),
+                session_id: session.session_id.clone(),
+                worker_id: session.worker_id.clone(),
+                runtime: v1::SupervisorRuntime::LocalMachine as i32,
+                started_at: OffsetDateTime::from_unix_timestamp(session.started_at)
+                    .expect("a representable session start")
+                    .format(&Rfc3339)
+                    .expect("RFC3339"),
+                state: v1::SupervisorWorkerState::Started as i32,
+            },
+        )),
+    }
+}
+
+/// A notify directive: the one capability this daemon declares, so its receipt
+/// is `Accepted` and binds to a directive the server genuinely issued.
+fn notify_directive(config: &SupervisorConfig, session_id: &str, unique: &str) -> AgentDirective {
+    let mut directive = AgentDirective {
+        directive_id: format!("directive-{unique}"),
+        tenant_id: config.tenant_id.clone(),
+        project_id: "project:slice5".to_string(),
+        repository_id: config.repository_id.clone(),
+        target_node_id: config.node_id.clone(),
+        target_agent_session_id: session_id.to_string(),
+        kind: v1::DirectiveKind::Notify as i32,
+        schema_version: "v1".to_string(),
+        issuing_principal_id: "principal:operator".to_string(),
+        rationale: "tell the supervisor something".to_string(),
+        task_id: String::new(),
+        goal_id: String::new(),
+        context_packet_id: String::new(),
+        created_at: String::new(),
+        expires_at: (OffsetDateTime::now_utc() + time::Duration::seconds(600))
+            .format(&Rfc3339)
+            .expect("RFC3339"),
+        sequence: 0,
+        idempotency_key: format!("{unique}:notify"),
+        payload_digest: Vec::new(),
+        required_capability: "notify.v1".to_string(),
+        policy_refs: Vec::new(),
+        knowledge_refs: Vec::new(),
+        evidence_refs: Vec::new(),
+        payload: Some(agent_directive::Payload::Notify(v1::NotifyDirective {
+            message: "a message for the supervisor".to_string(),
+        })),
+    };
+    directive.payload_digest = directive_payload_digest(&directive).expect("a payload digest");
+    directive
 }
 
 /// The daemon's own registration and session frames are accepted by a real
@@ -353,5 +448,130 @@ async fn two_supervisors_on_one_host_get_separate_durable_state() {
         first.inbox_path().parent().map(PathBuf::from),
         second.inbox_path().parent().map(PathBuf::from),
         "they share a state directory but never a file"
+    );
+}
+
+/// The durability the outbox exists for: a receipt that was computed and
+/// written down, then lost because the connection dropped before the server
+/// confirmed it, is resent from local state on the next connection.
+///
+/// Before this was wired, `serve_once` opened the outbox and never enqueued
+/// anything, so the only thing that recovered a lost receipt was the server
+/// redelivering its directive — a guarantee held by the other side of the
+/// connection that had just failed.
+#[tokio::test]
+async fn an_unconfirmed_receipt_survives_a_drop_and_is_resent_on_reconnect() {
+    let Some(database_url) = database_url() else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let unique = unique_id("slice5-resend");
+    let tenant_id = format!("tenant-{unique}");
+    let repository_id = format!("repository-{unique}");
+    let node_id = enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+    let server = start_sync_server(&database_url).await;
+    let config = config(
+        &server.endpoint,
+        &tenant_id,
+        &repository_id,
+        &node_id,
+        &unique,
+    );
+    let registration = daemon::registration(&config);
+    let session = daemon::session(&config, OffsetDateTime::now_utc()).expect("a session");
+
+    // A real directive, issued and delivered, so the receipt below binds to
+    // something the server actually knows about -- the server refuses a
+    // receipt that references no directive, and a fixture that skipped this
+    // would prove only that refusal.
+    let mut connection = connect(&server, &config).await;
+    connection
+        .exchange_supervisor_frame(registration_frame(&registration))
+        .await
+        .expect("registration should be accepted");
+    connection
+        .exchange_supervisor_frame(session_frame(&session))
+        .await
+        .expect("the session should be accepted");
+
+    let mut directives = DirectiveStore::connect(&database_url)
+        .await
+        .expect("the directive store should connect");
+    directives
+        .enqueue(notify_directive(&config, &session.session_id, &unique))
+        .await
+        .expect("the directive should be enqueued");
+
+    let mut connection = connect(&server, &config).await;
+    connection
+        .exchange_supervisor_frame(registration_frame(&registration))
+        .await
+        .expect("registration should replay");
+    connection
+        .exchange_supervisor_frame(session_frame(&session))
+        .await
+        .expect("the session should replay");
+    let delivered = connection
+        .next_directive()
+        .expect("the directive should be delivered");
+
+    let inbox = SupervisorInbox::open_in_memory(registration.clone(), session.clone())
+        .expect("the inbox should open");
+    let receipt = inbox
+        .receive(&delivered, OffsetDateTime::now_utc())
+        .expect("a declared capability should be accepted");
+
+    // The connection dies before that receipt ever reaches the server.
+    drop(connection);
+
+    let outbox =
+        SupervisorOutbox::open(config.outbox_path(), registration.clone(), session.clone())
+            .expect("the outbox should open");
+    outbox
+        .enqueue(
+            1,
+            &v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::DirectiveReceipt(receipt)),
+            },
+        )
+        .expect("the receipt should queue durably");
+
+    // Unconfirmed, so it is still owed.
+    let before = outbox.positions().expect("positions");
+    assert_eq!(before.last_enqueued, 1);
+    assert_eq!(
+        before.acknowledged, 0,
+        "nothing may be acknowledged until the server confirms it"
+    );
+    assert_eq!(
+        outbox.pending(32).expect("pending").len(),
+        1,
+        "the unconfirmed receipt is what a reconnect must resend"
+    );
+
+    // A fresh connection drains it against the real server, exactly as
+    // `serve_once` does before it begins serving new directives.
+    let mut connection = connect(&server, &config).await;
+    connection
+        .exchange_supervisor_frame(registration_frame(&registration))
+        .await
+        .expect("registration should be accepted");
+
+    let exit = daemon::resend_pending(&outbox, &mut connection)
+        .await
+        .expect("resending should not fail");
+    assert!(
+        exit.is_none(),
+        "the connection is live, so resending must not report a disconnect"
+    );
+
+    let after = outbox.positions().expect("positions");
+    assert_eq!(
+        after.acknowledged, 1,
+        "the resent receipt is acknowledged only after the server confirmed it"
+    );
+    assert!(
+        outbox.pending(32).expect("pending").is_empty(),
+        "nothing remains owed once the server has confirmed it"
     );
 }

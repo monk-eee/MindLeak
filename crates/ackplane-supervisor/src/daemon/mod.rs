@@ -47,11 +47,15 @@ use ackplane_protocol::{
     },
     v1,
 };
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::OffsetDateTime;
+
+mod frames;
+
+use frames::{heartbeat_frame, registration_frame, session_frame};
 
 use crate::{
     config::{SignerSource, SupervisorConfig},
-    reconcile, InboxError, OutboxError, Reconciliation, SupervisorInbox, SupervisorOutbox,
+    InboxError, OutboxError, SupervisorInbox, SupervisorOutbox,
 };
 
 /// How the daemon stopped, so a caller can distinguish an orderly shutdown
@@ -87,6 +91,11 @@ pub enum DaemonError {
 /// machine it runs on; it does not claim a container or cloud runtime it has
 /// no way to verify.
 const RUNTIME: SupervisorRuntime = SupervisorRuntime::LocalMachine;
+
+/// How many unconfirmed frames one reconnect may resend before serving new
+/// work. Bounded so a long backlog is drained in instalments rather than one
+/// burst that could outrun the connection's flow control.
+const MAX_RESEND_BATCH: u32 = 32;
 
 /// Build the signer this configuration selected.
 pub fn signer(config: &SupervisorConfig) -> Result<Box<dyn ClaimSigner>, DaemonError> {
@@ -150,82 +159,6 @@ pub fn session(
     })
 }
 
-fn registration_frame(registration: &SupervisorRegistration) -> v1::NodeFrame {
-    v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::SupervisorRegistration(
-            v1::SupervisorRegistration {
-                supervisor_id: registration.supervisor_id.clone(),
-                node_id: registration.identity.node_id.clone(),
-                supervisor_version: registration.supervisor_version.clone(),
-                protocol_version: registration.protocol_version.clone(),
-                supported_directives: registration
-                    .capabilities
-                    .supported_directives
-                    .iter()
-                    .map(|capability| wire_capability(*capability) as i32)
-                    .collect(),
-                supports_checkpoint: registration.capabilities.supports_checkpoint,
-                supports_force_termination: registration.capabilities.supports_force_termination,
-                outbox_durability: v1::SupervisorOutboxDurability::Persistent as i32,
-                recoverable_outbox: registration.capabilities.recoverable_outbox,
-            },
-        )),
-    }
-}
-
-/// Map one declared capability onto its wire value.
-///
-/// Exhaustive rather than a catch-all: a capability added to the protocol must
-/// be considered here deliberately, not silently dropped from a registration
-/// that would then under-declare what this supervisor can do.
-fn wire_capability(capability: SupervisorDirectiveCapability) -> v1::SupervisorDirectiveCapability {
-    match capability {
-        SupervisorDirectiveCapability::Notify => v1::SupervisorDirectiveCapability::Notify,
-        SupervisorDirectiveCapability::Prompt => v1::SupervisorDirectiveCapability::Prompt,
-        SupervisorDirectiveCapability::Assign => v1::SupervisorDirectiveCapability::Assign,
-        SupervisorDirectiveCapability::Steer => v1::SupervisorDirectiveCapability::Steer,
-        SupervisorDirectiveCapability::Pause => v1::SupervisorDirectiveCapability::Pause,
-        SupervisorDirectiveCapability::Resume => v1::SupervisorDirectiveCapability::Resume,
-        SupervisorDirectiveCapability::Drain => v1::SupervisorDirectiveCapability::Drain,
-        SupervisorDirectiveCapability::TerminateGracefully => {
-            v1::SupervisorDirectiveCapability::TerminateGracefully
-        }
-        SupervisorDirectiveCapability::TerminateForce => {
-            v1::SupervisorDirectiveCapability::TerminateForce
-        }
-    }
-}
-
-fn session_frame(
-    session: &SupervisorSession,
-    started_at: OffsetDateTime,
-) -> Result<v1::NodeFrame, DaemonError> {
-    Ok(v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::SupervisorSession(
-            v1::SupervisorSession {
-                supervisor_id: session.supervisor_id.clone(),
-                session_id: session.session_id.clone(),
-                worker_id: session.worker_id.clone(),
-                runtime: v1::SupervisorRuntime::LocalMachine as i32,
-                started_at: started_at
-                    .format(&Rfc3339)
-                    .map_err(|_| DaemonError::Clock)?,
-                state: v1::SupervisorWorkerState::Started as i32,
-            },
-        )),
-    })
-}
-
-fn heartbeat_frame(supervisor_id: &str) -> v1::NodeFrame {
-    v1::NodeFrame {
-        frame: Some(v1::node_frame::Frame::SupervisorHeartbeat(
-            v1::SupervisorHeartbeat {
-                supervisor_id: supervisor_id.to_string(),
-            },
-        )),
-    }
-}
-
 /// Open one connection, announce this supervisor, and serve directives until
 /// the connection closes or local evidence stops adding up.
 ///
@@ -255,19 +188,31 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
     .await
     .map_err(Box::new)?;
 
-    // ADR-0116 decision 7: decide whether this is a clean resume before
-    // sending anything, not after.
-    match reconcile(positions, connection.accepted_position()) {
-        Reconciliation::IncompleteEvidence {
-            local_acknowledged,
-            server_accepted,
-        } => {
-            return Ok(DaemonExit::IncompleteEvidence {
-                local_acknowledged,
-                server_accepted,
-            });
-        }
-        Reconciliation::UpToDate { .. } | Reconciliation::Resend { .. } => {}
+    // NOTE ON WHAT IS DELIBERATELY *NOT* CHECKED HERE.
+    //
+    // ADR-0116 decision 7's `IncompleteEvidence` case -- the server holding
+    // more supervisor evidence than this node can account for -- cannot be
+    // detected on this connection, and pretending otherwise is worse than
+    // leaving it undetected. `HelloAccepted.accepted_position` is an echo of
+    // the `last_accepted_position` the client itself just sent
+    // (`service/handshake.rs` carries `hello.last_accepted_position` straight
+    // through), so `reconcile(positions, connection.accepted_position())`
+    // compares a number against its own reflection and can only ever answer
+    // `UpToDate`. An earlier revision of this function made exactly that call
+    // and read as a working guard.
+    //
+    // Detecting it needs the server to report its own independent view of this
+    // supervisor's position, which the wire protocol does not carry. That is a
+    // protocol change with its own review, so it is recorded as an open gap
+    // rather than half-built here. `reconcile` itself is correct and stays: it
+    // is exercised by its own unit tests and slice 4's integration test, and is
+    // the decision function for when such a position exists.
+    //
+    // What *is* recoverable without any server-reported position is the
+    // outbox's own enqueued-versus-acknowledged pair, which is entirely local
+    // and truthful -- that is what the resend below uses.
+    if let Some(exit) = resend_pending(&outbox, &mut connection).await? {
+        return Ok(exit);
     }
 
     if let Some(exit) = disconnected_on_error(
@@ -309,11 +254,22 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
                 reason = receipt.reason,
                 "receipted a directive"
             );
+            // Durable before transmitted. The receipt is already recorded in
+            // the inbox, but the inbox records what this supervisor *decided*;
+            // the outbox records what it still owes the server. Without this,
+            // a receipt computed and then lost to a dropped connection depends
+            // entirely on the server redelivering the directive to be sent
+            // again -- true today, but a guarantee held by the other side of a
+            // connection that had just failed.
+            let sequence = enqueue_receipt(&outbox, &receipt)?;
             if let Some(exit) =
                 disconnected_on_error(connection.submit_directive_receipt(receipt).await)
             {
                 return Ok(exit);
             }
+            // Acknowledged only once the server's own frame receipt confirms
+            // it, so an unconfirmed receipt survives to be resent.
+            outbox.acknowledge_through(sequence)?;
         }
 
         tokio::time::sleep(config.heartbeat_interval).await;
@@ -334,6 +290,84 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
             return Ok(exit);
         }
     }
+}
+
+/// Queue one directive receipt durably and return the sequence it took, so the
+/// caller can acknowledge exactly that frame once the server confirms it.
+fn enqueue_receipt(
+    outbox: &SupervisorOutbox,
+    receipt: &v1::DirectiveReceipt,
+) -> Result<u64, DaemonError> {
+    let sequence = outbox.positions()?.last_enqueued.saturating_add(1);
+    outbox.enqueue(
+        sequence,
+        &v1::NodeFrame {
+            frame: Some(v1::node_frame::Frame::DirectiveReceipt(receipt.clone())),
+        },
+    )?;
+    Ok(sequence)
+}
+
+/// Resend every frame this supervisor queued but never got confirmed.
+///
+/// Public so the behaviour can be driven directly against a real connection in
+/// a test: `serve_once` runs an unbounded serve loop, so a test that called it
+/// would have to decide when to stop it, which tests the harness rather than
+/// the resend.
+///
+/// This is the whole reason the outbox is durable. A receipt that was computed,
+/// written down, and then lost to a dropped connection is re-sent from local
+/// state here rather than depending on the server to redeliver its directive.
+/// Redelivery does also cover it today, but that is a guarantee held by the
+/// other side of the connection that just failed, and the inbox replays an
+/// identical receipt for a repeated directive either way -- so resending is
+/// idempotent, never a double-report.
+pub async fn resend_pending(
+    outbox: &SupervisorOutbox,
+    connection: &mut NodeSyncConnection,
+) -> Result<Option<DaemonExit>, DaemonError> {
+    let pending = outbox.pending(MAX_RESEND_BATCH)?;
+    if pending.is_empty() {
+        return Ok(None);
+    }
+    tracing::info!(
+        count = pending.len(),
+        "resending supervisor frames that were never confirmed"
+    );
+    for queued in pending {
+        let sequence = queued.sequence;
+        match connection.exchange_supervisor_frame(queued.frame).await {
+            Ok(_) => {
+                outbox.acknowledge_through(sequence)?;
+            }
+            // A frame the server refuses outright will be refused again on
+            // every reconnect. Retrying it forever would wedge the daemon in a
+            // reconnect loop and block every later frame behind it, so it is
+            // dropped from the queue -- loudly, because a receipt Ackplane
+            // will not accept is a real problem, just not one more attempts
+            // can fix. `retryable` is the server's own judgement of which case
+            // this is, so it decides rather than this code guessing.
+            Err(ClientError::FrameRefused {
+                reason,
+                retryable: false,
+                diagnostic,
+            }) => {
+                tracing::error!(
+                    sequence,
+                    ?reason,
+                    %diagnostic,
+                    "Ackplane permanently refused a queued supervisor frame; dropping it \
+                     rather than resending it forever"
+                );
+                outbox.acknowledge_through(sequence)?;
+            }
+            Err(error) => {
+                tracing::info!(%error, "the supervisor connection closed while resending");
+                return Ok(Some(DaemonExit::Disconnected));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Treat any transport failure while talking to Ackplane as an ordinary
