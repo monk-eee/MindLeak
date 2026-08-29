@@ -23,6 +23,7 @@
 
 import { execFileSync } from "node:child_process";
 
+import { readOwnClaims, uncoveredCommitNotice } from "./claim-gate.mjs";
 import { checkWorktreeOwnership, refusalMessage } from "./worktree-owner.mjs";
 
 const argv = process.argv.slice(2);
@@ -131,17 +132,41 @@ if (ownership.action === "refuse") {
 
 // Stage only the declared paths, including deletions. Plain `git add -- <path>`
 // refuses a path that no longer exists even when that deletion is exactly what
-// this scoped commit must preserve. `git add -A` handles a fresh deletion, but
-// it also refuses an individual deleted path that the caller already staged, so
-// leave only those index entries untouched.
-const stagedDeletions = new Set(
-  capture(["diff", "--cached", "--name-only", "--diff-filter=D"])
+// this scoped commit must preserve, and `git add -A` handles a fresh deletion
+// but still refuses a path already gone from disk and staged.
+//
+// Paths that are already fully represented in the index and no longer exist on
+// disk. `git add` refuses a pathspec matching nothing, so naming one of these
+// aborts the whole staging step with `fatal: pathspec ... did not match any
+// files` — an error that names your path and not the reason.
+//
+// Two ways a declared path gets into this state, and only the first was handled
+// before: a plain staged delete (`D`), and the OLD side of a staged rename
+// (`R`). The second is what `git mv old new` produces, and it is invisible to
+// `--diff-filter=D` because git reports it as `R`, not `D`. Measured: declaring
+// the old path of a file→module-directory split (`git mv daemon.rs
+// daemon/mod.rs`, then committing `crates/.../daemon.rs`) failed with exit 128
+// and no commit, for a rename already correctly staged.
+//
+// Both are already in the index, so there is nothing to add for them — they
+// only need to appear in the commit pathspec below, which `commitPaths`
+// handles.
+const stagedRenames = () =>
+  capture(["diff", "--cached", "--name-status", "-M"])
+    .split("\n")
+    .map((line) => line.trim().split("\t"))
+    .filter(([status]) => status?.startsWith("R"))
+    .map(([, from, to]) => ({ from, to }));
+
+const alreadyStagedAndGone = new Set([
+  ...capture(["diff", "--cached", "--name-only", "--diff-filter=D"])
     .split("\n")
     .map((path) => path.trim())
     .filter(Boolean),
-);
+  ...stagedRenames().map(({ from }) => from),
+]);
 const pathsToStage = paths.filter(
-  (path) => !stagedDeletions.has(path.replace(/\\/g, "/")),
+  (path) => !alreadyStagedAndGone.has(path.replace(/\\/g, "/")),
 );
 if (pathsToStage.length) {
   run(["add", "-A", "--", ...pathsToStage]);
@@ -156,15 +181,11 @@ if (pathsToStage.length) {
 // (gaps.d/scoped-commit-cannot-express-a-rename-whose-old-path.md). The OLD
 // side can never go in the `git add` list above: it no longer exists on disk,
 // and `git add` refuses a pathspec matching nothing.
-const renamedSources = capture(["diff", "--cached", "--name-status", "-M"])
-  .split("\n")
-  .map((line) => line.trim())
-  .filter(Boolean)
-  .map((line) => line.split("\t"))
-  .filter(
-    ([status, , newPath]) => status.startsWith("R") && isDeclared(newPath),
-  )
-  .map(([, oldPath]) => oldPath);
+// Recomputed after staging: `git add` above can itself create a rename that did
+// not exist in the index a moment ago.
+const renamedSources = stagedRenames()
+  .filter(({ to }) => isDeclared(to))
+  .map(({ from }) => from);
 const isPartOfThisCommit = (file) =>
   isDeclared(file) || renamedSources.includes(file);
 const commitPaths = [...new Set([...paths, ...renamedSources])];
@@ -182,6 +203,23 @@ if (foreign.length) {
   );
   for (const file of foreign) console.warn(`  ${file}`);
 }
+
+// The claim advisory, printed BEFORE the commit exists (ADR-0048 keeps commits
+// ungated; this is a warning, never a gate). Placed here rather than after the
+// commit deliberately: a notice the reader sees only once the commit is made
+// names a repair that does not exist, because a claim taken afterwards does not
+// reach back over it. Here, stopping and claiming is still a real option.
+const claimState = readOwnClaims({
+  repoRoot: capture(["rev-parse", "--show-toplevel"]),
+  sessionId: process.env.LODESTAR_SESSION_ID,
+});
+const claimNotice = uncoveredCommitNotice({
+  tasks: claimState.tasks,
+  agent: claimState.agent,
+  now: Date.now() / 1000,
+  reachable: claimState.reachable,
+});
+if (claimNotice) console.warn(`scoped-commit: ${claimNotice}`);
 
 try {
   run(["commit", ...messageArgs, "--", ...commitPaths]);

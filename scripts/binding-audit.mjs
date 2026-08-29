@@ -51,6 +51,53 @@ export function unboundSources(files, boundNodeIds) {
   return files.filter((file) => !bound.has(`artifact:${file}`)).sort();
 }
 
+/**
+ * Where a bound path still exists, or `null` when nothing holds it.
+ *
+ * A binding lives in the per-repository `spec.db` that every linked worktree
+ * shares, but the path it names is resolved against whichever working tree the
+ * audit happens to run in. Those are different scopes, and treating them as one
+ * makes the verdict depend on where you stood. Measured 2026-08-29 against one
+ * unchanged database: from a checkout at `origin/main`, 4 stale bindings; from
+ * the worktree holding the unmerged branch that adds those files, 0. All four
+ * were correct bindings for work that had not landed yet.
+ *
+ * That is not merely noisy, it is dangerous: the obvious response to "stale" is
+ * to unbind, which strips governance from a peer's unmerged code, and it then
+ * lands ungoverned and invisible to conformance. So a path is stale only when
+ * NO ref that could still land holds it — checked against the local tree first
+ * (cheapest, and the common case), then every remote branch.
+ *
+ * Returns the ref that keeps it alive so the report can say why, rather than
+ * leaving the reader to rediscover it.
+ */
+export function pathHolder(rel, { exists, refs, inRef }) {
+  if (exists(rel)) return "working tree";
+  return refs().find((ref) => inRef(ref, rel)) ?? null;
+}
+
+/**
+ * Whether a vanished bound path was split into a same-named module directory.
+ *
+ * The repository's own `rust-module-length` control tells agents to split any
+ * module over 450 non-test lines, so `X.rs` becoming `X/mod.rs` plus siblings
+ * is routine, expected, and breaks the binding every time: the binding still
+ * names `X.rs`, which reports as stale, and every descendant reports as
+ * unbound. Two controls in tension, with nothing connecting them.
+ *
+ * A split and a deletion need opposite responses — rebind the descendants
+ * versus unbind the dead path — so reporting them identically sends half the
+ * readers the wrong way.
+ */
+export function splitInto(rel, { listDir }) {
+  const asDirectory = rel.replace(/\.rs$/, "");
+  if (asDirectory === rel) return [];
+  return listDir(asDirectory)
+    .filter((name) => name.endsWith(".rs"))
+    .map((name) => `${asDirectory}/${name}`)
+    .sort();
+}
+
 /** Binding rows from either the current or pre-rename Lodestar schema. */
 export function goalArtifactBindings(db) {
   const tables = new Set(
@@ -230,16 +277,97 @@ async function main() {
     }
 
     console.log("\n=== bindings naming a path that no longer exists ===");
+    const git = (args) => {
+      try {
+        return execFileSync("git", args, {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+      } catch {
+        return "";
+      }
+    };
+    // Every remote branch, because any of them could still land and bring the
+    // bound path with it. Computed once: this is one git call, not one per
+    // binding.
+    const remoteRefs = git([
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/remotes",
+    ])
+      .split("\n")
+      .map((ref) => ref.trim())
+      .filter(Boolean);
+    const holderOf = (rel) =>
+      pathHolder(rel, {
+        exists: (file) => fs.existsSync(path.join(repoRoot, file)),
+        refs: () => remoteRefs,
+        inRef: (ref, file) => {
+          try {
+            execFileSync("git", ["cat-file", "-e", `${ref}:${file}`], {
+              cwd: repoRoot,
+              stdio: "ignore",
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      });
+
     let stale = 0;
+    let elsewhere = 0;
+    let split = 0;
     for (const binding of bindings) {
       if (!binding.node_id.startsWith("artifact:")) continue;
       const rel = binding.node_id.slice("artifact:".length);
-      if (!fs.existsSync(path.join(repoRoot, rel))) {
-        stale += 1;
-        console.log(`  MISSING  ${rel}   (${binding.goal_id})`);
+      const holder = holderOf(rel);
+      if (holder === "working tree") continue;
+      if (holder) {
+        // Alive on a branch that has not landed. Reporting this as stale is how
+        // an agent gets talked into unbinding a peer's unmerged code.
+        elsewhere += 1;
+        console.log(`  IN FLIGHT  ${rel}   (${binding.goal_id})`);
+        console.log(`             still present on ${holder} — not stale`);
+        continue;
       }
+      const descendants = splitInto(rel, {
+        listDir: (dir) => {
+          try {
+            return fs.readdirSync(path.join(repoRoot, dir));
+          } catch {
+            return [];
+          }
+        },
+      });
+      if (descendants.length > 0) {
+        split += 1;
+        console.log(`  SPLIT    ${rel}   (${binding.goal_id})`);
+        console.log(
+          `             became ${descendants.length} module(s); rebind them and unbind this path:`,
+        );
+        for (const file of descendants) console.log(`               ${file}`);
+        continue;
+      }
+      stale += 1;
+      console.log(`  MISSING  ${rel}   (${binding.goal_id})`);
     }
-    if (stale === 0) console.log("  none");
+    if (stale + elsewhere + split === 0) console.log("  none");
+    if (elsewhere > 0) {
+      console.log(
+        `\n  ${elsewhere} binding(s) name a path absent from this worktree but present on another\n` +
+          "  branch. Bindings are repository-shared and paths are checkout-relative, so this\n" +
+          "  is expected in a fleet. Unbinding them would strip governance from unmerged work.",
+      );
+    }
+    if (split > 0) {
+      console.log(
+        `\n  ${split} binding(s) name a file that became a module directory. The rust-module-length\n` +
+          "  control asks for exactly this split, so it recurs; rebind the descendants to the goal\n" +
+          "  the predecessor held, then unbind the old path.",
+      );
+    }
 
     console.log("\n=== bindings stranded on superseded goals ===");
     const stranded = bindings.filter(
@@ -265,9 +393,14 @@ async function main() {
     }
 
     console.log(
-      `\nsummary: ${unbound} unbound source files, ${stale} stale bindings, ${stranded.length} stranded bindings (db ${dbPath})`,
+      `\nsummary: ${unbound} unbound source files, ${stale} stale bindings, ` +
+        `${split} split bindings, ${elsewhere} in flight on another branch, ` +
+        `${stranded.length} stranded bindings (db ${dbPath})`,
     );
-    if (check && (unbound > 0 || stale > 0)) process.exitCode = 1;
+    // A split fails the check: it is a real binding defect with a known repair,
+    // and leaving it green is how the descendants stay ungoverned. An in-flight
+    // binding does not — it is correct, and only looks wrong from here.
+    if (check && (unbound > 0 || stale > 0 || split > 0)) process.exitCode = 1;
   } finally {
     db.close();
   }

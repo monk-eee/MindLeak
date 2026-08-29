@@ -7,6 +7,8 @@ import {
   addedRustSources,
   configuredRepositoryDb,
   goalArtifactBindings,
+  pathHolder,
+  splitInto,
   unboundSources,
 } from "./binding-audit.mjs";
 
@@ -116,4 +118,100 @@ test("configuredRepositoryDb selects this repository when other ledgers exist", 
     "mindleak.repositoryId",
   ]);
   assert.equal(resolved, expected);
+});
+
+// --- staleness is repository-wide, not checkout-relative (pathHolder) ---
+
+const NO_REFS = { refs: () => [], inRef: () => false };
+
+test("a path in this working tree is held here, with no git calls needed", () => {
+  let asked = 0;
+  assert.equal(
+    pathHolder("crates/a/src/lib.rs", {
+      exists: () => true,
+      refs: () => {
+        asked += 1;
+        return [];
+      },
+      inRef: () => false,
+    }),
+    "working tree",
+  );
+  assert.equal(asked, 0, "the cheap local check answers first");
+});
+
+/// The measured footgun. Bindings live in a repository-shared spec.db; the path
+/// they name was being resolved against whichever worktree the audit ran in. One
+/// unchanged database reported 4 stale bindings from a checkout at origin/main
+/// and 0 from the worktree holding the branch that adds those files. Acting on
+/// the first reading -- unbind what is "stale" -- strips governance from a
+/// peer's unmerged code, which then lands ungoverned.
+test("a path absent here but present on another branch is not stale", () => {
+  assert.equal(
+    pathHolder("crates/ackplane-mcp/src/tools.rs", {
+      exists: () => false,
+      refs: () => ["refs/remotes/origin/main", "refs/remotes/origin/feat/mcp"],
+      inRef: (ref) => ref === "refs/remotes/origin/feat/mcp",
+    }),
+    "refs/remotes/origin/feat/mcp",
+    "the holding ref is named, so the reader need not rediscover it",
+  );
+});
+
+test("a path in no working tree and no ref is genuinely stale", () => {
+  assert.equal(
+    pathHolder("crates/a/src/deleted.rs", { exists: () => false, ...NO_REFS }),
+    null,
+  );
+});
+
+// --- a split is not a deletion (splitInto) ---
+
+/// The recurring shape. The rust-module-length control tells agents to split any
+/// module over 450 non-test lines, so X.rs becoming X/mod.rs plus siblings is
+/// routine -- and it strands the binding every time. A split and a deletion need
+/// opposite responses (rebind the descendants vs unbind the dead path), so
+/// reporting them identically sends half the readers the wrong way.
+test("a vanished module whose directory exists reports its descendants", () => {
+  assert.deepEqual(
+    splitInto("crates/ackplane-supervisor/src/daemon.rs", {
+      listDir: (dir) =>
+        dir === "crates/ackplane-supervisor/src/daemon"
+          ? ["mod.rs", "frames.rs"]
+          : [],
+    }),
+    [
+      "crates/ackplane-supervisor/src/daemon/frames.rs",
+      "crates/ackplane-supervisor/src/daemon/mod.rs",
+    ],
+  );
+});
+
+test("a genuinely deleted module reports no descendants", () => {
+  assert.deepEqual(
+    splitInto("crates/a/src/gone.rs", { listDir: () => [] }),
+    [],
+  );
+});
+
+/// Non-Rust bindings must not be probed as if they were modules: `docs/x.md`
+/// has no `docs/x` module directory, and inventing one would report a split
+/// that never happened.
+test("a non-Rust path is never treated as a split", () => {
+  assert.deepEqual(
+    splitInto("docs/ARCHITECTURE.md", { listDir: () => ["anything.rs"] }),
+    [],
+  );
+});
+
+/// A directory that exists but holds no Rust sources is not a module split --
+/// it is a coincidence of naming, and calling it a split would send the reader
+/// to rebind files that do not exist.
+test("a same-named directory with no Rust sources is not a split", () => {
+  assert.deepEqual(
+    splitInto("crates/a/src/thing.rs", {
+      listDir: () => ["README.md", "data.json"],
+    }),
+    [],
+  );
 });

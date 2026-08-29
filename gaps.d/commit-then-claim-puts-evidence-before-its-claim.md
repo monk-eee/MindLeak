@@ -27,6 +27,29 @@
   happening, the honest fix is to make claiming first easier or to make the
   breach visible at commit time, not to loosen what evidence means.
 
+  **The commit-time half now exists, 2026-08-29 — the exit is available while
+  it is still an exit.** `scoped-commit.mjs` warns *before* creating the commit
+  when no live claim of this session covers it, naming the remedy and saying
+  plainly that claiming afterwards will not repair it (`uncoveredCommitNotice`).
+  That is the piece the paragraph above identifies as missing: the publish-time
+  warning is correct but arrives when the only remaining moves are
+  `merge_evidence` or a human resolve, whereas at commit time stopping and
+  claiming still costs one call and loses nothing.
+
+  It is a warning and not a gate, and that is load-bearing rather than timid —
+  ADR-0048's design note is that gating commits on a claim teaches agents to
+  invent a task to get past the check, which is how six duplicate tasks reached
+  the board. A warning costs a wasted commit at worst; a gate costs a fictional
+  task that outlives it. An unreadable ledger is reported as unreadable rather
+  than passed over, because "no claim" and "could not tell" must not look alike
+  from here.
+
+  **Still OPEN**, and the residual is what it always was: nothing makes claiming
+  first *easier*, only more visible, and an agent that reads the warning and
+  commits anyway reproduces the original outcome exactly. The underlying rule —
+  evidence is bounded by the claim that authorised it — is ADR-0009's guarantee
+  and is not a defect to patch.
+
   **Visibility half shipped, gap itself unchanged.** `canonical-push.mjs` now
   warns — advisory only, never blocking — when a branch being published
   carries a commit whose own timestamp predates every claim this session

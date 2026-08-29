@@ -37,6 +37,9 @@ export const sameSession = (left, right) => Boolean(left) && left === right;
 /** The token fingerprint of an agent id, whichever id shape it is written in. */
 const fingerprintOf = (id) => /([0-9a-f]{32})$/.exec(id ?? "")?.[1] ?? null;
 
+/** A session token is 128 bits of lowercase hex, per the session invariant. */
+const SESSION_TOKEN = /^[0-9a-f]{32}$/;
+
 /**
  * A claim held by *this* session under a different id shape.
  *
@@ -123,6 +126,51 @@ export const liveClaimHeldByAnother = (tasks, branch, agent, now) =>
       task.lease_expires_at > now &&
       !sameSession(task.owner, agent),
   ) ?? null;
+
+/**
+ * The advisory printed before a commit that no live claim would cover.
+ *
+ * The push-time notice above answers "did commits already land outside the
+ * window". This answers the earlier and more useful question: "is there a claim
+ * right now that will cover the commit I am about to make". Same defect, but
+ * caught at the only moment it is still avoidable — the fragment recording it
+ * says a warning visible only after the push "offers no earlier exit anyway",
+ * and this is that earlier exit.
+ *
+ * Advisory, never a gate, and that is load-bearing rather than timid: ADR-0048's
+ * design note is that gating commits on a claim teaches agents to invent a task
+ * to get past the check, which is how six duplicate tasks reached the board. A
+ * warning costs a wasted commit at worst; a gate costs a fictional task that
+ * outlives it.
+ *
+ * `reachable: false` is reported rather than passed over. An unreadable ledger
+ * and an empty board look identical from here, and printing nothing for the
+ * first teaches the reader that silence means claimed.
+ */
+export const uncoveredCommitNotice = ({
+  tasks,
+  agent,
+  now,
+  reachable = true,
+}) => {
+  if (!reachable) {
+    return (
+      "the Lodestar board could not be read, so whether a claim covers this commit is unknown. " +
+      "Committing anyway; if no claim is live, check_conformance will later report this commit's " +
+      "evidence as outside the claim window (gaps.d/commit-then-claim-puts-evidence-before-its-claim.md)."
+    );
+  }
+  if (liveClaims(tasks, agent, now).length > 0) return null;
+  return (
+    "no live claim of this session covers what you are about to commit. check_conformance bounds " +
+    "evidence by claim_started_at, so a commit made now can never be certified — a claim taken " +
+    "afterward does not reach back over it " +
+    "(gaps.d/commit-then-claim-puts-evidence-before-its-claim.md).\n" +
+    "  This commit is NOT blocked, and claiming after it will not repair it. To keep the work " +
+    "certifiable, stop here, claim the task, and re-run the identical command:\n" +
+    '    task_claim(task_id, step="claim", session_id, paths)'
+  );
+};
 
 /**
  * Commits that landed before any held claim could possibly cover them
@@ -554,3 +602,57 @@ export function parseCallResult(result) {
     return text;
   }
 }
+
+/**
+ * Whether this session holds any live claim, read from the ledger.
+ *
+ * Thin I/O around `uncoveredCommitNotice` above, with the same injectable seams
+ * `checkActiveClaimOnBranch` uses, so the decision stays testable without a
+ * server. Every failure path returns `reachable: false` rather than an empty
+ * board: those two states are indistinguishable to the caller otherwise, and
+ * reporting the second as the first is how a check starts lying.
+ *
+ * `open_session` resolves this session's agent id, which is the only way to
+ * tell whose claims the board is showing -- the id is derived from the token
+ * by the server, not equal to it. No branch or head is declared here: a commit
+ * is not the moment to assert where a session is working (`canonical-push`
+ * does that at publish time, when it is certainly true).
+ */
+export const readOwnClaims = ({
+  repoRoot,
+  sessionId,
+  resolveServer: resolve = resolveServer,
+  callTools: call = callTools,
+} = {}) => {
+  if (!SESSION_TOKEN.test(sessionId ?? "")) return { reachable: false };
+  const server = resolve(repoRoot, "lodestar");
+  if (!server) return { reachable: false };
+  try {
+    const [session, board] = call(
+      server,
+      repoRoot,
+      [
+        { name: "open_session", arguments: { session_id: sessionId } },
+        {
+          name: "task_query",
+          arguments: {
+            view: "board",
+            include_terminal: false,
+            detail: false,
+            limit: 0,
+          },
+        },
+      ],
+      8 * 1024 * 1024,
+    );
+    const agent = session?.agent_id;
+    if (!agent) return { reachable: false };
+    return {
+      reachable: true,
+      agent,
+      tasks: Array.isArray(board) ? board : (board?.tasks ?? []),
+    };
+  } catch {
+    return { reachable: false };
+  }
+};

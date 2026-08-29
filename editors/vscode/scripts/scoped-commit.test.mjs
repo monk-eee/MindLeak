@@ -136,6 +136,47 @@ describe("scoped-commit", () => {
   // named in the pathspec, including one deleted in the index -- so without
   // this, the old path's HEAD content silently comes back alongside the new
   // one.
+  // The failure this fix exists for: declaring the OLD path of a staged rename
+  // aborted the whole staging step with `fatal: pathspec ... did not match any
+  // files` and exit 128, for a rename already correctly in the index. The
+  // existing skip-list read `--diff-filter=D`, which never lists a rename's
+  // old side because git reports it as `R`. Naming both sides of a
+  // file→module-directory split is the natural thing to type, and it was the
+  // one shape that could not work.
+  it("commits a rename when the old path is declared alongside the new one", () => {
+    const repo = mkdtempSync(join(tmpdir(), "mindleak-scoped-commit-rename-"));
+    temporaryDirectories.push(repo);
+    git(repo, ["init", "-b", "main"]);
+    git(repo, ["config", "user.name", "Scoped Commit Rename Test"]);
+    git(repo, ["config", "user.email", "scoped-commit-rename@example.invalid"]);
+
+    const original = Array.from({ length: 20 }, (_, i) => `line ${i}\n`).join("");
+    writeFileSync(join(repo, "daemon.rs"), original);
+    git(repo, ["add", "daemon.rs"]);
+    git(repo, ["commit", "-m", "base"]);
+
+    mkdirSync(join(repo, "daemon"));
+    git(repo, ["mv", "daemon.rs", "daemon/mod.rs"]);
+
+    const result = spawnSync(
+      process.execPath,
+      [scopedCommit, "-m", "split", "--", "daemon.rs", "daemon/mod.rs"],
+      { cwd: repo, encoding: "utf8", env: isolatedGitEnvironment() }
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stderr).not.toContain("did not match any files");
+    const names = git(repo, ["show", "--name-status", "--format=", "HEAD"]);
+    expect(names).toContain("daemon/mod.rs");
+    // The old path is gone from the tree, not merely absent from the pathspec.
+    const oldContent = spawnSync("git", ["cat-file", "-p", "HEAD:daemon.rs"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: isolatedGitEnvironment(),
+    });
+    expect(oldContent.status).not.toBe(0);
+  }, 30_000);
+
   it("commits a staged rename whose old path isn't declared, without resurrecting its content", () => {
     const repo = mkdtempSync(join(tmpdir(), "mindleak-scoped-commit-rename-"));
     temporaryDirectories.push(repo);
