@@ -216,3 +216,22 @@ This is the first slice of ADR-0097: decisions 2 and 3. Git-observation
 submission, goal-less scope reservations, governance-bootstrap helpers, memory
 reconciliation, and the usage retrospective (decisions 4-8) remain future work
 under the same task.
+
+## Industrial front-door tools (`ackplane-mcp`)
+
+A separate binary, and deliberately not a mode of either local plane: these
+tools are served only by `ackplane-mcp`, which translates each call into an
+Ackplane gRPC service that already owns the rule (ADR-0136). Nothing here
+re-implements decay, claim/lease, or conformance logic, and connecting to it
+changes nothing about `mindleak-mcp`/`lodestar-mcp`, which keep their
+stdio-only, no-network-listener contract.
+
+**Pilot status (ADR-0136 clause 4):** it refuses any endpoint that is not
+loopback, because reaching a remote arbiter would send an enrolled node's
+possession proof off the machine under an authentication model that has not
+been decided yet. Set `ACKPLANE_MCP_ENDPOINT` to point at a local arbiter;
+it defaults to `http://127.0.0.1:8443`.
+
+| Tool                       | Purpose                                                                                                                                                                                                                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check_enrollment_status`  | Ask Ackplane whether this repository's candidate (node, key) binding is enrolled right now, translating `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122). The verdict is the arbiter's and is never recomputed locally. A repository that has never run `register-me request` is reported as unable to ask rather than as "not enrolled" — no arbiter was consulted, and those are different facts. `state` is returned only when `verified` is true, because ADR-0122 decision 5 makes it meaningless otherwise. |
