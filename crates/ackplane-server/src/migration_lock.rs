@@ -158,6 +158,9 @@ pub(crate) mod key {
     /// development database when this slice was written;
     /// `migration-audit --next` selected 54.
     pub(crate) const HUMAN_DECISION_REQUESTS: i64 = 54;
+    /// `migrations/0055_projected_node_embeddings.sql` (ADR-0140 decision 1).
+    /// `migration-audit --next` selected 55: no live discrepancy above 54.
+    pub(crate) const PROJECTED_NODE_EMBEDDINGS: i64 = 55;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
