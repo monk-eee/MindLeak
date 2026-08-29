@@ -143,6 +143,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0135](0135-a-directive-receipt-survives-a-dropped-connection.md) | A directive receipt survives a dropped connection | Accepted |
 | [0136](0136-ackplane-gains-an-mcp-front-door-not-a-duplicated-storage-core.md) | Ackplane gains an MCP front door; it does not duplicate the local planes' storage core | Accepted |
 | [0138](0138-a-known-limitation-is-not-a-gap.md) | A known limitation is not a gap | Accepted |
+| [0141](0141-ackplane-reports-its-own-supervisor-position.md) | Ackplane reports its own supervisor position, not the client's echo | Proposed |
 
 ## Writing a new ADR
 
