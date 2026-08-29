@@ -58,6 +58,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ackplane-mcp"
+version = "0.1.7-alpha"
+dependencies = [
+ "ackplane-client",
+ "ackplane-protocol",
+ "anyhow",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "ackplane-protocol"
 version = "0.1.7-alpha"
 dependencies = [
