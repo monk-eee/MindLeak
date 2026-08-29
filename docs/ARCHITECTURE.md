@@ -784,6 +784,19 @@ ADR-0111's claim recovery is unchanged.
 | `GET /api/v1/repositories/:repository_id/administration/exports/:request_id` | The receipt recorded for one prior Export request, if any, tenant- and repository-scoped like every other Snapshot/purge/export read. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
+Neither Ackplane nor Bridge speak MCP today — the former is gRPC-only, the
+latter HTTP-only — so no MCP client (an AI coding agent, not a browser) can
+reach the Industrial profile directly. ADR-0136 (Proposed) closes that gap
+with a planned `ackplane-mcp` binary: a thin protocol adapter translating MCP
+tool calls into calls against these same gRPC services, never a second,
+Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s business
+rules. It is gated on an unresolved authenticated-principal decision (neither
+today's enrolled-node proof nor Bridge's loopback developer token fits an
+arbitrary MCP client) and on closing remaining domain gaps — task/claim
+parity with Industrial Work, and a `pgvector`-backed recall store scoped to
+`projected_nodes` rather than the curated `knowledge` domain — before it is
+usable end-to-end.
+
 ### `editors/vscode` (extension)
 
 Passive editor, shell-execution, workspace-mutation, and Git commit sensors plus
