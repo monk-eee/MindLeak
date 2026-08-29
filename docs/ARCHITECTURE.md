@@ -812,15 +812,20 @@ ADR-0111's claim recovery is unchanged.
 Neither Ackplane nor Bridge speak MCP today — the former is gRPC-only, the
 latter HTTP-only — so no MCP client (an AI coding agent, not a browser) can
 reach the Industrial profile directly. ADR-0136 (Accepted) closes that gap
-with a planned `ackplane-mcp` binary: a thin protocol adapter translating MCP
-tool calls into calls against these same gRPC services, never a second,
-Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s business
-rules. It is gated on an unresolved authenticated-principal decision (neither
-today's enrolled-node proof nor Bridge's loopback developer token fits an
-arbitrary MCP client) and on closing remaining domain gaps — task/claim
-parity with Industrial Work, and a `pgvector`-backed recall store scoped to
-`projected_nodes` rather than the curated `knowledge` domain — before it is
-usable end-to-end.
+with `ackplane-mcp`: an MCP stdio server over the same gRPC services, never a
+second, Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s
+business rules -- every handler translates to an Ackplane RPC that already
+exists and is already authorized, deciding nothing about enrolment or
+signatures itself. Its first slice translates exactly one tool,
+`check_enrollment_status` (ADR-0122), and holds itself to a local-loopback
+Ackplane endpoint until the authenticated-principal decision lands: neither
+today's enrolled-node possession proof nor Bridge's loopback developer token
+fits an arbitrary MCP client, so `endpoint::resolve_endpoint` refuses a
+non-loopback target rather than send that proof somewhere the decision has
+not been made about yet. Full task/claim parity with Industrial Work, and a
+`pgvector`-backed recall store scoped to `projected_nodes` rather than the
+curated `knowledge` domain, remain open before this front door is usable
+end-to-end beyond that one tool.
 
 ### `editors/vscode` (extension)
 
