@@ -21,6 +21,7 @@ pub mod live_feed;
 pub mod shared_assets;
 pub mod supervisor_api;
 pub mod work_api;
+pub mod work_command_api;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
 const LISTEN_ENV: &str = "ACKPLANE_BRIDGE_LISTEN";

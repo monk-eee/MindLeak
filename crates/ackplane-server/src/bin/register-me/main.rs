@@ -39,18 +39,11 @@ use std::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request;
 
-use ackplane_protocol::v1::{
-    self, node_enrollment_service_client::NodeEnrollmentServiceClient,
-    node_sync_service_client::NodeSyncServiceClient,
-};
-use ackplane_server::enrollment::{
-    activation_challenge_bytes, connection_challenge_bytes, public_key_fingerprint,
-    ConnectionChallengeBinding,
-};
+use ackplane_client::{auth::SeedSigner, node_sync::NodeSyncConnection};
+use ackplane_protocol::v1::{self, node_enrollment_service_client::NodeEnrollmentServiceClient};
+use ackplane_server::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::enrollment_store::{EnrollmentApproval, EnrollmentStore};
 use ackplane_server::envelope_signature::envelope_signing_bytes;
 

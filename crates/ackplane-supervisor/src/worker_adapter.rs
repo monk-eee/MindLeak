@@ -128,11 +128,53 @@ impl WorkerAdapter for ProcessWorkerAdapter {
             .remove(worker_id)
             .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?;
         if matches!(child.try_wait(), Ok(Some(_))) {
-            // Already exited; nothing left to kill.
+            // Already exited, and `try_wait` reaped it on the way past.
             return Ok(());
         }
         child
             .kill()
+            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
+        // `kill` only signals. Without this the child stays a zombie on Unix,
+        // because `Child`'s `Drop` does not reap either.
+        child
+            .wait()
+            .map(|_| ())
             .map_err(|error| AdapterError::SpawnFailed(error.to_string()))
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// Reads `/proc` directly rather than asserting `terminate` returned `Ok`:
+    /// the un-reaped case also returns `Ok`, so only the process table can
+    /// tell the fix from the bug.
+    #[test]
+    fn terminate_reaps_the_child_rather_than_leaving_a_zombie() {
+        let mut adapter = ProcessWorkerAdapter::new();
+        adapter
+            .start(WorkerAssignment {
+                worker_id: "w1".to_string(),
+                command: "/bin/sleep".to_string(),
+                args: vec!["30".to_string()],
+            })
+            .expect("a long-running child should spawn");
+        let pid = adapter.workers["w1"].id();
+
+        adapter.terminate("w1").expect("terminate should succeed");
+
+        // A reaped child leaves no /proc entry. An un-reaped one is still
+        // listed, in state Z.
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // `comm` may itself contain spaces and parentheses, so the state
+            // field is read after the LAST ')'.
+            let state = stat
+                .rsplit(')')
+                .next()
+                .and_then(|rest| rest.split_whitespace().next())
+                .expect("/proc/<pid>/stat carries a state field after comm");
+            assert_ne!(state, "Z", "terminate left pid {pid} as a zombie: {stat}");
+        }
     }
 }

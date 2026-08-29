@@ -67,7 +67,7 @@ pub mod telemetry_signature;
 pub mod telemetry_store;
 #[cfg(test)]
 mod test_support;
-pub(crate) mod work_command_store;
+pub mod work_command_store;
 pub mod work_command_vocabulary;
 pub mod work_store;
 
