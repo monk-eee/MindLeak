@@ -33,7 +33,9 @@
 //! `crates/ackplane-mcp/tests/node_trust.rs`), so keeping it open would add a
 //! heartbeat/reconnect lifecycle this slice has no user for yet.
 
-use ackplane_client::node_identity::{resolve_node_identity, NODE_IDENTITY_ENV_VARS};
+use ackplane_client::node_identity::{
+    resolve_node_identity, NodeIdentityError, NODE_IDENTITY_ENV_VARS,
+};
 use ackplane_client::NodeSyncConnection;
 
 /// The capability this front door's one-shot handshake declares. Distinct
@@ -50,8 +52,28 @@ pub fn establish<F>(endpoint: &str, environment: &F) -> Result<(), String>
 where
     F: Fn(&str) -> Option<String>,
 {
-    let Some(identity) = resolve_node_identity(environment) else {
-        return Ok(());
+    let identity = match resolve_node_identity(environment) {
+        Ok(identity) => identity,
+        // Nothing declared at all: the named limitation this slice kept.
+        Err(NodeIdentityError::Missing(missing))
+            if missing.len() == NODE_IDENTITY_ENV_VARS.len() =>
+        {
+            return Ok(());
+        }
+        // Bug fix: a *partially* declared identity, or a declared-but-malformed
+        // seed, used to land in the same branch as "nothing declared" and let
+        // the process serve unauthenticated. An operator who set four of the
+        // five variables, or fat-fingered the seed, was told nothing and got
+        // silently weaker trust than they had asked for -- the opposite of the
+        // refusal this module exists to perform. Only a completely undeclared
+        // identity is the documented no-op; anything half-configured is a
+        // configuration error and says which part.
+        Err(error) => {
+            return Err(format!(
+                "this node's enrolled identity is partially declared, so the front door \
+                 cannot prove it is colocated with an enrolled node: {error}"
+            ));
+        }
     };
 
     let signer = identity.signer().map_err(|error| {
@@ -111,6 +133,49 @@ mod tests {
     #[test]
     fn nothing_declared_is_not_refused() {
         assert_eq!(establish("http://127.0.0.1:8443", &no_env), Ok(()));
+    }
+
+    /// Regression: a *partially* declared identity used to take the same
+    /// branch as "nothing declared" and let the process serve without ever
+    /// proving it is colocated with an enrolled node. An operator who set
+    /// four of the five variables got silently weaker trust than they asked
+    /// for, with nothing said. Only a completely undeclared identity is the
+    /// documented no-op.
+    #[test]
+    fn a_partially_declared_identity_is_refused_rather_than_silently_ignored() {
+        let environment = env(&[
+            ("MINDLEAK_ACKPLANE_TENANT_ID", "tenant-1"),
+            ("MINDLEAK_ACKPLANE_REPOSITORY_ID", "repository-1"),
+            ("MINDLEAK_ACKPLANE_NODE_ID", "node-1"),
+            // MINDLEAK_ACKPLANE_SIGNING_KEY_ID deliberately absent.
+        ]);
+        let error = establish("http://127.0.0.1:8443", &environment)
+            .expect_err("a half-declared identity must not pass as 'nothing declared'");
+        assert!(
+            error.contains("MINDLEAK_ACKPLANE_SIGNING_KEY_ID"),
+            "the refusal must name the variable still missing: {error}"
+        );
+    }
+
+    /// Regression: a declared-but-malformed seed also fell into the
+    /// "nothing declared" branch. The operator asked for one specific key and
+    /// mistyped it; serving unauthenticated is the one response that tells
+    /// them nothing.
+    #[test]
+    fn a_malformed_seed_is_refused_rather_than_silently_ignored() {
+        let environment = env(&[
+            ("MINDLEAK_ACKPLANE_TENANT_ID", "tenant-1"),
+            ("MINDLEAK_ACKPLANE_REPOSITORY_ID", "repository-1"),
+            ("MINDLEAK_ACKPLANE_NODE_ID", "node-1"),
+            ("MINDLEAK_ACKPLANE_SIGNING_KEY_ID", "signing-key-1"),
+            ("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED", "not-a-seed"),
+        ]);
+        let error = establish("http://127.0.0.1:8443", &environment)
+            .expect_err("a malformed seed must not pass as 'nothing declared'");
+        assert!(
+            error.contains("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED"),
+            "the refusal must name the variable that is wrong: {error}"
+        );
     }
 
     /// A declared identity this process cannot even sign with (no seed, no

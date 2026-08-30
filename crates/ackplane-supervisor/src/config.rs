@@ -11,20 +11,16 @@
 //! `lodestar-mcp`'s federated claim path and `register-me` already read, so an
 //! operator who has enrolled a node has already configured this daemon
 //! (ADR-0116; no new configuration mechanism is invented here).
+//!
+//! The enrolled node half of that set is resolved by
+//! [`ackplane_client::node_identity`], not re-implemented here. This module
+//! owns only what is genuinely the supervisor's: the endpoint, its own
+//! supervisor id, its state directory and its heartbeat interval.
 
 use std::{path::PathBuf, time::Duration};
 
-/// The OS credential facility service every enrolled node's seed is stored
-/// under. Shared with `lodestar-mcp`'s federated claim path deliberately: two
-/// service names would mean a node enrolled for claims could not be run as a
-/// supervisor without re-storing the same key.
-pub const CREDENTIAL_FACILITY_SERVICE: &str = "mindleak-ackplane-node-signing-key";
+use ackplane_client::node_identity::{resolve_node_identity, NodeIdentity, NodeIdentityError};
 
-const TENANT_ID_ENV: &str = "MINDLEAK_ACKPLANE_TENANT_ID";
-const REPOSITORY_ID_ENV: &str = "MINDLEAK_ACKPLANE_REPOSITORY_ID";
-const NODE_ID_ENV: &str = "MINDLEAK_ACKPLANE_NODE_ID";
-const SIGNING_KEY_ID_ENV: &str = "MINDLEAK_ACKPLANE_SIGNING_KEY_ID";
-const NODE_SIGNING_KEY_SEED_ENV: &str = "MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED";
 const ENDPOINT_ENV: &str = "MINDLEAK_ACKPLANE_ENDPOINT";
 
 /// This supervisor's own id. Distinct from the node id: one enrolled node may
@@ -39,28 +35,14 @@ const HEARTBEAT_SECONDS_ENV: &str = "ACKPLANE_SUPERVISOR_HEARTBEAT_SECONDS";
 const DEFAULT_STATE_DIR: &str = ".mindleak/supervisor";
 const DEFAULT_HEARTBEAT_SECONDS: u64 = 30;
 
-/// Where this supervisor's signing key comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SignerSource {
-    /// An explicit hex seed. Non-hardened and selected only when
-    /// `MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED` is set, matching the interim
-    /// posture `lodestar-mcp` already documents for the same variable.
-    Seed(Box<[u8; 32]>),
-    /// The OS credential facility, keyed per node so one service name holds
-    /// every enrolled node's seed without collision.
-    CredentialFacility { service: String, account: String },
-}
-
 /// Everything the daemon needs to run, once resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupervisorConfig {
     pub endpoint: String,
-    pub tenant_id: String,
-    pub repository_id: String,
-    pub node_id: String,
-    pub signing_key_id: String,
+    /// Who this process authenticates as, resolved by the one shared
+    /// implementation every colocated process uses.
+    pub identity: NodeIdentity,
     pub supervisor_id: String,
-    pub signer_source: SignerSource,
     pub state_dir: PathBuf,
     pub heartbeat_interval: Duration,
 }
@@ -100,11 +82,7 @@ impl std::fmt::Display for ConfigError {
                  (`register-me`), then declare it here.",
                 names.join(", ")
             ),
-            Self::MalformedSeed => write!(
-                formatter,
-                "{NODE_SIGNING_KEY_SEED_ENV} must be 64 hex characters (a 32-byte Ed25519 \
-                 seed). Unset it to use the OS credential facility instead."
-            ),
+            Self::MalformedSeed => write!(formatter, "{}", NodeIdentityError::MalformedSeed),
             Self::MalformedHeartbeat(value) => write!(
                 formatter,
                 "{HEARTBEAT_SECONDS_ENV} must be a positive whole number of seconds, not {value:?}"
@@ -119,7 +97,9 @@ impl std::error::Error for ConfigError {}
 ///
 /// Every required variable is reported together rather than one per run: an
 /// operator configuring a new node otherwise learns about the next missing
-/// variable only after fixing the previous one.
+/// variable only after fixing the previous one. That includes the enrolled
+/// node's variables, which the shared resolver reports by name for exactly
+/// this reason.
 pub fn resolve<F>(environment: F) -> Result<SupervisorConfig, ConfigError>
 where
     F: Fn(&str) -> Option<String>,
@@ -131,33 +111,30 @@ where
     };
 
     let mut missing = Vec::new();
-    let mut require = |name: &'static str| match read(name) {
-        Some(value) => value,
-        None => {
-            missing.push(name);
-            String::new()
-        }
-    };
 
-    let endpoint = require(ENDPOINT_ENV);
-    let tenant_id = require(TENANT_ID_ENV);
-    let repository_id = require(REPOSITORY_ID_ENV);
-    let node_id = require(NODE_ID_ENV);
-    let signing_key_id = require(SIGNING_KEY_ID_ENV);
-    let supervisor_id = require(SUPERVISOR_ID_ENV);
+    // Ordered so a refusal reads endpoint, then node identity, then this
+    // supervisor's own id -- the order an operator configures them in.
+    let endpoint = read(ENDPOINT_ENV);
+    if endpoint.is_none() {
+        missing.push(ENDPOINT_ENV);
+    }
+    let identity = resolve_node_identity(&environment);
+    if let Err(NodeIdentityError::Missing(names)) = &identity {
+        missing.extend(names.iter().copied());
+    }
+    let supervisor_id = read(SUPERVISOR_ID_ENV);
+    if supervisor_id.is_none() {
+        missing.push(SUPERVISOR_ID_ENV);
+    }
     if !missing.is_empty() {
         return Err(ConfigError::Missing(missing));
     }
-
-    let signer_source = match read(NODE_SIGNING_KEY_SEED_ENV) {
-        Some(hex) => SignerSource::Seed(Box::new(
-            decode_seed(&hex).ok_or(ConfigError::MalformedSeed)?,
-        )),
-        None => SignerSource::CredentialFacility {
-            service: CREDENTIAL_FACILITY_SERVICE.to_string(),
-            account: format!("{tenant_id}:{repository_id}:{node_id}"),
-        },
-    };
+    // Only reachable once nothing is missing, so a half-configured operator
+    // is never told about the optional seed override instead of the
+    // variables they still have to set.
+    let identity = identity.map_err(|_| ConfigError::MalformedSeed)?;
+    let endpoint = endpoint.expect("endpoint is present once nothing is missing");
+    let supervisor_id = supervisor_id.expect("supervisor id is present once nothing is missing");
 
     let heartbeat_interval = match read(HEARTBEAT_SECONDS_ENV) {
         Some(value) => {
@@ -174,12 +151,8 @@ where
 
     Ok(SupervisorConfig {
         endpoint,
-        tenant_id,
-        repository_id,
-        node_id,
-        signing_key_id,
+        identity,
         supervisor_id,
-        signer_source,
         state_dir: read(STATE_DIR_ENV)
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR)),
@@ -187,24 +160,13 @@ where
     })
 }
 
-/// Decode a 64-character hex seed. Kept local rather than reaching into
-/// `ackplane-client` so this module stays free of the network stack it would
-/// otherwise pull in for a pure string function.
-fn decode_seed(hex: &str) -> Option<[u8; 32]> {
-    let hex = hex.trim();
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut seed = [0_u8; 32];
-    for (index, byte) in seed.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok()?;
-    }
-    Some(seed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ackplane_client::node_identity::{
+        NodeSignerSource, CREDENTIAL_FACILITY_SERVICE, NODE_ID_ENV, NODE_SIGNING_KEY_SEED_ENV,
+        REPOSITORY_ID_ENV, SIGNING_KEY_ID_ENV, TENANT_ID_ENV,
+    };
     use std::collections::HashMap;
 
     fn environment(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -233,8 +195,8 @@ mod tests {
         assert_eq!(config.endpoint, "http://127.0.0.1:8443");
         assert_eq!(config.supervisor_id, "supervisor-1");
         assert_eq!(
-            config.signer_source,
-            SignerSource::CredentialFacility {
+            config.identity.signer_source,
+            NodeSignerSource::CredentialFacility {
                 service: CREDENTIAL_FACILITY_SERVICE.to_string(),
                 account: "tenant-1:repository-1:node-1".to_string(),
             },
@@ -295,8 +257,8 @@ mod tests {
         let config = resolve(environment(&pairs)).expect("configuration should resolve");
 
         assert_eq!(
-            config.signer_source,
-            SignerSource::Seed(Box::new([0xab; 32]))
+            config.identity.signer_source,
+            NodeSignerSource::Seed(Box::new([0xab; 32]))
         );
     }
 
