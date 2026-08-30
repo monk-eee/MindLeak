@@ -832,13 +832,21 @@ session grants no arbiter-side authority by itself. `check_enrollment_status`
 translates `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122).
 `active_claims` translates `ClaimDelegationService.ListActiveClaims`
 (ADR-0096, ADR-0139 clause 1's read half) -- read-only and unsigned, since it
-asks only what the arbiter already states about its own arbitration. It
-holds itself to a local-loopback Ackplane endpoint until ADR-0137 clause 1
-lands: today neither translated tool authenticates its *connection* over
-NodeSync the way `ackplane-supervisor` does (only per-operation signing, or
-no signing at all by design), so `endpoint::resolve_endpoint` refuses a
-non-loopback target rather than send a possession proof somewhere that
-decision has not been made about yet. A `task_query`-named tool reading
+asks only what the arbiter already states about its own arbitration. It holds
+itself to a local-loopback Ackplane endpoint (ADR-0136 clause 4): neither
+today's enrolled-node possession proof nor Bridge's loopback developer token
+fits an arbitrary MCP client, so `endpoint::resolve_endpoint` refuses a
+non-loopback target rather than send that proof somewhere no decision has
+authorized yet. ADR-0137 resolved the authenticated-principal question by
+reusing the enrolled node's own Ed25519 key rather than minting a new
+principal type: when an operator declares that node's identity via the same
+`MINDLEAK_ACKPLANE_*` variables `ackplane-supervisor` and `lodestar-mcp`'s
+federated claim path already read (`ackplane_client::node_identity`),
+`node_trust::establish` completes the same `NodeSync` connection-challenge
+handshake `ackplane-supervisor` performs at startup, and this front door
+refuses to serve if that proof fails -- a declared-but-unconfigured process
+is unaffected (today's status quo), a named, deliberate limitation rather
+than a silent one pending a later slice. A `task_query`-named tool reading
 Industrial Work's broader projection (list/detail/history/waits/checkpoints/
 overlap/stalled, ADR-0139 clause 2) and a `pgvector`-backed recall store
 scoped to `projected_nodes` rather than the curated `knowledge` domain
