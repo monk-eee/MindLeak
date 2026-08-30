@@ -65,7 +65,7 @@ struct AppState {
     // so the same Mutex-per-mutable-store pattern claims/ClaimStore already
     // uses applies here too.
     constitution: Arc<Mutex<ConstitutionStore>>,
-    claims: Arc<Mutex<ClaimStore>>,
+    claims: Arc<ClaimStore>,
     projector: Arc<Projector>,
     readiness: Arc<ReadinessStore>,
     telemetry: Arc<TelemetryStore>,
@@ -154,8 +154,13 @@ async fn main() {
             return;
         }
     };
-    let claim_store = match ClaimStore::connect(config.database_url()).await {
-        Ok(claims) => Arc::new(Mutex::new(claims)),
+    let claim_store = match ClaimStore::connect(&db_pool).await {
+        // No `Mutex`: ADR-0111 wrapped this one because `ClaimStore`'s
+        // mutating methods took `&mut self`, and ADR-0143 retired that
+        // reason. The CAS row lock in the database is what serialises a
+        // claim, so a process-wide lock only removed the concurrency the
+        // pool exists to allow.
+        Ok(claims) => Arc::new(claims),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane claim delegation: {error}");
             return;

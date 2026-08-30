@@ -115,6 +115,12 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> Router {
+    // One pool for every pooled store this fixture builds (ADR-0143 decision 7).
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
     let state = AppState {
         fleet: Arc::new(
             FleetStore::connect(database_url)
@@ -131,11 +137,11 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
                 .await
                 .expect("connect Constitution store"),
         )),
-        claims: Arc::new(Mutex::new(
-            ClaimStore::connect(database_url)
+        claims: Arc::new(
+            ClaimStore::connect(&db_pool)
                 .await
                 .expect("connect Claim store"),
-        )),
+        ),
         projector: Arc::new(
             Projector::connect(database_url)
                 .await

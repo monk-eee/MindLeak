@@ -278,7 +278,7 @@ pub async fn repository_recover_claim(
         symbols: current.symbols,
     };
 
-    let mut claims = state.claims.lock().await;
+    let claims = &state.claims;
     match claims.recover(&recover_request, SystemTime::now()).await {
         Ok(result) if result.outcome == ClaimLeaseOutcome::Granted => {
             Ok(Json(RecoverClaimResponse {

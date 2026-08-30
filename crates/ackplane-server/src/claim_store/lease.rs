@@ -10,7 +10,7 @@ use super::{
 
 impl ClaimStore {
     pub async fn delegate(
-        &mut self,
+        &self,
         request: &ClaimLeaseRequest,
         now: SystemTime,
     ) -> Result<ClaimLeaseResult, ClaimStoreError> {
@@ -18,38 +18,53 @@ impl ClaimStore {
             return Err(ClaimStoreError::InvalidLease);
         }
         let expires_at = now + request.lease;
-        let transaction = self.client.transaction().await?;
-        let existing = transaction
-            .query_opt(
-                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols \
-                 FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
-                &[&request.tenant_id, &request.repository_id, &request.task_id],
-            )
-            .await?;
+        // One connection, checked out once and held until commit (ADR-0143
+        // decision 4). The `FOR UPDATE` row lock below is session-scoped, so a
+        // connection returned to the pool mid-operation would drop the lock
+        // this CAS depends on.
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
+        // At most two passes. `SELECT ... FOR UPDATE` locks rows, and there is
+        // no row to lock until a task has been claimed once -- so the very
+        // first claim on a task is the one case the row lock cannot arbitrate,
+        // and two concurrent callers both read `None`. The insert below is
+        // therefore `ON CONFLICT DO NOTHING`, which turns losing that race into
+        // an observable zero rows rather than a duplicate-key error; by the
+        // time it returns the winner's row is committed, so the second pass
+        // locks it and takes the ordinary existing-row decision. Rows here are
+        // only ever holed, never deleted, so a third pass cannot arise.
+        let result = loop {
+            let existing = transaction
+                .query_opt(
+                    "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols \
+                     FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
+                    &[&request.tenant_id, &request.repository_id, &request.task_id],
+                )
+                .await?;
 
-        let result = match existing {
-            Some(row) => {
-                let owner_id: String = row.get(0);
-                let branch: String = row.get(1);
-                let claim_started_at: SystemTime = row.get(2);
-                let previous_expiry: SystemTime = row.get(3);
-                let previous_lapses: i64 = row.get(4);
-                let paths: Vec<String> = row.get(5);
-                let symbols: Vec<String> = row.get(6);
-                let claim_lapses = u64::try_from(previous_lapses)
-                    .map_err(|_| ClaimStoreError::InvalidLapseCount)?;
-                if owner_id != request.owner_id && previous_expiry >= now {
-                    ClaimLeaseResult {
-                        outcome: ClaimLeaseOutcome::Rejected,
-                        owner_id,
-                        branch,
-                        claim_started_at,
-                        lease_expires_at: previous_expiry,
-                        claim_lapses,
-                        paths,
-                        symbols,
+            match existing {
+                Some(row) => {
+                    let owner_id: String = row.get(0);
+                    let branch: String = row.get(1);
+                    let claim_started_at: SystemTime = row.get(2);
+                    let previous_expiry: SystemTime = row.get(3);
+                    let previous_lapses: i64 = row.get(4);
+                    let paths: Vec<String> = row.get(5);
+                    let symbols: Vec<String> = row.get(6);
+                    let claim_lapses = u64::try_from(previous_lapses)
+                        .map_err(|_| ClaimStoreError::InvalidLapseCount)?;
+                    if owner_id != request.owner_id && previous_expiry >= now {
+                        break ClaimLeaseResult {
+                            outcome: ClaimLeaseOutcome::Rejected,
+                            owner_id,
+                            branch,
+                            claim_started_at,
+                            lease_expires_at: previous_expiry,
+                            claim_lapses,
+                            paths,
+                            symbols,
+                        };
                     }
-                } else {
                     let same_owner = owner_id == request.owner_id;
                     let lapsed = previous_expiry < now;
                     let next_lapses = claim_lapses + u64::from(lapsed);
@@ -67,7 +82,7 @@ impl ClaimStore {
                           &granted_branch, &granted_started_at, &expires_at, &(next_lapses as i64),
                           &request.paths, &request.symbols],
                     ).await?;
-                    ClaimLeaseResult {
+                    break ClaimLeaseResult {
                         outcome: ClaimLeaseOutcome::Granted,
                         owner_id: request.owner_id.clone(),
                         branch: granted_branch,
@@ -76,26 +91,31 @@ impl ClaimStore {
                         claim_lapses: next_lapses,
                         paths: request.paths.clone(),
                         symbols: request.symbols.clone(),
-                    }
+                    };
                 }
-            }
-            None => {
-                transaction.execute(
-                    "INSERT INTO delegated_claims (tenant_id, repository_id, task_id, owner_id, branch, \
-                     claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-                    &[&request.tenant_id, &request.repository_id, &request.task_id, &request.owner_id,
-                      &request.branch, &now, &expires_at, &0_i64, &request.paths, &request.symbols],
-                ).await?;
-                ClaimLeaseResult {
-                    outcome: ClaimLeaseOutcome::Granted,
-                    owner_id: request.owner_id.clone(),
-                    branch: request.branch.clone(),
-                    claim_started_at: now,
-                    lease_expires_at: expires_at,
-                    claim_lapses: 0,
-                    paths: request.paths.clone(),
-                    symbols: request.symbols.clone(),
+                None => {
+                    let inserted = transaction.execute(
+                        "INSERT INTO delegated_claims (tenant_id, repository_id, task_id, owner_id, branch, \
+                         claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
+                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+                         ON CONFLICT (tenant_id, repository_id, task_id) DO NOTHING",
+                        &[&request.tenant_id, &request.repository_id, &request.task_id, &request.owner_id,
+                          &request.branch, &now, &expires_at, &0_i64, &request.paths, &request.symbols],
+                    ).await?;
+                    if inserted == 1 {
+                        break ClaimLeaseResult {
+                            outcome: ClaimLeaseOutcome::Granted,
+                            owner_id: request.owner_id.clone(),
+                            branch: request.branch.clone(),
+                            claim_started_at: now,
+                            lease_expires_at: expires_at,
+                            claim_lapses: 0,
+                            paths: request.paths.clone(),
+                            symbols: request.symbols.clone(),
+                        };
+                    }
+                    // A competitor created this task first. Its row is committed
+                    // now, so the next pass locks it and decides normally.
                 }
             }
         };
@@ -120,14 +140,15 @@ impl ClaimStore {
     /// out the original lease. Releasing a claim you do not hold, or one that
     /// has already expired, is a no-op: there is nothing live to give back.
     pub async fn release(
-        &mut self,
+        &self,
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
         owner_id: &str,
         now: SystemTime,
     ) -> Result<bool, ClaimStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let changed = transaction
             .execute(
                 "UPDATE delegated_claims SET lease_expires_at = $5 \
@@ -163,7 +184,7 @@ impl ClaimStore {
     /// that already expired, or against a task never claimed here, is
     /// rejected: an expired lease needs a fresh `delegate`, not a renewal.
     pub async fn renew(
-        &mut self,
+        &self,
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
@@ -175,7 +196,8 @@ impl ClaimStore {
             return Err(ClaimStoreError::InvalidLease);
         }
         let expires_at = now + lease;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
                 "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols \
@@ -274,7 +296,7 @@ impl ClaimStore {
     /// as `delegate`'s same-owner reclaim does (ADR-0048); a different owner
     /// resets both and records the lapse.
     pub async fn recover(
-        &mut self,
+        &self,
         request: &ClaimRecoverRequest,
         now: SystemTime,
     ) -> Result<ClaimLeaseResult, ClaimStoreError> {
@@ -285,7 +307,8 @@ impl ClaimStore {
             return Err(ClaimStoreError::InvalidLease);
         }
         let expires_at = now + request.lease;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
                 "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols \

@@ -157,14 +157,19 @@ async fn administration_router(database_url: &str, tenant_id: &str) -> axum::Rou
     let administration = AdministrationStore::connect(database_url)
         .await
         .expect("the test database should accept Administration store connections");
-    let claims = ClaimStore::connect(database_url)
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let claims = ClaimStore::connect(&db_pool)
         .await
         .expect("the test database should accept Claim connections");
     administration_routes(AdministrationApiState::with_claims(
         fleet,
         Arc::from(tenant_id.to_owned()),
         Arc::new(Mutex::new(administration)),
-        Arc::new(Mutex::new(claims)),
+        Arc::new(claims),
         None,
         None,
     ))

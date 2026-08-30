@@ -166,7 +166,12 @@ async fn work_list_and_board_doctor_report_a_real_task_and_an_orphan_claim() {
         .await
         .expect("create Work task fixture");
 
-    let mut claim_store = ClaimStore::connect(&database_url)
+    let db_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let claim_store = ClaimStore::connect(&db_pool)
         .await
         .expect("connect Claim store for fixtures");
     let orphan_task_id = format!("orphan-{unique}");
