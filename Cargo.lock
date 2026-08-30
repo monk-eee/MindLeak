@@ -63,11 +63,16 @@ version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
  "ackplane-protocol",
+ "ackplane-server",
  "anyhow",
+ "ed25519-dalek",
  "mindleak-session",
  "serde_json",
  "thiserror",
+ "time",
  "tokio",
+ "tokio-stream",
+ "tonic",
  "url",
 ]
 

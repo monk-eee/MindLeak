@@ -97,6 +97,14 @@ fn migrate_locked(connection: &Connection) -> Result<bool> {
         ("goals", "external_id", "TEXT"),
         ("goals", "source_ref", "TEXT"),
         ("goals", "source_digest", "TEXT"),
+        // Who superseded a clause, and when (ADR-0144). NULL on every
+        // pre-existing row is the honest answer: those supersessions recorded
+        // only a free-form reason, and naming any agent as the one who
+        // performed them would invent an attribution the ledger never held.
+        // `ledger_act_evidence` refuses a NULL rather than guessing, which is
+        // exactly why the column is nullable instead of defaulted.
+        ("goals", "superseded_at", "INTEGER"),
+        ("goals", "superseded_by_agent", "TEXT"),
         // Who stood a control down, and when (ADR-0034). NULL on every
         // pre-existing row is the honest answer: those retirements were not
         // recorded and cannot be reconstructed.

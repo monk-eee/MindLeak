@@ -84,15 +84,16 @@ pub(super) fn definitions() -> Vec<Value> {
         }),
         json!({
             "name": "supersede_goal",
-            "description": "Superseded by `constitution_define` (action: supersede); still answered for one minor version. Replace a goal with a new active version (the old one is retired, not deleted). The only way intent changes — explicit and attributed.",
+            "description": "Superseded by `constitution_define` (action: supersede); still answered for one minor version. Replace a goal with a new active version (the old one is retired, not deleted). The only way intent changes — explicit and attributed: the retiring agent is recorded on the old clause, which makes the act usable as conformance evidence (`ledger_act_evidence`, kind `goal_superseded`).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "goal_id": { "type": "string" },
                     "new_statement": { "type": "string" },
-                    "reason": { "type": "string" }
+                    "reason": { "type": "string" },
+                    "session_id": { "type": "string", "description": "Session id previously registered with open_session; recorded as who retired the clause.", "pattern": "^[0-9a-f]{32}$" }
                 },
-                "required": ["goal_id", "new_statement", "reason"]
+                "required": ["goal_id", "new_statement", "reason", "session_id"]
             }
         }),
         json!({
@@ -261,6 +262,7 @@ pub(super) fn dispatch(
                     req_str(args, "goal_id")?,
                     req_str(args, "new_statement")?,
                     req_str(args, "reason")?,
+                    req_str(args, "session_id")?,
                 )
                 .map_err(|e| e.to_string())?;
             ok(&goal)
@@ -711,7 +713,8 @@ mod tests {
                     "action": "supersede",
                     "goal_id": original.id,
                     "new_statement": "Revised text",
-                    "reason": "the original was too narrow"
+                    "reason": "the original was too narrow",
+                    "session_id": "0123456789abcdef0123456789abcdef"
                 }
             }),
         )
@@ -719,6 +722,17 @@ mod tests {
         let replacement = result_json(&result);
         assert_eq!(replacement["statement"], "Revised text");
         assert_ne!(replacement["id"], original.id);
+
+        // ADR-0144: the act is attributable, which is what makes it usable as
+        // conformance evidence. Recorded on the retired clause, not on the
+        // replacement -- the new version records why it was written, the old
+        // one records who retired it.
+        let (actor, _at) = engine
+            .store()
+            .goal_supersession(&original.id)
+            .unwrap()
+            .expect("a recorded supersession act");
+        assert_eq!(actor, "0123456789abcdef0123456789abcdef");
 
         let bindings = engine
             .governing_goals(&format!("artifact:{}", "some/path.rs"))
