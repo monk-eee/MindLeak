@@ -816,16 +816,28 @@ with `ackplane-mcp`: an MCP stdio server over the same gRPC services, never a
 second, Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s
 business rules -- every handler translates to an Ackplane RPC that already
 exists and is already authorized, deciding nothing about enrolment or
-signatures itself. Its first slice translates exactly one tool,
-`check_enrollment_status` (ADR-0122), and holds itself to a local-loopback
-Ackplane endpoint until the authenticated-principal decision lands: neither
-today's enrolled-node possession proof nor Bridge's loopback developer token
-fits an arbitrary MCP client, so `endpoint::resolve_endpoint` refuses a
-non-loopback target rather than send that proof somewhere the decision has
-not been made about yet. Full task/claim parity with Industrial Work, and a
-`pgvector`-backed recall store scoped to `projected_nodes` rather than the
-curated `knowledge` domain, remain open before this front door is usable
-end-to-end beyond that one tool.
+signatures itself. It serves three tools: `open_session` (ADR-0137 clause 2,
+identity is the session, not the process, exactly as `mindleak-mcp`/
+`lodestar-mcp` already work), `check_enrollment_status` (ADR-0122), and
+`active_claims` (`ClaimDelegationService.ListActiveClaims`, ADR-0139 clause
+1's read half; the signed write half remains future work). It holds itself to
+a local-loopback Ackplane endpoint (ADR-0136 clause 4): neither today's
+enrolled-node possession proof nor Bridge's loopback developer token fits an
+arbitrary MCP client, so `endpoint::resolve_endpoint` refuses a non-loopback
+target rather than send that proof somewhere no decision has authorized yet.
+ADR-0137 resolved the authenticated-principal question by reusing the
+enrolled node's own Ed25519 key rather than minting a new principal type: when
+an operator declares that node's identity via the same `MINDLEAK_ACKPLANE_*`
+variables `ackplane-supervisor` and `lodestar-mcp`'s federated claim path
+already read (`ackplane_client::node_identity`), `node_trust::establish`
+completes the same `NodeSync` connection-challenge handshake
+`ackplane-supervisor` performs at startup, and this front door refuses to
+serve if that proof fails -- a declared-but-unconfigured process is
+unaffected (today's status quo), a named, deliberate limitation rather than a
+silent one pending a later slice. Full task/claim parity with Industrial
+Work, and a `pgvector`-backed recall store scoped to `projected_nodes` rather
+than the curated `knowledge` domain, remain open before this front door is
+usable end-to-end beyond these three tools.
 
 ### `editors/vscode` (extension)
 

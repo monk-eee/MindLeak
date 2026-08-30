@@ -232,14 +232,22 @@ possession proof off the machine under an authentication model that has not
 been decided yet. Set `ACKPLANE_MCP_ENDPOINT` to point at a local arbiter;
 it defaults to `http://127.0.0.1:8443`.
 
-**Session identity (ADR-0137 clause 2):** node-level connection trust
-(the loopback pilot above) authenticates this *process*; `open_session`
-layers an independently-declared agent identity on top, exactly like
-`mindleak-mcp`/`lodestar-mcp` already do — identity is the session, not the
-process, so one long-lived `ackplane-mcp` binary serves multiple concurrent
-callers distinguished only by their registered `session_id`. Set
-`ACKPLANE_MCP_AGENT` to label this process's sessions in reports; it is
-never part of the agent id.
+**Node-level connection trust (ADR-0137 clause 1):** at startup, when an
+operator declares an enrolled node's identity via the same
+`MINDLEAK_ACKPLANE_TENANT_ID`/`_REPOSITORY_ID`/`_NODE_ID`/`_SIGNING_KEY_ID`/
+`_NODE_SIGNING_KEY_SEED` variables `ackplane-supervisor` and `lodestar-mcp`'s
+federated claim path already read, `ackplane-mcp` completes the same
+`Hello -> ConnectionChallenge -> ChallengeResponse -> HelloAccepted` handshake
+`ackplane-supervisor` performs, proving possession of that node's Ed25519 key
+before serving any tool call; a declared identity that fails this proof
+refuses the whole process, exactly like the endpoint refusal above. A process
+with no node identity declared at all is unaffected by this check today (a
+named, deliberate limitation of this slice, not a silent one) — the same node
+identity, once declared, also lets `open_session` layer an independently-
+declared agent identity on top (clause 2), so one long-lived `ackplane-mcp`
+binary serves multiple concurrent callers distinguished only by their
+registered `session_id`. Set `ACKPLANE_MCP_AGENT` to label this process's
+sessions in reports; it is never part of the agent id.
 
 | Tool                       | Purpose                                                                                                                                                                                                                                                                                        |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
