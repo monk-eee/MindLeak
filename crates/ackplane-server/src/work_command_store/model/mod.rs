@@ -73,6 +73,24 @@ impl WorkCommandKind {
     pub fn operation_name(self) -> &'static str {
         crate::work_command_vocabulary::WORK_COMMAND_OPERATIONS[(self.as_i16() - 1) as usize]
     }
+
+    /// The full closed ten-command vocabulary, in stable wire order. The
+    /// single source for "every command kind that exists" -- ADR-0142
+    /// clause 2 grants a self-hosted loopback principal this entire
+    /// vocabulary rather than a second, independently-maintained list that
+    /// could drift from [`Self::from_i16`]'s own match arms.
+    pub const ALL: [WorkCommandKind; 10] = [
+        Self::CreateWork,
+        Self::RouteWork,
+        Self::ReleaseLease,
+        Self::AnswerWait,
+        Self::SubmitReview,
+        Self::Assign,
+        Self::Steer,
+        Self::Pause,
+        Self::Resume,
+        Self::Drain,
+    ];
 }
 
 /// A durable command outcome. A receipt describes what happened; it does not
@@ -290,6 +308,18 @@ mod vocabulary_tests {
                 kind.operation_name(),
                 WORK_COMMAND_OPERATIONS[(wire_value - 1) as usize]
             );
+        }
+    }
+
+    /// `ALL` is what ADR-0142 clause 2 grants a self-hosted loopback
+    /// principal, so it must contain every variant exactly once -- a
+    /// second, incomplete list here would silently under-authorize the
+    /// deployment this ADR is meant to unlock.
+    #[test]
+    fn all_names_every_variant_exactly_once_in_wire_order() {
+        assert_eq!(WorkCommandKind::ALL.len(), 10);
+        for (index, kind) in WorkCommandKind::ALL.into_iter().enumerate() {
+            assert_eq!(kind.as_i16(), (index + 1) as i16);
         }
     }
 }
