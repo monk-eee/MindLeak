@@ -690,6 +690,25 @@ uses, and `docker-compose.yml`'s `bridge` service brings it up alongside
 `ackplane` so a developer gets both from one `docker compose up`. Bridge never
 gRPC-connects to `ackplane`; every store is a direct Postgres connection to the
 same database `ackplane` migrates, so `bridge` only depends on `migrate`
+
+`crates/ackplane-server/src/db_pool.rs` is the one bounded connection pool a
+process opens (ADR-0143). Historically every store held its own dedicated
+`tokio_postgres::Client` for its whole lifetime, which is small and
+deterministic per running service but unbounded under test, where each
+DB-gated test builds its own stores and each store opened another raw
+connection — enough to exhaust Postgres's ceiling and fail as several
+unrelated subsystems at once, because only the panic body ever mentions
+connections. `build_pool` caps a process at `ACKPLANE_DB_POOL_MAX_SIZE`
+connections and bounds the wait for one at `ACKPLANE_DB_POOL_TIMEOUT_MS`, so
+exhaustion is a typed refusal rather than a hang; both settings refuse a
+malformed value instead of silently substituting the default, since the
+setting only exists for deployments the default is already wrong for. Stores
+are migrated onto it one at a time and each is complete in its own commit
+(decision 6) — `LiveFeedStore` is the first — so there is no half-migrated
+store and no interim shim. A store that holds a transaction checks its
+connection out once and keeps it for the whole transaction (decision 4),
+which is what keeps the lock-contention tests proving what they already
+prove.
 completing, not on `ackplane` itself running. `BridgeConfig::resolve` refuses
 any non-loopback listen address until a production authentication verifier
 exists (ADR-0094), so the process always binds `127.0.0.1` inside its
