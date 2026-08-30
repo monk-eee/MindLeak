@@ -217,6 +217,8 @@ pub enum LiveFeedResyncReason {
 pub enum LiveFeedStoreError {
     #[error("live feed database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("no PostgreSQL connection became available within the pool timeout: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("tenant_id must be between 1 and {MAX_TENANT_BYTES} bytes")]
     InvalidTenant,
     #[error("repository_id must be between 1 and {MAX_REPOSITORY_BYTES} bytes when supplied")]
