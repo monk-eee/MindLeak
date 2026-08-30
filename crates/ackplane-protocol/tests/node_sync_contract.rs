@@ -142,6 +142,7 @@ fn agent_directive_and_receipt_round_trip_in_opposite_stream_directions() {
         evidence_refs: vec!["evidence:applied-a".into()],
         directive_sequence: directive.sequence,
         diagnostic: String::new(),
+        outbox_sequence: None,
     };
     let server_frame = AckplaneFrame {
         frame: Some(ackplane_frame::Frame::AgentDirective(Box::new(directive))),

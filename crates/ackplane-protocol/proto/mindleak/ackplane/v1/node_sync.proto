@@ -762,6 +762,17 @@ message SupervisorFrameReceipt {
   string session_id = 3;
   bool idempotent_replay = 4;
   bool projection_advanced = 5;
+  // ADR-0146 decision 4 (supplying ADR-0141's outbound half): the highest
+  // `outbox_sequence` this server has durably accepted from this supervisor.
+  //
+  // `optional` is load-bearing rather than stylistic. ADR-0141 requires that
+  // "omitted" and "0" never collapse: absent means the server makes no
+  // independent statement (it does not know this supervisor, or the frame
+  // carried no sequence), while `0` means it knows the supervisor and has
+  // accepted nothing from it. A bare proto3 scalar encodes both as 0, which
+  // would hand `reconcile` a fabricated position -- the exact defect ADR-0141
+  // exists to prevent.
+  optional uint64 accepted_outbox_sequence = 6;
 }
 
 // A node requests creation of one native Industrial Work record. The
@@ -919,6 +930,20 @@ message DirectiveReceipt {
   repeated string evidence_refs = 12;
   uint64 directive_sequence = 13;
   string diagnostic = 14;
+  // ADR-0146 decision 1: the sequence this supervisor's own durable outbox
+  // assigned this frame. Distinct from `directive_sequence` (field 13), which
+  // is the *server-issued directive's* number and says nothing about the
+  // supervisor's local durable position.
+  //
+  // Absent means "this frame is not part of the resendable outbox stream"
+  // (ADR-0146 decision 2), never "sequence zero". The server must not infer
+  // one for a frame that omits it.
+  //
+  // NOTE: `receipt_digest` is SHA-256 over this whole encoded message and is
+  // the receipt's idempotency key, so the durable outbox copy and the
+  // transmitted copy must be stamped identically -- otherwise a resend hashes
+  // differently and is recorded as a second, distinct receipt.
+  optional uint64 outbox_sequence = 15;
 }
 
 enum DirectiveReceiptStatus {

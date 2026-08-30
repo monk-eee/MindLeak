@@ -10,6 +10,8 @@ use tokio_postgres::{Client, NoTls};
 use crate::migration_lock;
 
 const MIGRATION: &str = include_str!("../../migrations/0024_supervisor_session_projection.sql");
+const OUTBOX_POSITIONS_MIGRATION: &str =
+    include_str!("../../migrations/0056_supervisor_outbox_positions.sql");
 const REGISTRATION_COLUMNS: &str = "tenant_id, repository_id, supervisor_id, node_id, \
     supervisor_version, protocol_version, capabilities, registered_at, last_heartbeat_at";
 const SESSION_COLUMNS: &str = "tenant_id, repository_id, session_id, supervisor_id, worker_id, \
@@ -49,6 +51,14 @@ impl SupervisorStore {
             &mut client,
             migration_lock::key::SUPERVISOR_SESSION_PROJECTION,
             MIGRATION,
+        )
+        .await?;
+        // ADR-0146 decision 3. Applied after 0024 because its foreign key
+        // references `supervisor_registrations`, which 0024 creates.
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::SUPERVISOR_OUTBOX_POSITIONS,
+            OUTBOX_POSITIONS_MIGRATION,
         )
         .await?;
         Ok(Self { client })
@@ -156,6 +166,88 @@ impl SupervisorStore {
             .await?
             .ok_or(StoreError::UnknownSupervisor)?;
         registration_status_from_row(&row, observed_at, HEARTBEAT_STALE_AFTER_SECS)
+    }
+
+    /// Records that `sequence` -- a position the supervisor itself declared on
+    /// an outbox-carried frame -- has been durably accepted, and returns the
+    /// highest accepted for this supervisor afterwards.
+    ///
+    /// Advances only upward, and only from a value the supervisor asserted
+    /// (ADR-0146 decision 3). The server never counts frames, never
+    /// interpolates a gap, and never writes a position nobody stated: those
+    /// would all produce a number that looks like independent evidence while
+    /// actually being the server's own guess, which is the failure ADR-0141
+    /// exists to prevent, reached by a longer route.
+    ///
+    /// `GREATEST` rather than a plain assignment because frames may be
+    /// re-sent: a resend of an older sequence must not walk the recorded
+    /// position backwards.
+    pub async fn record_outbox_sequence(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        supervisor_id: &str,
+        sequence: u64,
+    ) -> Result<u64, StoreError> {
+        // PostgreSQL has no unsigned integer, so the uint64 wire value is
+        // refused here rather than wrapped into a negative sequence that would
+        // later be handed back to a supervisor as its "highest accepted".
+        let stored: i64 = i64::try_from(sequence)
+            .map_err(|_| StoreError::OutboxSequenceOutOfRange { sequence })?;
+        let row = self
+            .client
+            .query_one(
+                "INSERT INTO supervisor_outbox_positions \
+                     (tenant_id, repository_id, supervisor_id, accepted_sequence) \
+                 VALUES ($1,$2,$3,$4) \
+                 ON CONFLICT (tenant_id, repository_id, supervisor_id) DO UPDATE \
+                 SET accepted_sequence = GREATEST( \
+                         supervisor_outbox_positions.accepted_sequence, \
+                         EXCLUDED.accepted_sequence), \
+                     updated_at = now() \
+                 RETURNING accepted_sequence",
+                &[&tenant_id, &repository_id, &supervisor_id, &stored],
+            )
+            .await?;
+        let accepted: i64 = row.get("accepted_sequence");
+        Ok(accepted.max(0) as u64)
+    }
+
+    /// The highest supervisor-declared outbox sequence this server has durably
+    /// accepted, or `None` when it has accepted none.
+    ///
+    /// `None` and `Some(0)` stay distinct all the way to the wire (ADR-0141):
+    /// `None` means the server makes no independent statement, `Some(0)` would
+    /// mean it holds a record asserting nothing was accepted. Collapsing them
+    /// would hand `reconcile` a fabricated position.
+    ///
+    /// A supervisor that has registered but never had a sequenced frame
+    /// accepted reports `None`, not `Some(0)`, even though the server plainly
+    /// knows it exists. The server cannot distinguish "this supervisor has
+    /// sent no outbox frames yet" from "this supervisor predates ADR-0146 and
+    /// never states a sequence", and answering `0` for the second case would
+    /// tell every older supervisor on every reconnect that the server is
+    /// behind and it should resend positions it has long since had confirmed.
+    /// Silence is the honest answer to a question the server cannot yet
+    /// answer (ADR-0146 decision 5).
+    pub async fn accepted_outbox_sequence(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        supervisor_id: &str,
+    ) -> Result<Option<u64>, StoreError> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT accepted_sequence FROM supervisor_outbox_positions \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND supervisor_id = $3",
+                &[&tenant_id, &repository_id, &supervisor_id],
+            )
+            .await?;
+        Ok(row.map(|row| {
+            let accepted: i64 = row.get("accepted_sequence");
+            accepted.max(0) as u64
+        }))
     }
 
     /// Records an immutable worker session beneath an already registered
@@ -649,6 +741,109 @@ mod tests {
                 .await
                 .expect("read lifecycle history"),
             vec![paused.receipt, older.receipt]
+        );
+    }
+
+    /// ADR-0146 decision 3: the recorded position advances only upward, and
+    /// only from a value the supervisor stated.
+    ///
+    /// The upward-only rule is what makes a resend safe. A supervisor that
+    /// re-sends an older queued frame after a dropped connection restates an
+    /// older sequence; if that overwrote the recorded position, the server
+    /// would tell the *next* connection it had accepted less than it really
+    /// had, and `reconcile` would answer `Resend` for frames already durably
+    /// held -- or, in the opposite direction, mask a genuine
+    /// `IncompleteEvidence` by walking its own position back below the
+    /// supervisor's.
+    #[tokio::test]
+    async fn an_accepted_outbox_position_advances_only_upward() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id, supervisor_id) = unique_scope("outbox-position");
+        store
+            .register(&registration(
+                tenant_id.clone(),
+                repository_id.clone(),
+                supervisor_id.clone(),
+            ))
+            .await
+            .expect("register supervisor");
+
+        // Nothing sequenced accepted yet: the server states no position rather
+        // than inventing a zero.
+        assert_eq!(
+            store
+                .accepted_outbox_sequence(&tenant_id, &repository_id, &supervisor_id)
+                .await
+                .expect("read an unset position"),
+            None
+        );
+
+        assert_eq!(
+            store
+                .record_outbox_sequence(&tenant_id, &repository_id, &supervisor_id, 4)
+                .await
+                .expect("record the first position"),
+            4
+        );
+        assert_eq!(
+            store
+                .record_outbox_sequence(&tenant_id, &repository_id, &supervisor_id, 7)
+                .await
+                .expect("record a later position"),
+            7
+        );
+        // A resend of an older frame must not walk the position backwards.
+        assert_eq!(
+            store
+                .record_outbox_sequence(&tenant_id, &repository_id, &supervisor_id, 2)
+                .await
+                .expect("record a resent older position"),
+            7
+        );
+        assert_eq!(
+            store
+                .accepted_outbox_sequence(&tenant_id, &repository_id, &supervisor_id)
+                .await
+                .expect("read the recorded position"),
+            Some(7)
+        );
+    }
+
+    /// A position is scoped to one supervisor in one repository. Reading it
+    /// for a different supervisor must not borrow another's evidence.
+    #[tokio::test]
+    async fn accepted_outbox_positions_are_scoped_per_supervisor() {
+        let Some(mut store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id, supervisor_id) = unique_scope("outbox-scope");
+        let (_, _, other_supervisor_id) = unique_scope("outbox-scope-other");
+        for id in [&supervisor_id, &other_supervisor_id] {
+            store
+                .register(&registration(
+                    tenant_id.clone(),
+                    repository_id.clone(),
+                    id.clone(),
+                ))
+                .await
+                .expect("register supervisor");
+        }
+
+        store
+            .record_outbox_sequence(&tenant_id, &repository_id, &supervisor_id, 11)
+            .await
+            .expect("record a position");
+
+        assert_eq!(
+            store
+                .accepted_outbox_sequence(&tenant_id, &repository_id, &other_supervisor_id)
+                .await
+                .expect("read the other supervisor's position"),
+            None
         );
     }
 }

@@ -180,8 +180,25 @@ pub(super) fn directive_request_digest(directive: &v1::AgentDirective) -> Vec<u8
     Sha256::digest(directive.encode_to_vec()).to_vec()
 }
 
+/// The receipt's evidential identity: what the supervisor decided about a
+/// directive, deliberately excluding where that decision happened to sit in
+/// the supervisor's outbox.
+///
+/// `outbox_sequence` (ADR-0146) is a transport position, not part of the
+/// decision. Including it would break the replay detection this digest exists
+/// for: when Ackplane redelivers a directive, the supervisor's inbox replays a
+/// byte-identical receipt, but its outbox assigns that resend a *new*
+/// sequence. Hashing the sequence in would make one unchanged decision look
+/// like two different ones and record a duplicate receipt row against the
+/// directive.
+///
+/// Clearing the field rather than hashing selected fields keeps this digest
+/// bit-identical to the one computed before ADR-0146 for every receipt that
+/// carries no sequence, so no already-stored digest changes meaning.
 pub(super) fn receipt_digest(receipt: &v1::DirectiveReceipt) -> Vec<u8> {
-    Sha256::digest(receipt.encode_to_vec()).to_vec()
+    let mut decision = receipt.clone();
+    decision.outbox_sequence = None;
+    Sha256::digest(decision.encode_to_vec()).to_vec()
 }
 
 pub(super) fn validate_receipt(
@@ -321,4 +338,86 @@ fn validate_references(field: &'static str, values: &[String]) -> Result<(), Dir
         require_identifier(field, value)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn receipt() -> v1::DirectiveReceipt {
+        v1::DirectiveReceipt {
+            directive_id: "directive:digest".to_string(),
+            tenant_id: "tenant:digest".to_string(),
+            project_id: "project:digest".to_string(),
+            repository_id: "repository:digest".to_string(),
+            node_id: "node:digest".to_string(),
+            agent_session_id: "session:digest".to_string(),
+            status: v1::DirectiveReceiptStatus::Applied as i32,
+            reason: v1::DirectiveReceiptReason::None as i32,
+            occurred_at: "2026-08-30T00:00:00Z".to_string(),
+            payload_digest: vec![7; 32],
+            checkpoint_refs: Vec::new(),
+            evidence_refs: Vec::new(),
+            directive_sequence: 3,
+            diagnostic: String::new(),
+            outbox_sequence: None,
+        }
+    }
+
+    /// Regression: one decision resent from a different outbox slot must stay
+    /// one receipt, not become two.
+    ///
+    /// THE BUG THIS PREVENTS. `receipt_digest` is the receipt's idempotency key
+    /// (`ON CONFLICT (tenant_id, repository_id, directive_id, receipt_digest)`).
+    /// ADR-0146 added `outbox_sequence` to `DirectiveReceipt`, and hashing the
+    /// whole encoded message would have folded that sequence into the key. When
+    /// Ackplane redelivers a directive, the supervisor's inbox replays a
+    /// byte-identical decision but its outbox assigns the resend a *new*
+    /// sequence -- so the server would have seen two different digests for one
+    /// unchanged decision and written a duplicate receipt row against the
+    /// directive, silently inflating the durable record it exists to protect.
+    ///
+    /// Fix: `receipt_digest` clears `outbox_sequence` before hashing, so the
+    /// digest identifies what the supervisor decided, not where that decision
+    /// happened to sit in its outbox.
+    #[test]
+    fn receipt_digest_ignores_the_outbox_slot_a_decision_was_sent_from() {
+        let mut first_attempt = receipt();
+        first_attempt.outbox_sequence = Some(5);
+        let mut resent_from_a_later_slot = receipt();
+        resent_from_a_later_slot.outbox_sequence = Some(6);
+
+        assert_eq!(
+            receipt_digest(&first_attempt),
+            receipt_digest(&resent_from_a_later_slot),
+            "the same decision sent from a different outbox slot must keep one identity"
+        );
+    }
+
+    /// The sequence is excluded rather than merely normalised: a receipt that
+    /// carries one must hash exactly as it did before ADR-0146 existed, so no
+    /// digest already stored against a directive changes meaning.
+    #[test]
+    fn receipt_digest_is_unchanged_by_adding_an_outbox_sequence() {
+        let without_sequence = receipt();
+        let mut with_sequence = receipt();
+        with_sequence.outbox_sequence = Some(42);
+
+        assert_eq!(
+            receipt_digest(&without_sequence),
+            receipt_digest(&with_sequence)
+        );
+    }
+
+    /// The exclusion is narrow. Everything that describes the decision itself
+    /// still separates one receipt from another -- otherwise the test above
+    /// would pass just as well against a digest that ignored the whole message.
+    #[test]
+    fn receipt_digest_still_separates_genuinely_different_decisions() {
+        let accepted = receipt();
+        let mut refused = receipt();
+        refused.status = v1::DirectiveReceiptStatus::Refused as i32;
+
+        assert_ne!(receipt_digest(&accepted), receipt_digest(&refused));
+    }
 }

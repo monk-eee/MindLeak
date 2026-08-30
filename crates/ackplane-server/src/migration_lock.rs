@@ -161,6 +161,11 @@ pub(crate) mod key {
     /// `migrations/0055_projected_node_embeddings.sql` (ADR-0140 decision 1).
     /// `migration-audit --next` selected 55: no live discrepancy above 54.
     pub(crate) const PROJECTED_NODE_EMBEDDINGS: i64 = 55;
+    /// `migrations/0056_supervisor_outbox_positions.sql` (ADR-0146 decision 3).
+    /// `migration-audit --next` selected 56 from committed source; no live
+    /// database was reachable to check for a higher applied key, so this is
+    /// the next free key on `main` rather than a verified-against-live one.
+    pub(crate) const SUPERVISOR_OUTBOX_POSITIONS: i64 = 56;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
