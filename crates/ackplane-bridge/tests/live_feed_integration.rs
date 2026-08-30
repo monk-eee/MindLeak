@@ -140,7 +140,15 @@ async fn streams_an_authorized_event_and_refuses_the_same_repository_to_another_
     let repository_id = format!("repository-live-feed-{suffix}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &suffix).await;
 
-    let mut live_feed = LiveFeedStore::connect(&database_url)
+    // One pool for this test binary (ADR-0143 decision 7): both stores below
+    // are separate store instances scoped to different tenants, which is what
+    // this test proves -- they never needed separate raw connections.
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let live_feed = LiveFeedStore::connect(&pool)
         .await
         .expect("the test database should accept Live Feed connections");
     let published = live_feed
@@ -205,9 +213,9 @@ async fn streams_an_authorized_event_and_refuses_the_same_repository_to_another_
 
     let foreign = live_feed_routes(LiveFeedApiState::new(
         Arc::new(
-            LiveFeedStore::connect(&database_url)
+            LiveFeedStore::connect(&pool)
                 .await
-                .expect("the test database should accept a second Live Feed connection"),
+                .expect("the test database should accept a second Live Feed store"),
         ),
         fleet,
         Arc::from(format!("foreign-{tenant_id}")),
