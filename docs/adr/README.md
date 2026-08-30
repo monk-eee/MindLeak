@@ -151,6 +151,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0143](0143-postgres-access-goes-through-one-bounded-pool-per-process.md) | Postgres access goes through one bounded pool per process | Accepted |
 | [0145](0145-recovery-rehearsal-is-real-restore-execution-is-single-tenant-only.md) | Recovery rehearsal is real; production recovery execution is single-tenant only | Accepted |
 | [0146](0146-a-supervisor-declares-its-own-frame-sequence.md) | A supervisor declares its own frame sequence; the server only echoes what it accepted | Accepted |
+| [0147](0147-a-claim-reports-the-branchs-existing-governed-files.md) | A claim reports the branch's existing governed files, not only its own declared scope | Accepted |
 
 ## Writing a new ADR
 
