@@ -268,7 +268,6 @@ async fn authenticate_purge_operation(
         operation,
         &authentication,
     );
-    let mut claims = claims.lock().await;
     let resolution = claims
         .resolve_signing_key(&binding)
         .await

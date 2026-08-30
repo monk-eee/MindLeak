@@ -271,6 +271,13 @@ pub(super) mod tests {
     /// behavior, since `AppState`/`handlers` are private to the binary
     /// crate and no external `tests/*.rs` integration file can reach them.
     pub(super) async fn test_app_state(database_url: &str, tenant_id: &str) -> AppState {
+        // One pool for every pooled store this fixture builds (ADR-0143
+        // decision 7). Stores still taking a url take their own turn.
+        let db_pool = ackplane_server::db_pool::build_pool(
+            database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url");
         AppState {
             fleet: Arc::new(
                 FleetStore::connect(database_url)
@@ -287,11 +294,11 @@ pub(super) mod tests {
                     .await
                     .expect("connect Constitution store"),
             )),
-            claims: Arc::new(Mutex::new(
-                ClaimStore::connect(database_url)
+            claims: Arc::new(
+                ClaimStore::connect(&db_pool)
                     .await
                     .expect("connect Claim store"),
-            )),
+            ),
             projector: Arc::new(
                 Projector::connect(database_url)
                     .await

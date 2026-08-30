@@ -3,7 +3,8 @@
 use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
-use tokio_postgres::{Client, NoTls};
+
+use crate::db_pool::{PgConnection, PgPool};
 
 mod lease;
 
@@ -71,6 +72,10 @@ pub struct ActiveClaim {
 pub enum ClaimStoreError {
     #[error("claim delegation database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("claim delegation could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
+    #[error("claim delegation signing key error: {0}")]
+    SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("lease duration must be greater than zero")]
     InvalidLease,
     #[error("claim_lapses cannot be negative")]
@@ -80,41 +85,48 @@ pub enum ClaimStoreError {
 }
 
 pub struct ClaimStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl ClaimStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane claim delegation connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be exactly
+    /// the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, ClaimStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CLAIM_DELEGATION,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CLAIM_AUTHENTICATION_NONCES,
             NONCE_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, ClaimStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Resolve the signing key a claim request's authentication claims,
     /// judged as of now. Mirrors `LedgerStore::resolve_signing_key`: the
     /// decision itself lives in `signing_keys` and is pure, this only owns
     /// the connection.
+    ///
+    /// Returns `ClaimStoreError` rather than `SigningKeyError` because
+    /// obtaining the connection is now a way this can fail, and that is the
+    /// store's concern -- `signing_keys` never sees a pool.
     pub async fn resolve_signing_key(
         &self,
         binding: &crate::signing_keys::EnvelopeBinding<'_>,
-    ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
-        crate::signing_keys::resolve(&self.client, binding).await
+    ) -> Result<crate::signing_keys::KeyResolution, ClaimStoreError> {
+        let connection = self.connection().await?;
+        Ok(crate::signing_keys::resolve(&connection, binding).await?)
     }
 
     /// Consume a (signing_key_id, nonce) pair exactly once (anti-replay for
@@ -124,13 +136,14 @@ impl ClaimStore {
     /// attempt with the identical pair -- the insert's own uniqueness is the
     /// enforcement, so this needs no read-then-write race.
     pub async fn consume_claim_nonce(
-        &mut self,
+        &self,
         signing_key_id: &str,
         nonce: &[u8],
         now: SystemTime,
     ) -> Result<bool, ClaimStoreError> {
         let inserted = self
-            .client
+            .connection()
+            .await?
             .execute(
                 "INSERT INTO claim_authentication_nonces (signing_key_id, nonce, consumed_at) \
                  VALUES ($1, $2, $3) ON CONFLICT (signing_key_id, nonce) DO NOTHING",
@@ -153,7 +166,8 @@ impl ClaimStore {
         now: SystemTime,
     ) -> Result<Vec<ActiveClaim>, ClaimStoreError> {
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
                  FROM delegated_claims \
@@ -178,7 +192,78 @@ impl ClaimStore {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+
+    /// THE BUG THIS PREVENTS. `delegate`'s `SELECT ... FOR UPDATE` row lock
+    /// lives on the *connection*, and holds only until that connection's
+    /// transaction ends. Before ADR-0143 a process-wide `Mutex<ClaimStore>`
+    /// meant two delegates in one process could never reach the database
+    /// together at all, so nothing here ever exercised the lock; the store now
+    /// takes `&self` and the mutex is gone, which makes this the first time
+    /// two claims for one task genuinely race inside a single process.
+    ///
+    /// If a later change checks a connection out per statement rather than
+    /// once per transaction (decision 4), the lock is released between the
+    /// SELECT and the UPDATE and BOTH callers are granted the same task -- a
+    /// lost update, and precisely the outcome the CAS exists to prevent. A
+    /// test that called `delegate` twice in sequence would keep passing
+    /// through that regression, because the second call would simply read the
+    /// first one's committed row.
+    #[tokio::test]
+    async fn two_concurrent_delegates_for_one_task_produce_exactly_one_winner() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-race-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let store = Arc::new(ClaimStore::connect(&pool).await.unwrap());
+
+        let first = request(&tenant_id, task_id, "owner-one");
+        let second = request(&tenant_id, task_id, "owner-two");
+        let one = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.delegate(&first, now).await }
+        });
+        let two = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.delegate(&second, now).await }
+        });
+        let one = one
+            .await
+            .unwrap()
+            .expect("the first delegate must not error");
+        let two = two
+            .await
+            .unwrap()
+            .expect("the second delegate must not error");
+
+        let winners = [&one, &two]
+            .into_iter()
+            .filter(|result| result.outcome == ClaimLeaseOutcome::Granted)
+            .count();
+        assert_eq!(winners, 1, "exactly one may win: {one:?} / {two:?}");
+        // Both callers must name the same holder. A rejected caller reporting
+        // a different owner than the winner has read a row the winner had not
+        // committed yet, which is the lock failing without the count changing.
+        assert_eq!(
+            one.owner_id, two.owner_id,
+            "both callers must agree who holds the claim: {one:?} / {two:?}"
+        );
+
+        let active = store
+            .list_active(&tenant_id, "repository", now)
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1, "one task, one durable claim row");
+        assert_eq!(
+            active[0].owner_id, one.owner_id,
+            "the durable row must agree with what both callers were told"
+        );
+    }
 
     fn request(tenant_id: &str, task_id: &str, owner_id: &str) -> ClaimLeaseRequest {
         ClaimLeaseRequest {
@@ -216,7 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn authoritative_store_refuses_a_live_competitor_and_allows_expired_reclaim() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -225,7 +310,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
         let second = request(&tenant_id, task_id, "owner-two");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         let granted = store.delegate(&first, now).await.unwrap();
         assert_eq!(granted.outcome, ClaimLeaseOutcome::Granted);
@@ -252,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_live_owner_can_release_at_expiry_and_a_different_owner_claims_immediately() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -261,7 +346,7 @@ mod tests {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
         let second = request(&tenant_id, task_id, "owner-two");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store.delegate(&first, now).await.unwrap();
 
@@ -294,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_owner_release_is_refused_and_does_not_affect_the_live_claim() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -302,7 +387,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store.delegate(&first, now).await.unwrap();
 
@@ -335,7 +420,7 @@ mod tests {
 
     #[tokio::test]
     async fn releasing_an_already_expired_claim_is_a_no_op() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -343,7 +428,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store.delegate(&first, now).await.unwrap();
 
@@ -363,7 +448,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_live_owner_can_renew_and_the_started_at_and_scope_are_untouched() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -371,7 +456,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         let granted = store.delegate(&first, now).await.unwrap();
 
@@ -410,7 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_owner_renew_is_refused_and_does_not_affect_the_live_claim() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -418,7 +503,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         let granted = store.delegate(&first, now).await.unwrap();
 
@@ -456,7 +541,7 @@ mod tests {
 
     #[tokio::test]
     async fn renewing_an_already_expired_claim_is_refused_not_extended() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -464,7 +549,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store.delegate(&first, now).await.unwrap();
 
@@ -489,7 +574,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_expired_claim_can_be_recovered_by_a_new_owner_with_a_reason() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -497,7 +582,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store.delegate(&first, now).await.unwrap();
 
@@ -525,7 +610,7 @@ mod tests {
 
     #[tokio::test]
     async fn recovering_a_still_live_claim_is_refused() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -533,7 +618,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         let granted = store.delegate(&first, now).await.unwrap();
 
@@ -562,7 +647,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_same_owner_can_recover_their_own_expired_claim_and_started_at_is_preserved() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -570,7 +655,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         let granted = store.delegate(&first, now).await.unwrap();
 
@@ -601,7 +686,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_mismatched_expected_owner_is_refused_even_though_the_lease_expired() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -609,7 +694,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store.delegate(&first, now).await.unwrap();
 
@@ -637,7 +722,7 @@ mod tests {
 
     #[tokio::test]
     async fn recovery_without_a_reason_is_refused() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -648,7 +733,7 @@ mod tests {
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let first = request(&tenant_id, task_id, "owner-one");
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store.delegate(&first, now).await.unwrap();
 
@@ -665,13 +750,13 @@ mod tests {
 
     #[tokio::test]
     async fn list_active_reports_every_unexpired_claim_scoped_to_its_tenant_and_repository() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = format!("claim-list-active-{}", crate::test_support::uuid_ish());
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store
             .delegate(&request(&tenant_id, "task-one", "owner-one"), now)
@@ -707,14 +792,14 @@ mod tests {
 
     #[tokio::test]
     async fn list_active_excludes_a_claim_whose_lease_has_expired() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = format!("claim-list-expired-{}", crate::test_support::uuid_ish());
         let task_id = "task";
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         store
             .delegate(&request(&tenant_id, task_id, "owner-one"), now)
@@ -750,14 +835,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_nonce_is_consumed_exactly_once_per_signing_key() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let signing_key_id = format!("claim-nonce-{}", crate::test_support::uuid_ish());
         let nonce = b"a fixed nonce value".to_vec();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-        let mut store = ClaimStore::connect(&database_url).await.unwrap();
+        let store = ClaimStore::connect(&pool).await.unwrap();
 
         let first = store
             .consume_claim_nonce(&signing_key_id, &nonce, now)

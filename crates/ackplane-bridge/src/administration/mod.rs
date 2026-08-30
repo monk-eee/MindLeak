@@ -54,7 +54,7 @@ pub struct AdministrationApiState {
     pub administration: Arc<Mutex<AdministrationStore>>,
     /// Enrolled-key verification and nonce consumption for destructive Lifecycle
     /// purge transitions. Absent test states fail closed for signed mutations.
-    pub claims: Option<Arc<Mutex<ClaimStore>>>,
+    pub claims: Option<Arc<ClaimStore>>,
     /// `None` when `ACKPLANE_SNAPSHOT_DIR` is not configured -- Snapshot then
     /// reports `unavailable` rather than attempting to run `pg_dump` against
     /// a location nobody chose.
@@ -86,7 +86,7 @@ impl AdministrationApiState {
         fleet: Arc<FleetStore>,
         tenant_id: Arc<str>,
         administration: Arc<Mutex<AdministrationStore>>,
-        claims: Arc<Mutex<ClaimStore>>,
+        claims: Arc<ClaimStore>,
         snapshot: Option<Arc<SnapshotProviderConfig>>,
         export: Option<Arc<ExportProviderConfig>>,
     ) -> Self {

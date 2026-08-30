@@ -69,7 +69,7 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     EnrollmentStore::connect(database_url)
         .await
         .map_err(|error| format!("enrollment schema failed: {error}"))?;
-    ClaimStore::connect(database_url)
+    ClaimStore::connect(&pool)
         .await
         .map_err(|error| format!("claim schema failed: {error}"))?;
     Projector::connect(database_url)

@@ -6,11 +6,39 @@ use std::time::SystemTime;
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
+use crate::db_pool::{build_pool, PgPool, TEST_POOL_MAX_SIZE};
 use crate::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use crate::enrollment_store::{
     ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
     EnrollmentSubmission,
 };
+
+/// A bounded pool for one database-gated test, or `None` when the suite is not
+/// gated on.
+///
+/// Built per test rather than once per binary, which is a deliberate departure
+/// from ADR-0143 decision 7's "one pool per test binary". `#[tokio::test]`
+/// gives every test its own runtime, and a `tokio_postgres` connection is
+/// driven by a task spawned on the runtime that opened it. A pool shared across
+/// runtimes therefore hands the second test a connection whose driver died with
+/// the first test's runtime -- measured here as
+/// `Database(Error { kind: Closed })` raised from whatever query happened to
+/// run next, naming nothing to do with pooling. Decision 7's intent still
+/// holds: demand is bounded per test and connections go back to the pool
+/// between calls instead of one being held for the whole test.
+pub(crate) fn test_pool() -> Option<PgPool> {
+    let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+    Some(
+        build_pool(&database_url, TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from a valid database url"),
+    )
+}
+
+/// The same pool for a test that has already checked the gate itself, and so
+/// still needs the url for a store that has not moved to the pool yet.
+pub(crate) fn gated_test_pool() -> PgPool {
+    test_pool().expect("ACKPLANE_TEST_DATABASE_URL was checked by the caller")
+}
 
 /// A cheap, dependency-free way to keep each test run's tenant id unique
 /// without adding a `uuid` crate for two words of randomness. Packs a

@@ -51,6 +51,19 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // One pool for this process (ADR-0143 decision 1). Stores still on
+            // their own `connect(database_url)` take their turn in the
+            // migration sequence; none is left half-migrated.
+            let db_pool = match ackplane_server::db_pool::build_pool(
+                config.database_url(),
+                ackplane_server::db_pool::SERVICE_POOL_MAX_SIZE,
+            ) {
+                Ok(pool) => pool,
+                Err(error) => {
+                    eprintln!("ackplane-server: could not build the database pool: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
             let ledger = match LedgerStore::connect(config.database_url()).await {
                 Ok(ledger) => ledger,
                 Err(error) => {
@@ -69,7 +82,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let claim_store = match ClaimStore::connect(config.database_url()).await {
+            let claim_store = match ClaimStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(

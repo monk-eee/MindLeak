@@ -129,7 +129,12 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
         return;
     };
     register_test_key(&database_url).await;
-    let store = ClaimStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let store = ClaimStore::connect(&pool)
         .await
         .expect("the gated test database should accept claim migrations");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
