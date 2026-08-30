@@ -491,8 +491,13 @@ mod tests {
                 None,
             )
             .unwrap();
-        e.supersede_goal(&g.id, "No LLM tokens on the write path", "clarity")
-            .unwrap();
+        e.supersede_goal(
+            &g.id,
+            "No LLM tokens on the write path",
+            "clarity",
+            "agent:test",
+        )
+        .unwrap();
         let active = e.get_constitution().unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].version, 2);
