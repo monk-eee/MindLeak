@@ -22,6 +22,18 @@ service ClaimDelegationService {
   rpc ListActiveClaims(ActiveClaimsRequest) returns (ActiveClaimsResult);
 }
 
+// ADR-0139 clause 2: ackplane-mcp's task_query tool composes this read-only
+// Industrial Work projection, exactly as Bridge's first Work read surface
+// already does (ADR-0120 decision 7) -- a paged/filterable task list, task
+// detail and event history, declared scope/overlap, stalled and waiting
+// work, and Board Doctor findings. No commands: ADR-0120 decision 8 defers
+// task creation and lifecycle mutation, and this service adds none.
+service WorkQueryService {
+  rpc ListWorkTasks(ListWorkTasksRequest) returns (ListWorkTasksResult);
+  rpc GetWorkTaskDetail(WorkTaskDetailRequest) returns (WorkTaskDetailResult);
+  rpc GetWorkBoardDoctor(WorkBoardDoctorRequest) returns (WorkBoardDoctorResult);
+}
+
 // ADR-0106 decision 3: knowledge is one of the PostgreSQL-backed Industrial
 // domains -- first slice: record, recall (ranked by pgvector similarity
 // search when a query embedding is supplied, else by recency), and retire.
@@ -1240,4 +1252,119 @@ message Notice {
   string code = 1;
   string message = 2;
   string schema_version = 3;
+}
+
+// ADR-0120 decision 6: every Work answer names a publication state --
+// `current`, `lagging`, `claims_only`, `not_published`, or `unavailable` --
+// so a quiet, empty-looking result is never presented as "no work" without
+// saying which of those it actually is. `claims_only` names the live
+// federated claims with no corresponding Work task, bounded the same way
+// Bridge's own Work publication reads already are.
+message WorkClaimsOnlySummary {
+  string task_id = 1;
+  string owner_id = 2;
+  string branch = 3;
+  string lease_expires_at = 4;
+  repeated string paths = 5;
+  repeated string symbols = 6;
+}
+
+message WorkPublicationSummary {
+  string state = 1;
+  int64 claims_only_total = 2;
+  repeated WorkClaimsOnlySummary claims_only = 3;
+}
+
+message WorkTaskSummary {
+  string task_id = 1;
+  string title = 2;
+  string goal_id = 3;
+  string state = 4;
+  string owner_id = 5;
+  string owner_session_id = 6;
+  string lease_expires_at = 7;
+  repeated string declared_paths = 8;
+  repeated string declared_symbols = 9;
+  string published_by = 10;
+  string created_at = 11;
+  string updated_at = 12;
+}
+
+// ADR-0112 bounded pagination discipline: `page`/`page_size` are the only
+// sort/filter knobs this first slice offers, matching Bridge's own
+// `/api/v1/repositories/:repository_id/work` list contract exactly. `state`
+// is an optional filter; empty means unfiltered.
+message ListWorkTasksRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string state = 3;
+  int64 page = 4;
+  int64 page_size = 5;
+}
+
+message ListWorkTasksResult {
+  repeated WorkTaskSummary items = 1;
+  int64 total = 2;
+  int64 page = 3;
+  int64 page_size = 4;
+  WorkPublicationSummary publication = 5;
+}
+
+message WorkTaskDetailRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+}
+
+message WorkTaskEventSummary {
+  string event_id = 1;
+  // Empty when this is the task's first event (it had no prior state).
+  string from_state = 2;
+  string to_state = 3;
+  string actor_id = 4;
+  string recorded_at = 5;
+}
+
+message WorkTaskWaitSummary {
+  string wait_id = 1;
+  string question = 2;
+  string audience = 3;
+  string asked_by = 4;
+  string asked_at = 5;
+  string answered_by = 6;
+  string answer = 7;
+  string answered_at = 8;
+}
+
+message WorkTaskDetailResult {
+  WorkTaskSummary task = 1;
+  string acceptance = 2;
+  repeated WorkTaskEventSummary history = 3;
+  repeated WorkTaskWaitSummary waits = 4;
+}
+
+message WorkBoardDoctorRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+}
+
+// One Board Doctor finding, flattened to a single tagged shape so every
+// finding kind serializes the same way (mirrors Bridge's own
+// `WorkDoctorFindingResponse`); fields unused by a given `kind` are empty.
+message WorkDoctorFindingSummary {
+  string kind = 1;
+  string task_id = 2;
+  string detail = 3;
+  string related_task_id = 4;
+  string title = 5;
+  string goal_id = 6;
+  string path = 7;
+  string wait_id = 8;
+  string question = 9;
+  string owner_id = 10;
+  string since = 11;
+}
+
+message WorkBoardDoctorResult {
+  repeated WorkDoctorFindingSummary findings = 1;
 }

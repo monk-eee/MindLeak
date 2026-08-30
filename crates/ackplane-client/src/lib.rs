@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use ackplane_protocol::v1::claim_delegation_service_client::ClaimDelegationServiceClient;
 use ackplane_protocol::v1::node_enrollment_service_client::NodeEnrollmentServiceClient;
+use ackplane_protocol::v1::work_query_service_client::WorkQueryServiceClient;
 use thiserror::Error;
 use tonic::transport::Channel;
 
@@ -57,7 +58,9 @@ pub use ackplane_protocol::v1::{
     ActiveClaimSummary, ActiveClaimsRequest, ActiveClaimsResult, ClaimLeaseOutcome,
     ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest, ClaimReleaseRequest,
     ClaimReleaseResult, ClaimRenewRequest, EnrollmentState, EnrollmentStatusAuthentication,
-    EnrollmentStatusRequest, EnrollmentStatusResult,
+    EnrollmentStatusRequest, EnrollmentStatusResult, ListWorkTasksRequest, ListWorkTasksResult,
+    WorkBoardDoctorRequest, WorkBoardDoctorResult, WorkClaimsOnlySummary, WorkDoctorFindingSummary,
+    WorkPublicationSummary, WorkTaskDetailRequest, WorkTaskDetailResult, WorkTaskSummary,
 };
 
 /// How long a connection attempt is given before it counts as unreachable.
@@ -238,6 +241,59 @@ impl EnrollmentClient {
         Ok(self
             .inner
             .check_enrollment_status(request)
+            .await?
+            .into_inner())
+    }
+}
+
+/// A live connection to one Ackplane deployment's read-only Industrial Work
+/// projection (ADR-0139 clause 2). Every method here composes
+/// `WorkQueryService`, which itself only translates `WorkStore`'s existing
+/// read methods -- no new authority, and no mutation.
+pub struct WorkQueryClient {
+    inner: WorkQueryServiceClient<Channel>,
+}
+
+impl WorkQueryClient {
+    /// Connect to `endpoint` (e.g. `http://127.0.0.1:8443`), refusing rather
+    /// than blocking indefinitely if the arbiter never answers.
+    pub async fn connect(endpoint: &str) -> Result<Self, ClientError> {
+        let channel = Channel::from_shared(endpoint.to_string())
+            .map_err(|_| ClientError::InvalidEndpoint(endpoint.to_string()))?
+            .connect_timeout(CONNECT_TIMEOUT)
+            .connect()
+            .await?;
+        Ok(Self {
+            inner: WorkQueryServiceClient::new(channel),
+        })
+    }
+
+    /// A paged/filterable Work task list (`WorkQueryService.ListWorkTasks`).
+    pub async fn list_work_tasks(
+        &mut self,
+        request: ListWorkTasksRequest,
+    ) -> Result<ListWorkTasksResult, ClientError> {
+        Ok(self.inner.list_work_tasks(request).await?.into_inner())
+    }
+
+    /// One task's detail, event history, and waits
+    /// (`WorkQueryService.GetWorkTaskDetail`).
+    pub async fn get_work_task_detail(
+        &mut self,
+        request: WorkTaskDetailRequest,
+    ) -> Result<WorkTaskDetailResult, ClientError> {
+        Ok(self.inner.get_work_task_detail(request).await?.into_inner())
+    }
+
+    /// Board Doctor's deterministic diagnostic findings
+    /// (`WorkQueryService.GetWorkBoardDoctor`).
+    pub async fn get_work_board_doctor(
+        &mut self,
+        request: WorkBoardDoctorRequest,
+    ) -> Result<WorkBoardDoctorResult, ClientError> {
+        Ok(self
+            .inner
+            .get_work_board_doctor(request)
             .await?
             .into_inner())
     }

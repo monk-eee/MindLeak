@@ -111,7 +111,8 @@ where
                 }
             } else {
                 let endpoint = endpoint.unwrap_or_default();
-                match tools::call(endpoint, name, environment) {
+                let arguments = params.get("arguments").cloned().unwrap_or(Value::Null);
+                match tools::call(endpoint, name, &arguments, environment) {
                     Ok(content) => json!({
                         "content": [{ "type": "text", "text": content.to_string() }],
                         "isError": false
@@ -219,10 +220,11 @@ mod tests {
         )
         .expect("tools/list is answered");
         let tools = response["result"]["tools"].as_array().expect("an array");
-        assert_eq!(tools.len(), 3);
+        assert_eq!(tools.len(), 4);
         assert_eq!(tools[0]["name"], tools::OPEN_SESSION);
         assert_eq!(tools[1]["name"], tools::CHECK_ENROLLMENT_STATUS);
         assert_eq!(tools[2]["name"], tools::ACTIVE_CLAIMS);
+        assert_eq!(tools[3]["name"], tools::TASK_QUERY);
     }
 
     /// The clause-4 refusal has to reach the agent, and a tool result is the
