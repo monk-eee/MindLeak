@@ -551,6 +551,46 @@ export function watcherCheckedIn(at, now, staleMs = WATCHER_STALE_MS) {
 }
 
 /**
+ * Why not to start watching, or `null` to go ahead. Pure.
+ *
+ * The heartbeat was built to tell a one-shot run that nothing is advancing the
+ * queue. It answers the opposite question just as well, and nothing was asking
+ * it: `--watch` wrote a beat and never read one, so a second watcher started
+ * unguarded against a first that was beating every 60 seconds. Measured on this
+ * machine -- two `--watch` processes live, heartbeat 21s old.
+ *
+ * Two watchers do not split the work; they duplicate it. Both read the same
+ * queue, both pick the same head-of-queue branch, and both call
+ * `gh pr update-branch` on it -- doubling the check runs that taking one turn
+ * at a time exists to avoid. The costlier failure is the tree check: one
+ * watcher can compute its expected merge before the other's update lands and
+ * read the actual tree after, and the mismatch it then reports is indistinct
+ * from the silent-drop defect that check was written to catch
+ * (gaps.d/update-branch-can-silently-drop-a-conflicts-losing-side.md). A false
+ * alarm there sends someone hand-reconciling a branch that was never broken.
+ *
+ * Named for what it returns rather than for a claim about the world, because
+ * the beat carries no identity: this knows only that something checked in
+ * recently, which is why the message says that and offers `--force`.
+ */
+export function refuseToStartWatching(
+  heartbeatAt,
+  now,
+  staleMs = WATCHER_STALE_MS,
+) {
+  if (!watcherCheckedIn(heartbeatAt, now, staleMs)) return null;
+  const ago = Math.max(0, Math.round((now - heartbeatAt) / 1000));
+  return (
+    `a delivery-queue watcher checked in ${ago}s ago. A second one does not ` +
+    `share the work -- both would pick the same head-of-queue branch and both ` +
+    `would update it, doubling check runs and risking a bogus tree-mismatch ` +
+    `alarm when one races the other. Not starting.\n` +
+    `If that watcher is gone, its beat goes stale after ` +
+    `${Math.round(staleMs / 60_000)}m; wait, or pass --force to start anyway.`
+  );
+}
+
+/**
  * What to say when armed work is waiting and nothing has checked in to advance
  * it, or `null` for nothing worth saying. Pure.
  *
@@ -591,6 +631,7 @@ const USAGE = `delivery-queue -- take branch-update turns in order (ADR-0062)
   --watch     keep ticking every 60s until stopped
   --dry-run   decide and explain, change nothing
   --no-sweep  skip build-artefact hygiene entirely
+  --force     start watching even though another watcher has checked in
 
 It also carries build-artefact hygiene, because that work has no home of its
 own: the agent that filled a cache has finished by the time it is safe to
@@ -626,6 +667,7 @@ function main() {
   const apply = !process.argv.includes("--dry-run");
   const watch = process.argv.includes("--watch");
   const sweeping = !process.argv.includes("--no-sweep");
+  const forced = process.argv.includes("--force");
 
   // Hygiene is deliberately outside `tick`: a disk walk must never sit on the
   // path that decides whose branch is updated next, and a sweep that throws
@@ -706,6 +748,18 @@ function main() {
       commonDir &&
       unattendedQueueNote(action, readWatcherHeartbeat(commonDir), Date.now());
     if (note) console.log(`\n${note}`);
+    return;
+  }
+  // Single-owner is an assumption this file's own usage text makes, so it is
+  // checked here rather than left to whoever starts the process. Skipped when
+  // there is no repository to read a beat from: unreadable is not evidence.
+  const refusal = forced
+    ? null
+    : commonDir &&
+      refuseToStartWatching(readWatcherHeartbeat(commonDir), Date.now());
+  if (refusal) {
+    console.error(refusal);
+    process.exitCode = 1;
     return;
   }
   // Watch mode is the agent: one tick, wait, tick again. The interval is longer

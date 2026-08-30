@@ -3,7 +3,7 @@
 
 use std::time::SystemTime;
 
-use tokio_postgres::{Client, NoTls};
+use crate::db_pool::{PgConnection, PgPool};
 
 const MIGRATION: &str = include_str!("../migrations/0029_live_feed.sql");
 mod model;
@@ -16,34 +16,40 @@ pub use model::{
 };
 
 pub struct LiveFeedStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl LiveFeedStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane live feed store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be exactly
+    /// the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, LiveFeedStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::LIVE_FEED,
             MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, LiveFeedStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     pub async fn publish(
-        &mut self,
+        &self,
         publication: LiveFeedEventPublication,
     ) -> Result<LiveFeedEvent, LiveFeedStoreError> {
         validate_publication(&publication)?;
         let cursor = unique_cursor()?;
         let emitted_at = SystemTime::now();
-        let transaction = self.client.transaction().await?;
+        // One connection, checked out once and held for the whole transaction
+        // (ADR-0143 decision 4). Re-checking out per statement would let other
+        // pool traffic interleave through a single logical operation.
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let head = transaction
             .query_one(
                 "INSERT INTO live_feed_heads (tenant_id, stream_position) VALUES ($1, 0) \
@@ -117,9 +123,9 @@ impl LiveFeedStore {
         limit: i64,
     ) -> Result<LiveFeedReplay, LiveFeedStoreError> {
         validate_read(tenant_id, repository_id, cursor, limit)?;
+        let connection = self.connection().await?;
         let after_position = match cursor {
-            Some(cursor) => match self
-                .client
+            Some(cursor) => match connection
                 .query_opt(
                     "SELECT stream_position FROM live_feed_events \
                      WHERE tenant_id = $1 AND cursor = $2 \
@@ -137,8 +143,7 @@ impl LiveFeedStore {
             },
             None => 0_i64,
         };
-        let rows = self
-            .client
+        let rows = connection
             .query(
                 "SELECT cursor, tenant_id, repository_id, event_kind, resource_type, resource_id, \
                         change_kind, resource_version, source_ledger_position, projection_position, \
@@ -163,13 +168,14 @@ impl LiveFeedStore {
     }
 
     pub async fn prune_before(
-        &mut self,
+        &self,
         tenant_id: &str,
         before: SystemTime,
     ) -> Result<u64, LiveFeedStoreError> {
         validate_read(tenant_id, None, None, 1)?;
         Ok(self
-            .client
+            .connection()
+            .await?
             .execute(
                 "DELETE FROM live_feed_events WHERE tenant_id = $1 AND emitted_at < $2",
                 &[&tenant_id, &before],
@@ -212,7 +218,9 @@ mod tests {
 
     async fn store() -> Option<LiveFeedStore> {
         let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(LiveFeedStore::connect(&database_url).await.unwrap())
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from a valid database url");
+        Some(LiveFeedStore::connect(&pool).await.unwrap())
     }
 
     #[test]
@@ -236,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn replay_uses_an_opaque_cursor_and_replays_only_later_events() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -286,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cursor_from_another_tenant_requires_resynchronization() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
