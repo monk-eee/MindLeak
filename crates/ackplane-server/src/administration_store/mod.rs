@@ -29,6 +29,8 @@ const PURGE_CONFIRMATION_AUTHENTICATION_MIGRATION: &str =
     include_str!("../../migrations/0051_administration_purge_confirmation_authentication.sql");
 const PURGE_CONFIRMATION_FINGERPRINT_MIGRATION: &str =
     include_str!("../../migrations/0052_administration_purge_confirmation_fingerprint.sql");
+const RECOVERY_REHEARSAL_MIGRATION: &str =
+    include_str!("../../migrations/0057_administration_recovery_rehearsal.sql");
 
 mod export_model;
 mod export_write;
@@ -52,8 +54,8 @@ pub use purge_model::{
     NewPurgeReceipt, PurgeDataCategory, PurgeOutcome, PurgePreviewRequest, PurgeReceipt,
     PurgeRequest, PurgeRequestOutcome, MAX_CONFIRMATION_WINDOW,
 };
-pub use recovery_model::NewRecoveryInspection;
-pub use recovery_write::RecoveryInspection;
+pub use recovery_model::{NewRecoveryInspection, NewRecoveryRehearsal};
+pub use recovery_write::{RecoveryInspection, RecoveryRehearsal};
 
 /// PostgreSQL persistence for adopted administration policies, Snapshot
 /// requests/receipts, Lifecycle-purge previews/receipts, Recovery inspection
@@ -106,6 +108,12 @@ impl AdministrationStore {
             &mut client,
             migration_lock::key::ADMINISTRATION_PURGE_CONFIRMATION_FINGERPRINT,
             PURGE_CONFIRMATION_FINGERPRINT_MIGRATION,
+        )
+        .await?;
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::ADMINISTRATION_RECOVERY_REHEARSAL,
+            RECOVERY_REHEARSAL_MIGRATION,
         )
         .await?;
         Ok(Self { client })

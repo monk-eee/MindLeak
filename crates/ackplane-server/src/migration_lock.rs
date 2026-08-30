@@ -166,6 +166,10 @@ pub(crate) mod key {
     /// database was reachable to check for a higher applied key, so this is
     /// the next free key on `main` rather than a verified-against-live one.
     pub(crate) const SUPERVISOR_OUTBOX_POSITIONS: i64 = 56;
+    /// `migrations/0057_administration_recovery_rehearsal.sql` (ADR-0145
+    /// slice 1). `migration-audit --next` selected 57 from committed source;
+    /// no live database was reachable to check for a higher applied key.
+    pub(crate) const ADMINISTRATION_RECOVERY_REHEARSAL: i64 = 57;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

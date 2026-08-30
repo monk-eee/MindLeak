@@ -4,33 +4,13 @@
 //! `ackplane` service can start only after migrations have finished rather
 //! than racing them at boot.
 //!
-//! It applies no migration logic of its own: each named store's `connect`
-//! runs its own idempotent `CREATE TABLE IF NOT EXISTS` migration as a side
-//! effect of connecting, so this binary's only job is to open every
-//! connection `main.rs` opens at boot -- plus `DelegationStore::connect` and
-//! `WorkStore::connect`, which nothing in `main.rs` currently wires in but
-//! the Bridge and other direct consumers still depend on existing ahead of
-//! them -- in the Compose topology's `migrate` service, and report success
-//! or failure. Keep this list in lockstep with `main.rs`'s own store list: a
-//! store this binary does not cover is a migration race this binary cannot
-//! be trusted to have prevented.
+//! The store list itself lives in [`ackplane_server::schema_migration`]
+//! (extracted there for ADR-0145 slice 1, so recovery rehearsal can run the
+//! identical sequence against a scratch database); this binary is a thin
+//! process wrapper over it: resolve `ACKPLANE_DATABASE_URL`, run it, and
+//! report success or failure.
 
 use std::process::ExitCode;
-
-use ackplane_server::claim_store::ClaimStore;
-use ackplane_server::constitution_store::ConstitutionStore;
-use ackplane_server::delegation_store::DelegationStore;
-use ackplane_server::directive_store::DirectiveStore;
-use ackplane_server::enrollment_store::EnrollmentStore;
-use ackplane_server::evidence_store::EvidenceStore;
-use ackplane_server::human_decision_store::HumanDecisionStore;
-use ackplane_server::knowledge_store::KnowledgeStore;
-use ackplane_server::ledger::LedgerStore;
-use ackplane_server::live_feed_store::LiveFeedStore;
-use ackplane_server::projection::Projector;
-use ackplane_server::supervisor_store::SupervisorStore;
-use ackplane_server::telemetry_store::TelemetryStore;
-use ackplane_server::work_store::WorkStore;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
 
@@ -54,58 +34,11 @@ async fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Thin wrapper over the shared store list (`ackplane_server::schema_migration`,
+/// ADR-0145 slice 1) so recovery rehearsal can run the identical sequence
+/// against a scratch database without this binary forking a second copy of it.
 async fn migrate(database_url: &str) -> Result<(), String> {
-    // One pool for this process (ADR-0143 decision 1). Stores still on their
-    // own `connect(database_url)` take their turn in the migration sequence;
-    // none is left half-migrated.
-    let pool = ackplane_server::db_pool::build_pool(
-        database_url,
-        ackplane_server::db_pool::SERVICE_POOL_MAX_SIZE,
-    )
-    .map_err(|error| format!("building the database pool failed: {error}"))?;
-    LedgerStore::connect(database_url)
-        .await
-        .map_err(|error| format!("ledger schema failed: {error}"))?;
-    EnrollmentStore::connect(database_url)
-        .await
-        .map_err(|error| format!("enrollment schema failed: {error}"))?;
-    ClaimStore::connect(&pool)
-        .await
-        .map_err(|error| format!("claim schema failed: {error}"))?;
-    Projector::connect(database_url)
-        .await
-        .map_err(|error| format!("projection schema failed: {error}"))?;
-    KnowledgeStore::connect(database_url)
-        .await
-        .map_err(|error| format!("knowledge schema failed: {error}"))?;
-    EvidenceStore::connect(database_url)
-        .await
-        .map_err(|error| format!("evidence schema failed: {error}"))?;
-    ConstitutionStore::connect(database_url)
-        .await
-        .map_err(|error| format!("constitution schema failed: {error}"))?;
-    TelemetryStore::connect(database_url)
-        .await
-        .map_err(|error| format!("telemetry schema failed: {error}"))?;
-    DelegationStore::connect(database_url)
-        .await
-        .map_err(|error| format!("delegation schema failed: {error}"))?;
-    DirectiveStore::connect(database_url)
-        .await
-        .map_err(|error| format!("directive schema failed: {error}"))?;
-    SupervisorStore::connect(database_url)
-        .await
-        .map_err(|error| format!("supervisor schema failed: {error}"))?;
-    LiveFeedStore::connect(&pool)
-        .await
-        .map_err(|error| format!("live feed schema failed: {error}"))?;
-    WorkStore::connect(database_url)
-        .await
-        .map_err(|error| format!("work schema failed: {error}"))?;
-    HumanDecisionStore::connect(database_url)
-        .await
-        .map_err(|error| format!("human decision schema failed: {error}"))?;
-    Ok(())
+    ackplane_server::schema_migration::migrate_all(database_url).await
 }
 
 #[cfg(test)]
@@ -113,37 +46,6 @@ mod tests {
     use tokio_postgres::NoTls;
 
     use super::*;
-
-    const SOURCE: &str = include_str!("migrate.rs");
-
-    // Regression: this binary's own store list drifted from main.rs's (5 of
-    // 9 boot-time stores covered), so a fresh deployment could start any of
-    // the other four services racing their own first migration. It also names
-    // direct-consumer stores whose schema must exist before their later wiring.
-    #[test]
-    fn migrate_covers_every_store_main_rs_connects_at_boot() {
-        for store in [
-            "LedgerStore",
-            "EnrollmentStore",
-            "ClaimStore",
-            "Projector",
-            "KnowledgeStore",
-            "EvidenceStore",
-            "ConstitutionStore",
-            "TelemetryStore",
-            "DelegationStore",
-            "DirectiveStore",
-            "SupervisorStore",
-            "LiveFeedStore",
-            "WorkStore",
-            "HumanDecisionStore",
-        ] {
-            assert!(
-                SOURCE.contains(&format!("{store}::connect")),
-                "migrate() must call {store}::connect -- main.rs connects it at boot"
-            );
-        }
-    }
 
     // Regression: Compose used to migrate only the ledger and projection, so
     // a fresh deployment could start EvidenceService before its tables existed.
