@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS goals (
     version       INTEGER NOT NULL DEFAULT 1,
     parent_id     TEXT,                    -- goal hierarchy
     superseded_by TEXT,                    -- id of the version that replaced this
+    superseded_at INTEGER,                 -- when the supersession happened
+    superseded_by_agent TEXT,              -- who performed it (ADR-0144)
     reason        TEXT,                    -- why this version was written
     created_at    INTEGER NOT NULL,
     constitution_version TEXT,             -- id of the owning constitution version
