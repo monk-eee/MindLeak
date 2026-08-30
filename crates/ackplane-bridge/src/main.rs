@@ -118,6 +118,19 @@ async fn main() {
             return;
         }
     };
+    // One pool for this process (ADR-0143 decision 1); every migrated store
+    // takes a clone of this handle. Stores still on `connect(database_url)`
+    // keep their own connection until their turn in the migration sequence.
+    let db_pool = match ackplane_server::db_pool::build_pool(
+        config.database_url(),
+        ackplane_server::db_pool::SERVICE_POOL_MAX_SIZE,
+    ) {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not build the Ackplane database pool: {error}");
+            return;
+        }
+    };
     let fleet_store = match FleetStore::connect(config.database_url()).await {
         Ok(fleet) => Arc::new(fleet),
         Err(error) => {
@@ -190,7 +203,7 @@ async fn main() {
             return;
         }
     };
-    let live_feed_store = match LiveFeedStore::connect(config.database_url()).await {
+    let live_feed_store = match LiveFeedStore::connect(&db_pool).await {
         Ok(live_feed) => Arc::new(live_feed),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane live feed: {error}");
