@@ -4,6 +4,7 @@
 // updates at a time. Every other behaviour exists to stop that invariant from
 // wedging the queue.
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,7 @@ import {
   nextAction,
   queueOrder,
   readWatcherHeartbeat,
+  refuseToStartWatching,
   sweepAnnouncement,
   sweepArgs,
   unattendedQueueNote,
@@ -563,5 +565,118 @@ test("a heartbeat the watcher wrote is a heartbeat the one-shot can read", () =>
     assert.equal(readWatcherHeartbeat(dir), null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- and only one of us -----------------------------------------------------
+
+/// THE BUG THIS PREVENTS. `--watch` wrote a heartbeat and never read one, so
+/// starting a second watcher was completely unguarded -- measured on this
+/// machine, two `--watch` processes live with the heartbeat 21s old, while the
+/// file's own usage text called the process "already single-owner". Two
+/// watchers do not split the queue, they duplicate it: both read the same
+/// order, both pick the same head-of-queue branch, and both update it, which is
+/// exactly the doubled check run that taking one turn at a time exists to
+/// avoid.
+test("a watcher that checked in a moment ago stops a second one starting", () => {
+  const refusal = refuseToStartWatching(NOW - 21_000, NOW);
+  assert.match(refusal, /checked in 21s ago/);
+  assert.match(refusal, /Not starting/);
+});
+
+/// The escape has to be discoverable from the refusal itself. A watcher that
+/// died leaves a beat that is fresh for up to the stale window, so an operator
+/// restarting after a crash meets this message with no reason to think it is
+/// survivable -- and the honest answer is that it cannot tell, because the beat
+/// carries no identity.
+test("the refusal offers waiting or --force, and does not claim to know a watcher is alive", () => {
+  const refusal = refuseToStartWatching(NOW - 1_000, NOW);
+  assert.match(refusal, /--force/);
+  assert.match(refusal, /goes stale after 5m/);
+  assert.doesNotMatch(refusal, /is running/);
+});
+
+/// The other half of the contract, and the one a wrong threshold breaks
+/// silently: refusing when nothing is there would make the queue unstartable
+/// after any crash, which is strictly worse than the duplicate it prevents.
+test("nothing to collide with means nothing to refuse", () => {
+  assert.equal(refuseToStartWatching(null, NOW), null);
+  assert.equal(refuseToStartWatching(NOW - WATCHER_STALE_MS, NOW), null);
+  assert.equal(refuseToStartWatching("1787700000000", NOW), null);
+  // Right up to the threshold it still refuses -- the same boundary
+  // `watcherCheckedIn` draws, because disagreeing with it would mean the note
+  // and the refusal describe different watchers.
+  assert.notEqual(refuseToStartWatching(NOW - WATCHER_STALE_MS + 1, NOW), null);
+});
+
+/// THE OTHER HALF, AND THE ONE EVERY PURE TEST ABOVE WOULD MISS. All four
+/// tests above still pass if `main` computes the refusal and then never acts on
+/// it -- or never calls it at all, which is precisely the state this file was
+/// in before: `watcherCheckedIn` and `readWatcherHeartbeat` were exported,
+/// tested, and correct, while `--watch` read neither. So this one starts the
+/// real script, in a real repository, with a real fresh beat on disk, and
+/// asserts the process refuses. It cannot reach `gh`: the guard sits ahead of
+/// the first tick and the first sweep.
+test("--watch refuses for real, in a repository with a fresh beat on disk", () => {
+  const repo = mkdtempSync(join(tmpdir(), "queue-second-watcher-"));
+  try {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    // Written through the watcher's own writer, so a change to the beat's shape
+    // cannot leave this passing against a file nothing would ever produce.
+    writeWatcherHeartbeat(join(repo, ".git"), Date.now());
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./delivery-queue.mjs", import.meta.url)),
+        "--watch",
+      ],
+      { cwd: repo, encoding: "utf8", timeout: 30_000 },
+    );
+
+    assert.equal(result.status, 1, `stdout: ${result.stdout}`);
+    assert.match(result.stderr, /Not starting/);
+    // The refusal has to happen instead of watching, not alongside it.
+    assert.doesNotMatch(result.stdout ?? "", /watching every/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+/// The escape has to work, or the refusal is a wedge rather than a guard: an
+/// operator whose watcher died cannot wait out a stale window during an
+/// incident. Deliberately NOT tested by spawning `--watch --force`: past the
+/// guard the watcher ticks immediately, which calls `gh`, so that test would
+/// put a network call and a kill-by-timeout into a pure suite to prove one
+/// boolean. Named here rather than left as a silent hole.
+test("the refusal names the escape it offers, and the usage text documents it", () => {
+  assert.match(refuseToStartWatching(NOW - 1_000, NOW), /pass --force/);
+  const source = readFileSync(
+    fileURLToPath(new URL("./delivery-queue.mjs", import.meta.url)),
+    "utf8",
+  );
+  assert.match(source, /--force {5}start watching even though/);
+});
+
+/// The refusal and the unattended note read the same beat and must never both
+/// be right: if one says a watcher is taking turns, the other cannot say nobody
+/// is. Asserting the pair together is what keeps them from drifting apart when
+/// only one gets a new threshold.
+test("the refusal and the unattended note never disagree about the same heartbeat", () => {
+  for (const at of [
+    null,
+    NOW,
+    NOW - 1_000,
+    NOW - WATCHER_STALE_MS + 1,
+    NOW - WATCHER_STALE_MS,
+    NOW - 90 * 60_000,
+  ]) {
+    const refused = refuseToStartWatching(at, NOW) !== null;
+    const complained = unattendedQueueNote(armedQueue(), at, NOW) !== null;
+    assert.equal(
+      refused,
+      !complained,
+      `refusal and note both ${refused ? "fired" : "stayed silent"} for heartbeat ${at}`,
+    );
   }
 });
