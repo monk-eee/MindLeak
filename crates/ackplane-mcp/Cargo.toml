@@ -15,6 +15,7 @@ path = "src/main.rs"
 ackplane-client = { path = "../ackplane-client" }
 ackplane-protocol = { path = "../ackplane-protocol" }
 anyhow = { workspace = true }
+mindleak-session = { path = "../mindleak-session" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

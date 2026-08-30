@@ -171,7 +171,7 @@ pub struct TaskEvent {
 /// a discontinuous window cannot certify itself as aligned. This is that
 /// continuity, computed from the recorded transitions rather than carried as a
 /// running total on the task row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaimWindow {
     /// When the current window opened, if the task is in one.
     pub started_at: Option<i64>,
@@ -179,12 +179,57 @@ pub struct ClaimWindow {
     pub lapses: i64,
     /// Seconds of this window spent under no lease.
     pub unleased_seconds: i64,
+    /// The window this one replaced, if it replaced one.
+    ///
+    /// A window is identified by its owner and the instant it opened, so a new
+    /// one begins whenever either changes — including when an agent's *id*
+    /// changes underneath a single session, which is how a live process running
+    /// a superseded binary silently reset a window and reported `lapses: 0` as
+    /// if nothing had happened.
+    ///
+    /// Counters reset with the window, correctly: the previous window's holes
+    /// are not this window's. But that made a replacement indistinguishable
+    /// from a first claim, which is the one thing a reader most needs to tell
+    /// apart — work committed under the earlier window falls outside this one
+    /// and cannot be certified, and nothing said so. `None` means this window
+    /// is the task's first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<ReplacedWindow>,
+}
+
+/// What a current window replaced, for a reader deciding whether earlier work
+/// can still be proved.
+///
+/// Deliberately carries the previous window's identity and its holes rather
+/// than a bare flag: "there was an earlier window" prompts the question this
+/// answers, which is whose it was and when it ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplacedWindow {
+    /// Who held the previous window. `None` for a window that was open with no
+    /// recorded owner, which the log permits.
+    pub owner: Option<String>,
+    /// When the previous window opened.
+    pub started_at: Option<i64>,
+    /// Lapses accumulated in the previous window, which did not travel here.
+    pub lapses: i64,
+    /// Seconds the previous window spent under no lease.
+    pub unleased_seconds: i64,
+    /// Whether the owner changed. A same-owner replacement is an ordinary
+    /// re-claim after release; a *different* owner mid-task is either a
+    /// deliberate handover or the identity collapse this field exists to make
+    /// visible, and the reader needs to know which question to ask.
+    pub owner_changed: bool,
 }
 
 impl ClaimWindow {
     /// A window with no holes in it. Not the same as "no window": a task that
     /// was never claimed and a task claimed once without lapsing are both
     /// continuous, and neither is capped by ADR-0048.
+    ///
+    /// Deliberately unchanged by `replaced`. Replacing a window is legitimate —
+    /// a release and re-claim, a recorded handover — so treating it as
+    /// discontinuous would refuse work that ADR-0048 permits. This reports the
+    /// fact; whether it is a problem is the reader's call.
     pub fn is_continuous(&self) -> bool {
         self.lapses == 0
     }

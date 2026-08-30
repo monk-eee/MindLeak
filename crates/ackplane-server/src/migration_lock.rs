@@ -161,12 +161,32 @@ pub(crate) mod key {
     /// `migrations/0055_projected_node_embeddings.sql` (ADR-0140 decision 1).
     /// `migration-audit --next` selected 55: no live discrepancy above 54.
     pub(crate) const PROJECTED_NODE_EMBEDDINGS: i64 = 55;
+    /// `migrations/0056_supervisor_outbox_positions.sql` (ADR-0146 decision 3).
+    /// `migration-audit --next` selected 56 from committed source; no live
+    /// database was reachable to check for a higher applied key, so this is
+    /// the next free key on `main` rather than a verified-against-live one.
+    pub(crate) const SUPERVISOR_OUTBOX_POSITIONS: i64 = 56;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
 /// the advisory lock named by `lock_key`. The applied-key ledger prevents a
 /// warm store connection from re-running `ALTER TABLE` DDL while other code is
 /// already using the table.
+///
+/// The ledger records the migration's content digest as well as its key,
+/// because the key alone cannot tell "already applied" from "someone else's
+/// migration happens to hold this number". Before the digest existed, the
+/// second case was indistinguishable from the first: the DDL was skipped and
+/// `Ok(())` returned, so the schema silently lacked whatever this migration
+/// creates and the failure surfaced later as an unrelated missing relation.
+///
+/// That is not hypothetical. `migration_lock.rs`'s own key comments record six
+/// keys (19, 27, 36, 39, 40, 41, 42) burned by concurrent branches applying to
+/// the shared development database before committing, and note key 44
+/// colliding "with a different session's migration under the *same* key" —
+/// exactly this. `scripts/migration-audit.mjs` cannot see that case, because
+/// the branch's own source does account for the key; only the content can tell
+/// them apart.
 pub(crate) async fn migrate_locked(
     client: &mut Client,
     lock_key: i64,
@@ -184,27 +204,123 @@ pub(crate) async fn migrate_locked(
             "CREATE TABLE IF NOT EXISTS {APPLIED_MIGRATIONS_TABLE} (\
                  migration_key BIGINT PRIMARY KEY,\
                  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()\
-             )"
+             );\
+             ALTER TABLE {APPLIED_MIGRATIONS_TABLE} \
+                 ADD COLUMN IF NOT EXISTS content_digest TEXT"
         ))
         .await?;
-    let already_applied = transaction
+    let digest = content_digest(migration_sql);
+    let recorded = transaction
         .query_opt(
-            &format!("SELECT 1 FROM {APPLIED_MIGRATIONS_TABLE} WHERE migration_key = $1"),
+            &format!(
+                "SELECT content_digest FROM {APPLIED_MIGRATIONS_TABLE} \
+                 WHERE migration_key = $1"
+            ),
             &[&lock_key],
         )
         .await?
-        .is_some();
-    if already_applied {
-        return transaction.commit().await;
+        .map(|row| row.get::<_, Option<String>>(0));
+
+    match recorded {
+        // Applied by this same migration: skip, exactly as before.
+        Some(Some(applied)) if applied == digest => transaction.commit().await,
+        // Applied by something else under this key. Refusing is the whole
+        // point: continuing would skip this migration's DDL and report
+        // success, which is how a schema ends up missing tables nobody knows
+        // are missing. Editing an already-applied migration file reaches here
+        // too, and is refused for the same reason — ADR-0063 asks that a
+        // migration tidy the past, never the present.
+        Some(Some(applied)) => {
+            let refusal = raise_collision(&transaction, lock_key, &applied, &digest).await;
+            // The RAISE has already aborted this transaction, so nothing it
+            // did can leak; returning the database's own error keeps the
+            // function's error type honest rather than inventing a second
+            // channel for one case.
+            let _ = transaction.rollback().await;
+            Err(refusal)
+        }
+        // Applied before the digest column existed. The row is real but says
+        // nothing about *which* migration wrote it, and assuming it was this
+        // one would assert a fact the ledger never held. Skip as before —
+        // that is what this database has always done for this row — and adopt
+        // the digest so the ambiguity does not outlive this run.
+        Some(None) => {
+            transaction
+                .execute(
+                    &format!(
+                        "UPDATE {APPLIED_MIGRATIONS_TABLE} SET content_digest = $2 \
+                         WHERE migration_key = $1 AND content_digest IS NULL"
+                    ),
+                    &[&lock_key, &digest],
+                )
+                .await?;
+            transaction.commit().await
+        }
+        None => {
+            transaction.batch_execute(migration_sql).await?;
+            transaction
+                .execute(
+                    &format!(
+                        "INSERT INTO {APPLIED_MIGRATIONS_TABLE} \
+                             (migration_key, content_digest) VALUES ($1, $2)"
+                    ),
+                    &[&lock_key, &digest],
+                )
+                .await?;
+            transaction.commit().await
+        }
     }
-    transaction.batch_execute(migration_sql).await?;
-    transaction
-        .execute(
-            &format!("INSERT INTO {APPLIED_MIGRATIONS_TABLE} (migration_key) VALUES ($1)"),
-            &[&lock_key],
-        )
-        .await?;
-    transaction.commit().await
+}
+
+/// A stable fingerprint of a migration's SQL, for telling two migrations that
+/// share a key apart. Whitespace is not normalised: a migration file is
+/// committed and immutable, so any difference at all is a difference worth
+/// refusing on.
+fn content_digest(migration_sql: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(migration_sql.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// The refusal raised when a key is already held by different content.
+///
+/// Asks PostgreSQL to raise it, so the result is a genuine
+/// `tokio_postgres::Error` carrying the explanation. The alternative — a new
+/// error type on this function — would push a decision onto every caller for a
+/// case where there is only one correct response: stop.
+///
+/// The message names both digests and the remedy, because the reader's first
+/// question is always "which migration has my number", and the answer is not
+/// derivable from the key alone.
+async fn raise_collision(
+    transaction: &tokio_postgres::Transaction<'_>,
+    lock_key: i64,
+    applied: &str,
+    expected: &str,
+) -> tokio_postgres::Error {
+    // Digests are hex and the key is an integer, so nothing here can carry a
+    // quote into the literal.
+    let message = format!(
+        "migration key {lock_key} is already applied under different content \
+         (applied digest {applied}, this migration {expected}). Applying would be \
+         skipped and reported as success, leaving this migration's schema absent. \
+         Another branch almost certainly took this key in the shared database: run \
+         node scripts/migration-audit.mjs --next and renumber this migration."
+    );
+    // The message is dollar-quoted rather than embedded in a single-quoted
+    // literal. An earlier version was not, and the apostrophe in "migration's"
+    // — text written right here, not caller input — produced a syntax error
+    // instead of the refusal. Dollar quoting removes the whole class rather
+    // than escaping this one instance.
+    let error = transaction
+        .batch_execute(&format!(
+            "DO $do$ BEGIN RAISE EXCEPTION '%', $msg${message}$msg$ \
+             USING ERRCODE = 'raise_exception'; END $do$"
+        ))
+        .await
+        .expect_err("RAISE EXCEPTION always errors");
+    error
 }
 
 #[cfg(test)]
@@ -221,9 +337,174 @@ mod tests {
     /// running concurrently.
     const TEST_ONLY_LOCK_KEY: i64 = -1;
 
+    /// A key no real migration uses, and distinct on every run.
+    ///
+    /// The counter alone was not enough: it restarts at the same value in each
+    /// test process, so a run that panicked before its cleanup left rows that
+    /// the next run then collided with — which is the very condition these
+    /// tests induce deliberately, showing up as an unexplained failure in an
+    /// unrelated case. Seeding from the process id makes each run's keys its
+    /// own.
     fn test_migration_key() -> i64 {
-        static NEXT_KEY: AtomicI64 = AtomicI64::new(-10_000);
-        NEXT_KEY.fetch_sub(1, Ordering::Relaxed)
+        static NEXT_KEY: AtomicI64 = AtomicI64::new(0);
+        let seed = -100_000i64 - i64::from(std::process::id() % 100_000) * 1_000;
+        seed - NEXT_KEY.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Connect, or skip when no database is provisioned (CI without Postgres).
+    async fn test_client() -> Option<tokio_postgres::Client> {
+        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        Some(client)
+    }
+
+    async fn table_exists(client: &tokio_postgres::Client, name: &str) -> bool {
+        client
+            .query_one(
+                "SELECT to_regclass($1) IS NOT NULL",
+                &[&format!("public.{name}")],
+            )
+            .await
+            .unwrap()
+            .get::<_, bool>(0)
+    }
+
+    async fn cleanup(client: &tokio_postgres::Client, key: i64, tables: &[String]) {
+        for table in tables {
+            let _ = client
+                .execute(&format!("DROP TABLE IF EXISTS {table}"), &[])
+                .await;
+        }
+        let _ = client
+            .execute(
+                "DELETE FROM ackplane_schema_migrations WHERE migration_key = $1",
+                &[&key],
+            )
+            .await;
+    }
+
+    /// The defect this fix exists for, and it is worse than a burned number:
+    /// when a key was already applied, the old code skipped the DDL and
+    /// returned `Ok(())`. So a migration whose key a concurrent branch had
+    /// taken never ran its own SQL, the schema silently lacked whatever it
+    /// creates, and the failure surfaced much later as an unrelated missing
+    /// relation. This file's own key comments record key 44 colliding "with a
+    /// different session's migration under the *same* key" — exactly this.
+    #[tokio::test]
+    async fn a_key_applied_under_different_content_is_refused_not_skipped() {
+        let Some(mut client) = test_client().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let key = test_migration_key();
+        let mine_table = format!("mine_{}", -key);
+        let theirs_table = format!("theirs_{}", -key);
+        let mine = format!("CREATE TABLE {mine_table} (id INT)");
+        let theirs = format!("CREATE TABLE {theirs_table} (id INT)");
+
+        // A peer's migration takes the key first.
+        super::migrate_locked(&mut client, key, &theirs)
+            .await
+            .unwrap();
+
+        let error = super::migrate_locked(&mut client, key, &mine)
+            .await
+            .expect_err("a key held by different content must refuse");
+        // The explanation rides on the database error, which is where a
+        // RAISE-produced message lives; `Display` on the outer error is only
+        // "db error", so anything logging that alone loses the detail.
+        let detail = error
+            .as_db_error()
+            .expect("the refusal is a database error carrying the message")
+            .message()
+            .to_string();
+        assert!(
+            detail.contains(&key.to_string()),
+            "the refusal must name the key: {detail}"
+        );
+        assert!(
+            detail.contains("migration-audit"),
+            "the refusal must name the remedy: {detail}"
+        );
+        assert!(
+            !table_exists(&client, &mine_table).await,
+            "refusing must not half-apply this migration's DDL"
+        );
+
+        cleanup(&client, key, &[theirs_table, mine_table]).await;
+    }
+
+    /// The idempotent path must be untouched: a warm connection re-running the
+    /// same migration still skips its DDL, which is the whole reason the
+    /// applied-key ledger exists.
+    #[tokio::test]
+    async fn re_running_the_identical_migration_still_skips() {
+        let Some(mut client) = test_client().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let key = test_migration_key();
+        let table = format!("once_{}", -key);
+        // Not idempotent on its own: a second execution would error, so
+        // reaching Ok twice proves the DDL really was skipped.
+        let sql = format!("CREATE TABLE {table} (id INT)");
+
+        super::migrate_locked(&mut client, key, &sql).await.unwrap();
+        super::migrate_locked(&mut client, key, &sql)
+            .await
+            .expect("the same migration re-runs as a no-op");
+
+        cleanup(&client, key, &[table]).await;
+    }
+
+    /// A row written before the digest column existed says nothing about which
+    /// migration wrote it. Assuming it was this one would assert a fact the
+    /// ledger never held, so the behaviour is unchanged for that row — skip,
+    /// exactly as this database has always done — and the digest is adopted so
+    /// the ambiguity does not outlive the run.
+    #[tokio::test]
+    async fn a_row_predating_the_digest_column_is_adopted_not_assumed() {
+        let Some(mut client) = test_client().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let key = test_migration_key();
+        let table = format!("legacy_{}", -key);
+        let sql = format!("CREATE TABLE {table} (id INT)");
+
+        super::migrate_locked(&mut client, key, &sql).await.unwrap();
+        // Exactly what a pre-digest row looks like.
+        client
+            .execute(
+                "UPDATE ackplane_schema_migrations SET content_digest = NULL \
+                 WHERE migration_key = $1",
+                &[&key],
+            )
+            .await
+            .unwrap();
+
+        super::migrate_locked(&mut client, key, &sql)
+            .await
+            .expect("a legacy row skips rather than refusing");
+
+        let adopted: Option<String> = client
+            .query_one(
+                "SELECT content_digest FROM ackplane_schema_migrations \
+                 WHERE migration_key = $1",
+                &[&key],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert!(
+            adopted.is_some(),
+            "the digest is adopted so the next run can tell content apart"
+        );
+
+        cleanup(&client, key, &[table]).await;
     }
 
     #[tokio::test]

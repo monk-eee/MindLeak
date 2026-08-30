@@ -299,7 +299,15 @@ struct ProposeDesignRequest {
     constitution_version_id: Option<String>,
     work_task_id: Option<String>,
     evidence_id: Option<String>,
-    proposed_by: String,
+    /// No longer authoritative (ADR-0142 clause 4): the recorded `proposed_by`
+    /// is always the Bridge's own verified principal (`state.tenant_id`), the
+    /// same salted `development_tenant_token` Administration and Work
+    /// commands already record. This field, if supplied, is accepted for
+    /// backward wire compatibility but is never persisted or trusted as
+    /// identity -- narrowing `gaps.d/`'s open display-label follow-up rather
+    /// than silently forging an operator-chosen name.
+    #[serde(default)]
+    proposed_by: Option<String>,
 }
 
 async fn propose_design(
@@ -308,6 +316,7 @@ async fn propose_design(
     Json(request): Json<ProposeDesignRequest>,
 ) -> Result<StatusCode, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
+    let _ = request.proposed_by;
     state
         .designs
         .lock()
@@ -322,7 +331,7 @@ async fn propose_design(
             constitution_version_id: request.constitution_version_id,
             work_task_id: request.work_task_id,
             evidence_id: request.evidence_id,
-            proposed_by: request.proposed_by,
+            proposed_by: state.tenant_id.to_string(),
         })
         .await
         .map_err(propose_design_error)?;
@@ -422,7 +431,10 @@ async fn design_detail(
 #[derive(Deserialize)]
 struct RecordDesignDecisionRequest {
     decision_kind: String,
-    actor: String,
+    /// No longer authoritative (ADR-0142 clause 4); see
+    /// `ProposeDesignRequest::proposed_by`'s doc comment.
+    #[serde(default)]
+    actor: Option<String>,
     rationale: Option<String>,
     expected_lifecycle_state: String,
 }
@@ -433,6 +445,7 @@ async fn record_design_decision(
     Json(request): Json<RecordDesignDecisionRequest>,
 ) -> Result<StatusCode, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
+    let _ = request.actor;
     let decision_kind =
         parse_lifecycle_state(&request.decision_kind).ok_or(StatusCode::BAD_REQUEST)?;
     let expected_lifecycle_state =
@@ -446,7 +459,7 @@ async fn record_design_decision(
             repository_id,
             design_id,
             decision_kind,
-            actor: request.actor,
+            actor: state.tenant_id.to_string(),
             rationale: request.rationale,
             expected_lifecycle_state,
         })
@@ -457,7 +470,10 @@ async fn record_design_decision(
 
 #[derive(Deserialize)]
 struct RecordDesignMaterializationRequest {
-    actor: String,
+    /// No longer authoritative (ADR-0142 clause 4); see
+    /// `ProposeDesignRequest::proposed_by`'s doc comment.
+    #[serde(default)]
+    actor: Option<String>,
     idempotency_key: String,
     rationale: Option<String>,
     constitution_version_id: String,
@@ -473,6 +489,7 @@ async fn record_design_materialization(
     Json(request): Json<RecordDesignMaterializationRequest>,
 ) -> Result<Json<MaterializationRevisionResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
+    let _ = request.actor;
     let revision = state
         .materializations
         .lock()
@@ -481,7 +498,7 @@ async fn record_design_materialization(
             tenant_id: state.tenant_id.to_string(),
             repository_id,
             design_id,
-            actor: request.actor,
+            actor: state.tenant_id.to_string(),
             idempotency_key: request.idempotency_key,
             rationale: request.rationale,
             constitution_version_id: request.constitution_version_id,

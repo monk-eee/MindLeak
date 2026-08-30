@@ -83,6 +83,12 @@ impl StoredReceipt {
             evidence_refs: Vec::new(),
             directive_sequence: self.sequence,
             diagnostic: String::new(),
+            // The inbox records what this supervisor decided; the outbox
+            // decides where that decision sits in the resendable stream. A
+            // receipt rebuilt from inbox state has not been enqueued yet, so
+            // it carries no position until `enqueue_receipt` stamps one
+            // (ADR-0146 decision 1).
+            outbox_sequence: None,
         }
     }
 }

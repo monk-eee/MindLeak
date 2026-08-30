@@ -3,18 +3,20 @@
 //! `SubmitReview` and the ADR-0107 supervisor-directed `Assign`/`Steer`/
 //! `Pause`/`Resume`/`Drain`.
 //!
-//! The Bridge's loopback developer profile is not a verified principal
-//! (ADR-0125 decision 2): it derives a single tenant token, not an
-//! accountable operator identity. So every request here resolves to
-//! [`WorkCommandAuthorization::LoopbackDevelopment`] and every command
-//! surfaces a typed `authorization_unavailable` outcome rather than
-//! executing. That is not a placeholder to remove later by finding a
-//! shortcut -- it is decision 2's safety boundary, enforced the same way for
-//! every one of the ten commands. What this module proves today is the full
-//! request/response contract end to end: a real route, a real
-//! `WorkCommandService` call, a real typed refusal -- never a route that
-//! reaches `WorkStore` or `ClaimStore` directly (the contract violation
-//! decision 11 names explicitly).
+//! ADR-0128 recognizes the Bridge's hardened loopback developer profile
+//! (`state.tenant_id`, the salted `development_tenant_token`) as a real
+//! verified principal for a self-hosted, single-tenant deployment -- not a
+//! synonym for "no principal." ADR-0142 extends that same recognition to
+//! Work commands: every request here now resolves to
+//! [`WorkCommandAuthorization::Verified`] ([`verified_principal`]), scoped to
+//! exactly the repository already confirmed visible, the full closed
+//! command vocabulary, and no adopted policy or delegation (ADR-0142
+//! clause 5). Confirmation stays exactly as ADR-0125 decision 8 specified:
+//! this changes *who* is asking, never the preview/confirm/digest machinery
+//! around *how* a consequential command executes. A non-loopback,
+//! multi-tenant deployment is unchanged and unaffected -- ADR-0094's refusal
+//! of a non-loopback bind without a production verifier remains the single
+//! enforcement point that keeps this profile from reaching one.
 //!
 //! Split across three files to keep each focused: `payload` owns the wire
 //! payload shapes and their conversion to the store's typed payload;
@@ -29,8 +31,8 @@ use std::{sync::Arc, time::SystemTime};
 use ackplane_server::{
     fleet::FleetStore,
     work_command_store::{
-        payload_digest, NewWorkCommand, WorkCommandAuthorization, WorkCommandKind,
-        WorkCommandService, WorkCommandServiceError,
+        payload_digest, NewWorkCommand, VerifiedWorkCommandPrincipal, WorkCommandAuthorization,
+        WorkCommandKind, WorkCommandService, WorkCommandServiceError,
     },
 };
 use axum::{
@@ -106,12 +108,37 @@ fn service_error_status(error: WorkCommandServiceError) -> StatusCode {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
+/// The verified principal ADR-0142 grants the Bridge's hardened loopback
+/// profile for a self-hosted, single-tenant deployment (clause 2): the
+/// salted `development_tenant_token` itself is both `principal_id` and
+/// `tenant_id` (the same value Administration and Constitution proposals
+/// already record as the accountable identity), scoped to exactly the
+/// repository `ensure_repository_visible` already confirmed reachable, with
+/// the full closed command vocabulary and no adopted policy or delegation
+/// (clause 5: Work commands do not gain an `AdministrationPolicy`-style
+/// policy layer, and a Bridge-originated request is a direct verified human
+/// request, never a delegation).
+fn verified_principal(
+    state: &WorkCommandApiState,
+    repository_id: &str,
+) -> WorkCommandAuthorization {
+    WorkCommandAuthorization::Verified(VerifiedWorkCommandPrincipal {
+        principal_id: state.tenant_id.to_string(),
+        tenant_id: state.tenant_id.to_string(),
+        repository_ids: vec![repository_id.to_owned()],
+        allowed_commands: WorkCommandKind::ALL.to_vec(),
+        policy_refs: Vec::new(),
+        delegation_id: None,
+    })
+}
+
 async fn submit_work_command(
     State(state): State<WorkCommandApiState>,
     Path(repository_id): Path<String>,
     Json(request): Json<SubmitWorkCommandRequest>,
 ) -> Result<Json<WorkCommandResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
+    let authorization = verified_principal(&state, &repository_id);
     let SubmitWorkCommandRequest {
         issuing_principal_id,
         idempotency_key,
@@ -158,11 +185,7 @@ async fn submit_work_command(
     };
     let mut commands = state.commands.lock().await;
     let outcome = commands
-        .submit(
-            WorkCommandAuthorization::LoopbackDevelopment,
-            new_command,
-            SystemTime::now(),
-        )
+        .submit(authorization, new_command, SystemTime::now())
         .await
         .map_err(service_error_status)?;
     Ok(Json(outcome.into()))
@@ -174,11 +197,12 @@ async fn confirm_work_command(
     Json(request): Json<ConfirmWorkCommandRequest>,
 ) -> Result<Json<WorkCommandResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
+    let authorization = verified_principal(&state, &repository_id);
     let payload = build_payload(request.payload)?;
     let mut commands = state.commands.lock().await;
     let outcome = commands
         .confirm(
-            WorkCommandAuthorization::LoopbackDevelopment,
+            authorization,
             state.tenant_id.as_ref(),
             &repository_id,
             &command_id,

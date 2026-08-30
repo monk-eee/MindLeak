@@ -215,7 +215,16 @@ fn refusal_for(
     if !principal.allowed_commands.contains(&request.kind) {
         return Some(WorkCommandRefusal::CommandNotPermitted);
     }
-    if principal.policy_refs.is_empty() || principal.policy_refs != request.policy_refs {
+    // Bug fix: this used to also refuse whenever `principal.policy_refs` was
+    // empty, regardless of what the request asked for. That made a
+    // no-adopted-policy principal (ADR-0142 clause 5: a self-hosted Work
+    // command principal deliberately carries no `AdministrationPolicy`-style
+    // policy layer) permanently unable to issue any command, even one that
+    // itself named no policy either -- the exact self-hosted profile ADR-0142
+    // exists to unlock. A plain equality check keeps refusing a request that
+    // claims a policy basis the principal does not have (or a different one),
+    // while correctly allowing "neither side claims a policy" through.
+    if principal.policy_refs != request.policy_refs {
         return Some(WorkCommandRefusal::PolicyNotPermitted);
     }
     if principal.delegation_id != request.delegation_id {

@@ -275,6 +275,11 @@ fn receipt_for(
         evidence_refs: Vec::new(),
         directive_sequence: directive.sequence,
         diagnostic: String::new(),
+        // Decided here, positioned later: the outbox assigns the sequence when
+        // this receipt is enqueued (ADR-0146 decision 1). Leaving it unset
+        // keeps the inbox's stored decision independent of which delivery
+        // attempt carried it.
+        outbox_sequence: None,
     }
 }
 

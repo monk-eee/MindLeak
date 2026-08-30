@@ -222,7 +222,14 @@ pub struct ProposeClauseRequest {
     consequence: Option<String>,
     scope: Option<String>,
     rationale: Option<String>,
-    author: String,
+    /// No longer authoritative (ADR-0142 clause 4): the recorded `author` is
+    /// always the Bridge's own verified principal (`state.tenant_id`), the
+    /// same salted `development_tenant_token` Administration and Work
+    /// commands already record. Accepted for backward wire compatibility but
+    /// never persisted or trusted as identity -- closing the exact gap
+    /// ADR-0126's own consequences called "honest but weak."
+    #[serde(default)]
+    author: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -241,6 +248,7 @@ pub async fn propose_constitution_clause(
     Json(request): Json<ProposeClauseRequest>,
 ) -> Result<Json<ProposeClauseResponse>, StatusCode> {
     enrolled_or_not_found(&state, &repository_id, "constitution proposal").await?;
+    let _ = request.author;
 
     let store_request = ProposeConstitutionClauseRequest {
         tenant_id: state.tenant_id.to_string(),
@@ -253,7 +261,7 @@ pub async fn propose_constitution_clause(
         consequence: request.consequence,
         scope: request.scope,
         rationale: request.rationale,
-        author: request.author,
+        author: state.tenant_id.to_string(),
     };
 
     let mut constitution = state.constitution.lock().await;
@@ -278,7 +286,13 @@ pub async fn propose_constitution_clause(
 
 #[derive(Deserialize)]
 pub struct WithdrawProposalRequest {
-    author: String,
+    /// No longer used to authorize the withdrawal (ADR-0142 clause 4): the
+    /// store's author-gate now compares against the Bridge's own verified
+    /// principal (`state.tenant_id`), never a caller-supplied value --
+    /// closing the exact gap ADR-0126 named "honest but weak." Accepted but
+    /// ignored for backward wire compatibility.
+    #[serde(default)]
+    author: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -288,15 +302,18 @@ pub struct WithdrawProposalResponse {
 
 /// `POST /api/v1/repositories/:id/constitution/proposals/:proposal_id/withdraw`
 /// (ADR-0126 decision 3): the only mutation a proposal ever receives, and
-/// only by its own author. `withdrawn: false` covers an unknown id, a
-/// different author, and an already-withdrawn proposal alike -- the store
-/// layer does not distinguish them, and neither does this response.
+/// only by its own author -- now the Bridge's verified principal
+/// (ADR-0142 clause 4), not a caller-supplied string. `withdrawn: false`
+/// covers an unknown id, a different author, and an already-withdrawn
+/// proposal alike -- the store layer does not distinguish them, and neither
+/// does this response.
 pub async fn withdraw_constitution_proposal(
     State(state): State<AppState>,
     Path((repository_id, proposal_id)): Path<(String, String)>,
     Json(request): Json<WithdrawProposalRequest>,
 ) -> Result<Json<WithdrawProposalResponse>, StatusCode> {
     enrolled_or_not_found(&state, &repository_id, "constitution proposal withdrawal").await?;
+    let _ = request.author;
 
     let constitution = state.constitution.lock().await;
     match constitution
@@ -304,7 +321,7 @@ pub async fn withdraw_constitution_proposal(
             &state.tenant_id,
             &repository_id,
             &proposal_id,
-            &request.author,
+            &state.tenant_id,
         )
         .await
     {
@@ -501,7 +518,7 @@ mod handler_tests {
             consequence: Some("review".to_string()),
             scope: None,
             rationale: Some("Because the Bridge operator noticed a gap.".to_string()),
-            author: author.to_string(),
+            author: Some(author.to_string()),
         }
     }
 
@@ -537,7 +554,7 @@ mod handler_tests {
             axum::extract::State(state.clone()),
             axum::extract::Path((repository_id.clone(), "proposal-1".to_string())),
             Json(WithdrawProposalRequest {
-                author: "bridge-ui".to_string(),
+                author: Some("bridge-ui".to_string()),
             }),
         )
         .await

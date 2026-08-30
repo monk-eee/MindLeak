@@ -56,23 +56,7 @@ pub(super) async fn handle_authenticated_frame(
     };
     let outcome = match frame {
         v1::node_frame::Frame::SupervisorRegistration(wire) => {
-            let supervisor_id = wire.supervisor_id.clone();
-            match registration_from_wire(wire, tenant_id, repository_id, node_id) {
-                Ok(registration) => store
-                    .register(&registration)
-                    .await
-                    .map(|outcome| {
-                        receipt(
-                            v1::SupervisorFrameOperation::Registration,
-                            &supervisor_id,
-                            "",
-                            outcome.idempotent_replay,
-                            !outcome.idempotent_replay,
-                        )
-                    })
-                    .map_err(IngressError::from),
-                Err(error) => Err(error),
-            }
+            registration_receipt(wire, tenant_id, repository_id, node_id, store).await
         }
         v1::node_frame::Frame::SupervisorHeartbeat(wire) => {
             let supervisor_id = wire.supervisor_id.clone();
@@ -86,6 +70,7 @@ pub(super) async fn handle_authenticated_frame(
                         "",
                         false,
                         false,
+                        None,
                     )
                 })
                 .map_err(IngressError::from)
@@ -104,6 +89,7 @@ pub(super) async fn handle_authenticated_frame(
                             &session_id,
                             outcome.idempotent_replay,
                             !outcome.idempotent_replay,
+                            None,
                         )
                     })
                     .map_err(IngressError::from),
@@ -124,6 +110,7 @@ pub(super) async fn handle_authenticated_frame(
                             &session_id,
                             outcome.idempotent_replay,
                             outcome.projection_advanced,
+                            None,
                         )
                     })
                     .map_err(IngressError::from),
@@ -309,12 +296,46 @@ fn parse_unix_seconds(value: &str, field: &'static str) -> Result<i64, IngressEr
     Ok(timestamp)
 }
 
+/// Registers a supervisor and answers with the position this server
+/// independently holds for it (ADR-0141, via ADR-0146 decision 4).
+///
+/// A free function rather than an inline arm because it is genuinely two
+/// sequential awaits over the store, and the `.map(|outcome| ...)` closure the
+/// other arms use cannot await the second one.
+///
+/// The position is read *after* the registration commits, so a supervisor that
+/// is registering for the first time gets this server's honest answer for it
+/// rather than one computed against a supervisor it had not yet accepted.
+async fn registration_receipt(
+    wire: v1::SupervisorRegistration,
+    tenant_id: &str,
+    repository_id: &str,
+    node_id: &str,
+    store: &mut SupervisorStore,
+) -> Result<v1::SupervisorFrameReceipt, IngressError> {
+    let supervisor_id = wire.supervisor_id.clone();
+    let registration = registration_from_wire(wire, tenant_id, repository_id, node_id)?;
+    let outcome = store.register(&registration).await?;
+    let accepted_outbox_sequence = store
+        .accepted_outbox_sequence(tenant_id, repository_id, &supervisor_id)
+        .await?;
+    Ok(receipt(
+        v1::SupervisorFrameOperation::Registration,
+        &supervisor_id,
+        "",
+        outcome.idempotent_replay,
+        !outcome.idempotent_replay,
+        accepted_outbox_sequence,
+    ))
+}
+
 fn receipt(
     operation: v1::SupervisorFrameOperation,
     supervisor_id: &str,
     session_id: &str,
     idempotent_replay: bool,
     projection_advanced: bool,
+    accepted_outbox_sequence: Option<u64>,
 ) -> v1::SupervisorFrameReceipt {
     v1::SupervisorFrameReceipt {
         operation: operation as i32,
@@ -322,6 +343,12 @@ fn receipt(
         session_id: session_id.to_string(),
         idempotent_replay,
         projection_advanced,
+        // `None` for every frame that is not outbox-carried. Heartbeat,
+        // session, and lifecycle frames advance nothing (ADR-0146 decision 2),
+        // and nothing reads a position from their receipts, so answering with
+        // one would cost a store round trip per heartbeat to restate a number
+        // the registration receipt already carried.
+        accepted_outbox_sequence,
     }
 }
 
@@ -557,6 +584,9 @@ mod tests {
                 session_id: String::new(),
                 idempotent_replay: false,
                 projection_advanced: true,
+                // Nothing sequenced has been accepted from this supervisor, so
+                // the server states no position (ADR-0146 decision 5).
+                accepted_outbox_sequence: None,
             }
         );
 
@@ -584,6 +614,7 @@ mod tests {
                 session_id: String::new(),
                 idempotent_replay: false,
                 projection_advanced: false,
+                accepted_outbox_sequence: None,
             }
         );
 
@@ -616,6 +647,7 @@ mod tests {
                 session_id: session_id.clone(),
                 idempotent_replay: false,
                 projection_advanced: true,
+                accepted_outbox_sequence: None,
             }
         );
 
@@ -650,6 +682,7 @@ mod tests {
                 session_id: session_id.clone(),
                 idempotent_replay: false,
                 projection_advanced: true,
+                accepted_outbox_sequence: None,
             }
         );
 
@@ -671,6 +704,7 @@ mod tests {
                 session_id: session_id.clone(),
                 idempotent_replay: true,
                 projection_advanced: false,
+                accepted_outbox_sequence: None,
             }
         );
         assert_eq!(

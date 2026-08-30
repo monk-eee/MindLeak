@@ -39,22 +39,23 @@ use ackplane_client::{
     node_sync::NodeSyncConnection,
     ClientError,
 };
-use ackplane_protocol::{
-    supervisor::{
-        SupervisorCapabilities, SupervisorDirectiveCapability, SupervisorIdentity,
-        SupervisorOutboxDurability, SupervisorRegistration, SupervisorRuntime, SupervisorSession,
-        SupervisorWorkerState,
-    },
-    v1,
+use ackplane_protocol::supervisor::{
+    SupervisorCapabilities, SupervisorDirectiveCapability, SupervisorIdentity,
+    SupervisorOutboxDurability, SupervisorRegistration, SupervisorRuntime, SupervisorSession,
+    SupervisorWorkerState,
 };
 use time::OffsetDateTime;
 
+mod delivery;
 mod frames;
 
+use delivery::enqueue_receipt;
+pub use delivery::resend_pending;
 use frames::{heartbeat_frame, registration_frame, session_frame};
 
 use crate::{
     config::{SignerSource, SupervisorConfig},
+    reconcile::{reconcile, Reconciliation},
     InboxError, OutboxError, SupervisorInbox, SupervisorOutbox,
 };
 
@@ -91,11 +92,6 @@ pub enum DaemonError {
 /// machine it runs on; it does not claim a container or cloud runtime it has
 /// no way to verify.
 const RUNTIME: SupervisorRuntime = SupervisorRuntime::LocalMachine;
-
-/// How many unconfirmed frames one reconnect may resend before serving new
-/// work. Bounded so a long backlog is drained in instalments rather than one
-/// burst that could outrun the connection's flow control.
-const MAX_RESEND_BATCH: u32 = 32;
 
 /// Build the signer this configuration selected.
 pub fn signer(config: &SupervisorConfig) -> Result<Box<dyn ClaimSigner>, DaemonError> {
@@ -188,40 +184,79 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
     .await
     .map_err(Box::new)?;
 
-    // NOTE ON WHAT IS DELIBERATELY *NOT* CHECKED HERE.
+    // REGISTER, THEN RECONCILE, THEN RESEND -- in that order, deliberately.
     //
     // ADR-0116 decision 7's `IncompleteEvidence` case -- the server holding
-    // more supervisor evidence than this node can account for -- cannot be
-    // detected on this connection, and pretending otherwise is worse than
-    // leaving it undetected. `HelloAccepted.accepted_position` is an echo of
-    // the `last_accepted_position` the client itself just sent
+    // more supervisor evidence than this node can account for -- was
+    // undetectable here until now, and this function said so at length rather
+    // than pretending otherwise. `HelloAccepted.accepted_position` is an echo
+    // of the `last_accepted_position` the client itself just sent
     // (`service/handshake.rs` carries `hello.last_accepted_position` straight
-    // through), so `reconcile(positions, connection.accepted_position())`
-    // compares a number against its own reflection and can only ever answer
-    // `UpToDate`. An earlier revision of this function made exactly that call
-    // and read as a working guard.
+    // through), so reconciling against it compared a number with its own
+    // reflection and could only ever answer `UpToDate`.
     //
-    // Detecting it needs the server to report its own independent view of this
-    // supervisor's position, which the wire protocol does not carry. That is a
-    // protocol change with its own review, so it is recorded as an open gap
-    // rather than half-built here. `reconcile` itself is correct and stays: it
-    // is exercised by its own unit tests and slice 4's integration test, and is
-    // the decision function for when such a position exists.
-    //
-    // What *is* recoverable without any server-reported position is the
-    // outbox's own enqueued-versus-acknowledged pair, which is entirely local
-    // and truthful -- that is what the resend below uses.
+    // ADR-0141 decided the server must report its *own* view instead. ADR-0146
+    // supplied the inbound half that makes such a view exist: this supervisor
+    // stamps its outbox sequence on every outbox-carried frame, and the server
+    // records the highest it durably accepted. The answer rides on the receipt
+    // for the *registration* frame, because that is the first point at which
+    // the server knows which supervisor it is talking to -- `Hello` identifies
+    // only `producer_id`. That is why registration now precedes the resend
+    // rather than following it.
+    let registration_receipt = match connection
+        .exchange_supervisor_frame(registration_frame(&registration))
+        .await
+    {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            tracing::info!(%error, "the supervisor connection closed");
+            return Ok(DaemonExit::Disconnected);
+        }
+    };
+
+    // An absent position means the server makes no independent statement --
+    // an older server, or one that has accepted no sequenced frame from this
+    // supervisor. The reconciliation then stays unrun, which is exactly the
+    // previous behaviour, rather than being decided against a fabricated zero
+    // (ADR-0146 decision 5: both directions degrade to silence, never to a
+    // verdict).
+    if let Some(server_accepted) = registration_receipt.accepted_outbox_sequence {
+        match reconcile(positions, server_accepted) {
+            Reconciliation::IncompleteEvidence {
+                local_acknowledged,
+                server_accepted,
+            } => {
+                tracing::error!(
+                    local_acknowledged,
+                    server_accepted,
+                    "Ackplane has durably accepted supervisor frames this outbox cannot \
+                     account for; stopping rather than resuming on incomplete evidence"
+                );
+                return Ok(DaemonExit::IncompleteEvidence {
+                    local_acknowledged,
+                    server_accepted,
+                });
+            }
+            Reconciliation::UpToDate { position } => {
+                tracing::debug!(position, "supervisor outbox agrees with Ackplane");
+            }
+            Reconciliation::Resend {
+                resend_from,
+                through,
+            } => {
+                tracing::info!(
+                    resend_from,
+                    through,
+                    "Ackplane is behind this outbox; resending the difference"
+                );
+            }
+        }
+    }
+
     if let Some(exit) = resend_pending(&outbox, &mut connection).await? {
         return Ok(exit);
     }
 
-    if let Some(exit) = disconnected_on_error(
-        connection
-            .exchange_supervisor_frame(registration_frame(&registration))
-            .await,
-    ) {
-        return Ok(exit);
-    }
     if let Some(exit) = disconnected_on_error(
         connection
             .exchange_supervisor_frame(session_frame(&session, started_at)?)
@@ -261,7 +296,7 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
             // entirely on the server redelivering the directive to be sent
             // again -- true today, but a guarantee held by the other side of a
             // connection that had just failed.
-            let sequence = enqueue_receipt(&outbox, &receipt)?;
+            let (sequence, receipt) = enqueue_receipt(&outbox, receipt)?;
             if let Some(exit) =
                 disconnected_on_error(connection.submit_directive_receipt(receipt).await)
             {
@@ -290,84 +325,6 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
             return Ok(exit);
         }
     }
-}
-
-/// Queue one directive receipt durably and return the sequence it took, so the
-/// caller can acknowledge exactly that frame once the server confirms it.
-fn enqueue_receipt(
-    outbox: &SupervisorOutbox,
-    receipt: &v1::DirectiveReceipt,
-) -> Result<u64, DaemonError> {
-    let sequence = outbox.positions()?.last_enqueued.saturating_add(1);
-    outbox.enqueue(
-        sequence,
-        &v1::NodeFrame {
-            frame: Some(v1::node_frame::Frame::DirectiveReceipt(receipt.clone())),
-        },
-    )?;
-    Ok(sequence)
-}
-
-/// Resend every frame this supervisor queued but never got confirmed.
-///
-/// Public so the behaviour can be driven directly against a real connection in
-/// a test: `serve_once` runs an unbounded serve loop, so a test that called it
-/// would have to decide when to stop it, which tests the harness rather than
-/// the resend.
-///
-/// This is the whole reason the outbox is durable. A receipt that was computed,
-/// written down, and then lost to a dropped connection is re-sent from local
-/// state here rather than depending on the server to redeliver its directive.
-/// Redelivery does also cover it today, but that is a guarantee held by the
-/// other side of the connection that just failed, and the inbox replays an
-/// identical receipt for a repeated directive either way -- so resending is
-/// idempotent, never a double-report.
-pub async fn resend_pending(
-    outbox: &SupervisorOutbox,
-    connection: &mut NodeSyncConnection,
-) -> Result<Option<DaemonExit>, DaemonError> {
-    let pending = outbox.pending(MAX_RESEND_BATCH)?;
-    if pending.is_empty() {
-        return Ok(None);
-    }
-    tracing::info!(
-        count = pending.len(),
-        "resending supervisor frames that were never confirmed"
-    );
-    for queued in pending {
-        let sequence = queued.sequence;
-        match connection.exchange_supervisor_frame(queued.frame).await {
-            Ok(_) => {
-                outbox.acknowledge_through(sequence)?;
-            }
-            // A frame the server refuses outright will be refused again on
-            // every reconnect. Retrying it forever would wedge the daemon in a
-            // reconnect loop and block every later frame behind it, so it is
-            // dropped from the queue -- loudly, because a receipt Ackplane
-            // will not accept is a real problem, just not one more attempts
-            // can fix. `retryable` is the server's own judgement of which case
-            // this is, so it decides rather than this code guessing.
-            Err(ClientError::FrameRefused {
-                reason,
-                retryable: false,
-                diagnostic,
-            }) => {
-                tracing::error!(
-                    sequence,
-                    ?reason,
-                    %diagnostic,
-                    "Ackplane permanently refused a queued supervisor frame; dropping it \
-                     rather than resending it forever"
-                );
-                outbox.acknowledge_through(sequence)?;
-            }
-            Err(error) => {
-                tracing::info!(%error, "the supervisor connection closed while resending");
-                return Ok(Some(DaemonExit::Disconnected));
-            }
-        }
-    }
-    Ok(None)
 }
 
 /// Treat any transport failure while talking to Ackplane as an ordinary
@@ -428,6 +385,7 @@ pub async fn run(config: &SupervisorConfig, reconnect_delay: Duration) -> Result
 mod tests {
     use super::*;
     use crate::config::SignerSource;
+    use ackplane_protocol::v1;
     use std::path::PathBuf;
 
     fn config() -> SupervisorConfig {
@@ -538,5 +496,121 @@ mod tests {
             disconnected_on_error(dropped),
             Some(DaemonExit::Disconnected)
         ));
+    }
+
+    fn queued_receipt() -> v1::DirectiveReceipt {
+        v1::DirectiveReceipt {
+            directive_id: "directive:stamp".to_string(),
+            tenant_id: "tenant-1".to_string(),
+            project_id: "project:stamp".to_string(),
+            repository_id: "repository-1".to_string(),
+            node_id: "node-1".to_string(),
+            agent_session_id: "session:v1:agent-1".to_string(),
+            status: v1::DirectiveReceiptStatus::Applied as i32,
+            reason: v1::DirectiveReceiptReason::None as i32,
+            occurred_at: "2026-08-30T00:00:00Z".to_string(),
+            payload_digest: vec![3; 32],
+            checkpoint_refs: Vec::new(),
+            evidence_refs: Vec::new(),
+            directive_sequence: 9,
+            diagnostic: String::new(),
+            outbox_sequence: None,
+        }
+    }
+
+    fn test_outbox() -> SupervisorOutbox {
+        let config = config();
+        let session = session(&config, OffsetDateTime::now_utc())
+            .expect("the test config describes a valid session");
+        SupervisorOutbox::open_in_memory(registration(&config), session)
+            .expect("an in-memory outbox opens")
+    }
+
+    fn stored_receipt(outbox: &SupervisorOutbox) -> (u64, v1::DirectiveReceipt) {
+        let pending = outbox.pending(16).expect("pending frames are readable");
+        match pending.as_slice() {
+            [queued] => match &queued.frame.frame {
+                Some(v1::node_frame::Frame::DirectiveReceipt(receipt)) => {
+                    (queued.sequence, receipt.clone())
+                }
+                other => panic!("expected a queued directive receipt, got {other:?}"),
+            },
+            other => panic!("expected exactly one queued frame, got {other:?}"),
+        }
+    }
+
+    /// Regression: the copy kept in the durable outbox and the copy put on the
+    /// wire must carry the same outbox sequence.
+    ///
+    /// THE BUG THIS PREVENTS. ADR-0146 has the supervisor stamp its own outbox
+    /// position onto each outbox-carried frame. The obvious implementation
+    /// stamps only the copy being stored, because `enqueue_receipt` already
+    /// took the receipt by reference and cloned it into the frame -- leaving
+    /// the transmitted copy unstamped and, worse, leaving the two copies
+    /// different. Ackplane keys a receipt's identity on a digest of the
+    /// message, so the first transmission and any later resend of that same
+    /// stored frame would not agree, and the resend would be recorded as a
+    /// second, distinct receipt instead of recognised as the replay it is.
+    /// The durable outbox would then manufacture duplicates rather than
+    /// prevent loss, which is the opposite of why it exists.
+    ///
+    /// Fix: allocate the sequence once, stamp it before storing, and hand the
+    /// stamped receipt back for transmission.
+    #[test]
+    fn a_queued_receipt_is_stamped_identically_in_the_outbox_and_on_the_wire() {
+        let outbox = test_outbox();
+
+        let (sequence, transmitted) =
+            enqueue_receipt(&outbox, queued_receipt()).expect("the receipt queues");
+
+        assert_eq!(sequence, 1);
+        assert_eq!(transmitted.outbox_sequence, Some(1));
+
+        let (stored_sequence, stored) = stored_receipt(&outbox);
+        assert_eq!(stored_sequence, 1);
+        assert_eq!(
+            stored, transmitted,
+            "the durable copy and the transmitted copy must be identical, or a resend \
+             will not be recognised as a replay of the same decision"
+        );
+    }
+
+    /// The stamp is the outbox's own position, not the server-issued
+    /// directive's number. Confusing the two is exactly the mistake ADR-0146
+    /// was written to correct, and they are both `u64` so nothing but a test
+    /// notices when they are swapped.
+    #[test]
+    fn the_stamp_is_the_outbox_position_not_the_directive_sequence() {
+        let outbox = test_outbox();
+        let receipt = queued_receipt();
+        assert_eq!(
+            receipt.directive_sequence, 9,
+            "the fixture must differ from the outbox position for this test to mean anything"
+        );
+
+        let (_, transmitted) = enqueue_receipt(&outbox, receipt).expect("the receipt queues");
+
+        assert_eq!(transmitted.outbox_sequence, Some(1));
+        assert_eq!(transmitted.directive_sequence, 9);
+    }
+
+    /// Each enqueue takes the next position, so the server can tell how far
+    /// this supervisor has actually got rather than only that it sent
+    /// something.
+    #[test]
+    fn each_queued_receipt_takes_the_next_outbox_position() {
+        let outbox = test_outbox();
+
+        let (first, _) = enqueue_receipt(&outbox, queued_receipt()).expect("the first queues");
+        outbox
+            .acknowledge_through(first)
+            .expect("the first is acknowledged");
+        let mut second_receipt = queued_receipt();
+        second_receipt.directive_id = "directive:stamp-2".to_string();
+        let (second, transmitted) =
+            enqueue_receipt(&outbox, second_receipt).expect("the second queues");
+
+        assert_eq!((first, second), (1, 2));
+        assert_eq!(transmitted.outbox_sequence, Some(2));
     }
 }
