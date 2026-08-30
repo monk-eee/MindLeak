@@ -1,11 +1,15 @@
-//! Persistence for ADR-0119 decision 6's Recovery inspection reports.
+//! Persistence for ADR-0119 decision 6's Recovery inspection reports and
+//! ADR-0145 decision 1-2's Recovery rehearsal reports.
 
 use std::time::SystemTime;
 
-use super::recovery_model::{assigned_inspection_id, from_row, validate, NewRecoveryInspection};
+use super::recovery_model::{
+    assigned_inspection_id, assigned_rehearsal_id, from_rehearsal_row, from_row, validate,
+    validate_rehearsal, NewRecoveryInspection, NewRecoveryRehearsal,
+};
 use super::{AdministrationStore, AdministrationStoreError};
 
-pub use super::recovery_model::RecoveryInspection;
+pub use super::recovery_model::{RecoveryInspection, RecoveryRehearsal};
 
 impl AdministrationStore {
     /// Records a new inspection report. Requires the named Snapshot request
@@ -59,5 +63,64 @@ impl AdministrationStore {
             )
             .await?;
         row.as_ref().map(from_row).transpose()
+    }
+
+    /// Records a new rehearsal report (ADR-0145 decision 1-2). Requires the
+    /// named Snapshot request to already exist (the foreign key enforces
+    /// this), exactly like `record_recovery_inspection`.
+    pub async fn record_recovery_rehearsal(
+        &mut self,
+        rehearsal: &NewRecoveryRehearsal,
+        now: SystemTime,
+    ) -> Result<RecoveryRehearsal, AdministrationStoreError> {
+        validate_rehearsal(rehearsal, now)?;
+        let rehearsal_id = assigned_rehearsal_id(rehearsal)?;
+        let row = self
+            .client
+            .query_one(
+                "INSERT INTO administration_recovery_rehearsals (rehearsal_id, request_id, \
+                     requested_by, manifest_digest, restore_duration_ms, \
+                     migration_version_matched, archive_table_count, restored_table_count, \
+                     restored_row_count, passed, reason, occurred_at, recorded_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *",
+                &[
+                    &rehearsal_id,
+                    &rehearsal.request_id,
+                    &rehearsal.requested_by,
+                    &rehearsal.manifest_digest,
+                    &rehearsal.restore_duration_ms,
+                    &rehearsal.migration_version_matched,
+                    &rehearsal.archive_table_count,
+                    &rehearsal.restored_table_count,
+                    &rehearsal.restored_row_count,
+                    &rehearsal.passed,
+                    &rehearsal.reason,
+                    &rehearsal.occurred_at,
+                    &now,
+                ],
+            )
+            .await?;
+        from_rehearsal_row(&row)
+    }
+
+    /// The most recently recorded *passing* rehearsal for an exact artifact
+    /// digest, if any -- what ADR-0145 decision 3's freshness gate looks up.
+    /// Scoped to `passed = true` and the exact digest: a passing rehearsal of
+    /// a different artifact, or a failed rehearsal of this one, must not
+    /// satisfy a later execution's freshness requirement.
+    pub async fn latest_passing_recovery_rehearsal(
+        &mut self,
+        manifest_digest: &[u8],
+    ) -> Result<Option<RecoveryRehearsal>, AdministrationStoreError> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT * FROM administration_recovery_rehearsals \
+                 WHERE manifest_digest = $1 AND passed = true \
+                 ORDER BY recorded_at DESC LIMIT 1",
+                &[&manifest_digest],
+            )
+            .await?;
+        row.as_ref().map(from_rehearsal_row).transpose()
     }
 }
