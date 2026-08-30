@@ -820,16 +820,28 @@ with `ackplane-mcp`: an MCP stdio server over the same gRPC services, never a
 second, Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s
 business rules -- every handler translates to an Ackplane RPC that already
 exists and is already authorized, deciding nothing about enrolment or
-signatures itself. Its first slice translates exactly one tool,
-`check_enrollment_status` (ADR-0122), and holds itself to a local-loopback
-Ackplane endpoint until the authenticated-principal decision lands: neither
-today's enrolled-node possession proof nor Bridge's loopback developer token
-fits an arbitrary MCP client, so `endpoint::resolve_endpoint` refuses a
-non-loopback target rather than send that proof somewhere the decision has
-not been made about yet. Full task/claim parity with Industrial Work, and a
-`pgvector`-backed recall store scoped to `projected_nodes` rather than the
-curated `knowledge` domain, remain open before this front door is usable
-end-to-end beyond that one tool.
+signatures itself. Its tool surface today is `open_session`,
+`check_enrollment_status`, and `active_claims`. `open_session` implements
+ADR-0137 clause 2: identity is the session, not the process, sharing the same
+`mindleak-session` crate `mindleak-mcp`/`lodestar-mcp` already use, so it
+mints the same `session:v1:<hex>` form and accepts the same declared
+working-context fields; it consults no Ackplane endpoint, since opening a
+session grants no arbiter-side authority by itself. `check_enrollment_status`
+translates `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122).
+`active_claims` translates `ClaimDelegationService.ListActiveClaims`
+(ADR-0096, ADR-0139 clause 1's read half) -- read-only and unsigned, since it
+asks only what the arbiter already states about its own arbitration. It
+holds itself to a local-loopback Ackplane endpoint until ADR-0137 clause 1
+lands: today neither translated tool authenticates its *connection* over
+NodeSync the way `ackplane-supervisor` does (only per-operation signing, or
+no signing at all by design), so `endpoint::resolve_endpoint` refuses a
+non-loopback target rather than send a possession proof somewhere that
+decision has not been made about yet. A `task_query`-named tool reading
+Industrial Work's broader projection (list/detail/history/waits/checkpoints/
+overlap/stalled, ADR-0139 clause 2) and a `pgvector`-backed recall store
+scoped to `projected_nodes` rather than the curated `knowledge` domain
+(ADR-0140) both remain open before this front door is usable end-to-end
+beyond claim arbitration and enrolment status.
 
 ### `editors/vscode` (extension)
 

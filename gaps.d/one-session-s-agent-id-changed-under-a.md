@@ -48,8 +48,23 @@
   compiled with, so it can match HEAD perfectly while the code actually
   answering has been superseded — and the notice says to restart rather than to
   rebuild, because rebuilding was the first diagnosis here and it was wrong.
-  **Still open:** a window reset remains invisible — a fresh window opened
-  because the owner id changed still reports `claim_lapses: 0`, identical to a
-  first claim. Whether identity should be pinned per session against the *token*
-  rather than whatever the running process formats is also undecided. Detection
-  is not prevention: an agent is told to restart, and nothing restarts for it.
+  **Still open:** whether identity should be pinned per session against the
+  *token* rather than whatever the running process formats remains undecided,
+  and detection is still not prevention — an agent is told to restart, and
+  nothing restarts for it.
+  **Closed 2026-08-30: a window reset is no longer invisible.** `claim_window`
+  now carries `replaced`, naming the window the current one displaced, when it
+  opened, the holes it had, and whether the owner changed. A fresh window opened
+  because the owner id changed no longer reads as a first claim — which was the
+  reading that made this incident so expensive, since work committed under the
+  earlier window falls outside the current one and nothing said so. Derived from
+  the log like the rest of `ClaimWindow`, never stored, and `is_continuous()` is
+  deliberately unchanged: replacing a window is legitimate (release and
+  re-claim, a recorded handover), so this reports the fact rather than adding a
+  refusal that would reject work ADR-0048 permits.
+  Writing the tests found a second defect in the same computation: a release is
+  itself a window change, to an *unowned* state, so `alice → release → bob`
+  produces two changes rather than one and the second displaces the gap rather
+  than alice. Reporting that would have said a genuine handover replaced nobody
+  — the exact failure this field exists to prevent, arriving by a different
+  route. An unowned state now parks what it displaced until something claims it.

@@ -71,13 +71,17 @@ const PROJECTION_MOD_RS: &str = include_str!("../../ackplane-server/src/projecti
 const PROJECTION_REBUILD_RS: &str = include_str!("../../ackplane-server/src/projection/rebuild.rs");
 const PROJECTION_NEIGHBORHOOD_RS: &str =
     include_str!("../../ackplane-server/src/projection/neighborhood.rs");
+const PROJECTION_EMBEDDINGS_RS: &str =
+    include_str!("../../ackplane-server/src/projection/embeddings.rs");
 /// `Projector`'s methods are split (below the module-length ratchet) across
-/// `mod.rs`/`rebuild.rs`/`neighborhood.rs`, each with its own `impl Projector
-/// { ... }` block - this guard must scan all three, not just one.
+/// `mod.rs`/`rebuild.rs`/`neighborhood.rs`/`embeddings.rs`, each with its own
+/// `impl Projector { ... }` block - this guard must scan all four, not just
+/// one.
 const PROJECTION_SOURCES: &[&str] = &[
     PROJECTION_MOD_RS,
     PROJECTION_REBUILD_RS,
     PROJECTION_NEIGHBORHOOD_RS,
+    PROJECTION_EMBEDDINGS_RS,
 ];
 const READINESS_RS: &str = include_str!("../../ackplane-server/src/readiness.rs");
 const CONTEXT_PACKET_STORE_RS: &str =
