@@ -10,6 +10,7 @@ use ackplane_protocol::v1::{
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
     telemetry_service_server::TelemetryServiceServer,
+    work_query_service_server::WorkQueryServiceServer,
 };
 use ackplane_server::{
     claim_service::ClaimDelegationService,
@@ -29,6 +30,7 @@ use ackplane_server::{
     supervisor_store::SupervisorStore,
     telemetry_service::TelemetryGrpcService,
     telemetry_store::TelemetryStore,
+    work_query_service::WorkQueryService,
     work_store::WorkStore,
     ServerConfig,
 };
@@ -148,6 +150,20 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // A second connection, matching every other store's already-
+            // existing one-connection-per-service pattern here (ADR-0143's
+            // one-bounded-pool-per-process consolidation is separate,
+            // in-progress work; this read service does not get ahead of it).
+            let work_query_store = match WorkStore::connect(config.database_url()).await {
+                Ok(store) => store,
+                Err(error) => {
+                    eprintln!(
+                        "ackplane-server: could not connect to the configured Industrial Work \
+                         query store: {error}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            };
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
@@ -157,7 +173,7 @@ async fn main() -> ExitCode {
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, TelemetryService, authenticated supervisor facts, directive receipts, and native Industrial Work ingress"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, TelemetryService, WorkQueryService, authenticated supervisor facts, directive receipts, and native Industrial Work ingress"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -200,6 +216,9 @@ async fn main() -> ExitCode {
                 ))
                 .add_service(TelemetryServiceServer::new(TelemetryGrpcService::new(
                     telemetry_store,
+                )))
+                .add_service(WorkQueryServiceServer::new(WorkQueryService::new(
+                    work_query_store,
                 )))
                 .serve(config.listen)
                 .await

@@ -823,27 +823,34 @@ second, Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s
 business rules -- every handler translates to an Ackplane RPC that already
 exists and is already authorized, deciding nothing about enrolment or
 signatures itself. Its tool surface today is `open_session`,
-`check_enrollment_status`, and `active_claims`. `open_session` implements
-ADR-0137 clause 2: identity is the session, not the process, sharing the same
-`mindleak-session` crate `mindleak-mcp`/`lodestar-mcp` already use, so it
-mints the same `session:v1:<hex>` form and accepts the same declared
-working-context fields; it consults no Ackplane endpoint, since opening a
-session grants no arbiter-side authority by itself. `check_enrollment_status`
-translates `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122).
-`active_claims` translates `ClaimDelegationService.ListActiveClaims`
+`check_enrollment_status`, `active_claims`, and `task_query`. `open_session`
+implements ADR-0137 clause 2: identity is the session, not the process,
+sharing the same `mindleak-session` crate `mindleak-mcp`/`lodestar-mcp`
+already use, so it mints the same `session:v1:<hex>` form and accepts the
+same declared working-context fields; it consults no Ackplane endpoint,
+since opening a session grants no arbiter-side authority by itself.
+`check_enrollment_status` translates `NodeEnrollmentService.CheckEnrollmentStatus`
+(ADR-0122). `active_claims` translates `ClaimDelegationService.ListActiveClaims`
 (ADR-0096, ADR-0139 clause 1's read half) -- read-only and unsigned, since it
-asks only what the arbiter already states about its own arbitration. It
-holds itself to a local-loopback Ackplane endpoint until ADR-0137 clause 1
+asks only what the arbiter already states about its own arbitration.
+`task_query` translates the new `WorkQueryService` (ADR-0139 clause 2): its
+`view` argument selects `list` (paged/filterable, ADR-0112 discipline),
+`detail` (task, acceptance, event history, and waits), or `doctor` (Board
+Doctor findings -- missing publication, impossible state/lease combinations,
+unresolved waits, and declared scope overlap), each a direct translation of
+`WorkStore`'s existing read methods, exactly as Bridge's own Work read
+surface already exposes them over HTTP. Every `list` answer carries ADR-0120
+decision 6's publication state (`current`/`claims_only`/`not_published`
+today; `lagging`/`unavailable` are not yet computed by either read surface).
+It holds itself to a local-loopback Ackplane endpoint until ADR-0137 clause 1
 lands: today neither translated tool authenticates its *connection* over
 NodeSync the way `ackplane-supervisor` does (only per-operation signing, or
 no signing at all by design), so `endpoint::resolve_endpoint` refuses a
 non-loopback target rather than send a possession proof somewhere that
-decision has not been made about yet. A `task_query`-named tool reading
-Industrial Work's broader projection (list/detail/history/waits/checkpoints/
-overlap/stalled, ADR-0139 clause 2) and a `pgvector`-backed recall store
+decision has not been made about yet. A `pgvector`-backed recall store
 scoped to `projected_nodes` rather than the curated `knowledge` domain
-(ADR-0140) both remain open before this front door is usable end-to-end
-beyond claim arbitration and enrolment status.
+(ADR-0140) remains open before this front door is usable end-to-end beyond
+claim arbitration, enrolment status, and Work reads.
 
 ### `editors/vscode` (extension)
 
