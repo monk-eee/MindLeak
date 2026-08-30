@@ -50,6 +50,10 @@ tonic-build = "0.12"
 protoc-bin-vendored = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tokio-postgres = "0.7"
+# ADR-0143: one bounded pool per process. Purpose-built for tokio-postgres, so
+# a checked-out object derefs to `tokio_postgres::Client` and store code keeps
+# its existing query signatures unchanged.
+deadpool-postgres = "0.14"
 # ADR-0128 slice 1: encrypts the Snapshot artifact `pg_dump` produces before
 # it touches disk. Pure Rust (no OpenSSL/libsodium system dependency), which
 # keeps the "everything must run identically on Linux, macOS, and Windows"

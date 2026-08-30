@@ -55,6 +55,14 @@ async fn main() -> ExitCode {
 }
 
 async fn migrate(database_url: &str) -> Result<(), String> {
+    // One pool for this process (ADR-0143 decision 1). Stores still on their
+    // own `connect(database_url)` take their turn in the migration sequence;
+    // none is left half-migrated.
+    let pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::SERVICE_POOL_MAX_SIZE,
+    )
+    .map_err(|error| format!("building the database pool failed: {error}"))?;
     LedgerStore::connect(database_url)
         .await
         .map_err(|error| format!("ledger schema failed: {error}"))?;
@@ -88,7 +96,7 @@ async fn migrate(database_url: &str) -> Result<(), String> {
     SupervisorStore::connect(database_url)
         .await
         .map_err(|error| format!("supervisor schema failed: {error}"))?;
-    LiveFeedStore::connect(database_url)
+    LiveFeedStore::connect(&pool)
         .await
         .map_err(|error| format!("live feed schema failed: {error}"))?;
     WorkStore::connect(database_url)
