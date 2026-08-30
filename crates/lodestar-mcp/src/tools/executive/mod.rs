@@ -493,7 +493,12 @@ mod tests {
         )
         .unwrap();
         let successor = engine
-            .supersede_goal(&goal.id, "ship it, harder", "tightened the rule")
+            .supersede_goal(
+                &goal.id,
+                "ship it, harder",
+                "tightened the rule",
+                "agent:test",
+            )
             .unwrap();
 
         let renewed = call(
@@ -542,7 +547,12 @@ mod tests {
         )
         .unwrap();
         engine
-            .supersede_goal(&goal.id, "ship it, harder", "tightened the rule")
+            .supersede_goal(
+                &goal.id,
+                "ship it, harder",
+                "tightened the rule",
+                "agent:test",
+            )
             .unwrap();
 
         let plain_renew = call(

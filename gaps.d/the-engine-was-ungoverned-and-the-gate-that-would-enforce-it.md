@@ -86,9 +86,25 @@
   needed since nothing was actually unbound this time. `binding-audit.mjs`
   again reports **0 unbound, 0 stale, 0 stranded**. Four occurrences in one
   gap fragment is itself the data point: this is not a one-time cleanup, it
-  is a standing tax on every module split *and* every re-consolidation, and
-  the fix that would end the recurrence — binding following a file
-  automatically when it moves — remains unbuilt.
+  is a standing tax on every module split *and* every re-consolidation.
+  **The repair is mechanical as of 2026-08-30.** `binding-audit.mjs` already
+  recognised the split shape; it now plans the repair and, with `--repair`,
+  applies it — binding the descendants to the goal their predecessor held,
+  carrying the mode across unchanged, and retiring the dead path. That is
+  exactly what all four manual repairs did, and nothing in it was ever judged,
+  which is what makes automating it safe. Writes go through
+  `constitution_define`, never SQL: this script opens `spec.db` read-only to
+  audit it, and a second writer would be a second definition of what a binding
+  is. The plan prints on every run, so `--repair` applies exactly what a plain
+  run just showed. A genuine deletion is still reported and left alone — it has
+  no successor to guess at, and unbinding it is a judgement about whether the
+  governance was meant to end. Verified end to end against the real ledger,
+  including the case only a live fleet produces: a file this worktree split
+  that another branch still holds whole. Both facts are true and the needs
+  point opposite ways, so the repair binds the descendants *without* retiring
+  the old path — over-governing briefly rather than stripping governance from
+  unmerged work. What stays OPEN is that nothing runs this automatically: a
+  split still strands its binding until somebody runs the audit.
   **Still true, and re-verified 09:29Z: `scripts/conformance-gate.mjs` cannot
   run.** It reads the manifest exported by `export_conformance_manifest`, and
   `.gitignore` still excludes `/.lodestar/*` with a single exception for

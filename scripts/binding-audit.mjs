@@ -13,11 +13,19 @@
 //   3. bindings stranded on superseded goals, which no active clause can use
 //
 // Usage:
-//   node scripts/binding-audit.mjs [--db <path>] [--check]
+//   node scripts/binding-audit.mjs [--db <path>] [--check] [--repair]
 //   node scripts/binding-audit.mjs [--db <path>] --new-since <git-ref>
 //
 // --check exits 1 if any unbound source file or stale binding is found, so this
 // can gate CI once the repository is clean.
+//
+// --repair applies the one repair that needs no judgement: a binding whose file
+// became a same-named module directory is moved onto the descendants, goal and
+// mode unchanged, and the dead path removed. Four occurrences of that shape are
+// recorded in gaps.d, each fixed identically by hand. Everything else is
+// reported and left alone — a genuine deletion has no successor to guess at.
+// The plan is always printed first, so --repair applies exactly what a
+// plain run just showed you.
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -25,6 +33,8 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+import { callTools, resolveServer } from "./claim-gate.mjs";
 
 /** Rust source files added by this branch relative to a Git ref. */
 export function addedRustSources(run, base) {
@@ -96,6 +106,122 @@ export function splitInto(rel, { listDir }) {
     .filter((name) => name.endsWith(".rs"))
     .map((name) => `${asDirectory}/${name}`)
     .sort();
+}
+
+/**
+ * The bind/unbind calls that move a split binding onto the files it became.
+ *
+ * Pure: it decides, and the caller performs. That split is the point — the
+ * decision is the part worth testing, and it must be inspectable before any
+ * write reaches a repository-shared ledger.
+ *
+ * The repair is fully determined, which is what makes automating it safe at
+ * all. Four separate occurrences are recorded in
+ * `gaps.d/the-engine-was-ungoverned-and-the-gate-that-would-enforce-it.md`, and
+ * every one was resolved the same way by hand: bind the descendants to the goal
+ * their predecessor held, then unbind the dead path. Nothing was ever judged.
+ * That fragment calls the recurrence "a standing tax on every module split",
+ * and names the missing fix as a binding following a file when it moves.
+ *
+ * Deliberately narrow:
+ * - Only a split is repaired. A genuine deletion has no successor to guess at,
+ *   and unbinding it is a judgement about whether the governance was meant to
+ *   end — not a mechanical consequence of a file moving.
+ * - The goal and the mode carry across unchanged. Re-deciding either would make
+ *   this a governance change wearing a cleanup's clothes.
+ * - A descendant already bound to the same goal is skipped rather than bound
+ *   again, so a half-repaired split converges instead of accumulating. The
+ *   fourth recorded occurrence was exactly this shape: the descendants were
+ *   already bound and only the dead row remained.
+ *
+ * `retire: false` binds the descendants and leaves the old path bound. That is
+ * the split-but-still-in-flight case: this worktree split the file, another
+ * branch still has it whole, and both facts are true at once. Binding the
+ * descendants governs the new code immediately; keeping the old binding leaves
+ * the peer's unmerged file governed. Over-governing for as long as both exist
+ * is the safe direction, and the old path retires on its own once that branch
+ * lands or goes.
+ */
+export function repairPlan(split, existingBindings) {
+  const already = new Set(
+    (existingBindings ?? []).map(
+      (binding) => `${binding.goal_id}\u0000${binding.node_id}`,
+    ),
+  );
+  const steps = [];
+  for (const { goal_id, mode, node_id, descendants, retire = true } of split) {
+    for (const file of descendants) {
+      const target = `artifact:${file}`;
+      if (already.has(`${goal_id}\u0000${target}`)) continue;
+      steps.push({ action: "bind", goal_id, node_id: target, mode });
+    }
+    // Last, and per binding: the dead path is removed only after its successors
+    // hold the governance, so an interrupted repair leaves the code
+    // over-governed rather than ungoverned.
+    if (retire) steps.push({ action: "unbind", goal_id, node_id });
+  }
+  return steps;
+}
+
+/** One line per repair step, in the vocabulary the reader can verify by hand. */
+export function describeRepair(steps) {
+  return steps.map((step) =>
+    step.action === "bind"
+      ? `  bind    ${step.node_id}  ->  ${step.goal_id} (${step.mode})`
+      : `  unbind  ${step.node_id}  from  ${step.goal_id}`,
+  );
+}
+
+/**
+ * Perform a repair plan through Lodestar's own tool surface.
+ *
+ * Deliberately not SQL. This script opens `spec.db` read-only to audit it, and
+ * that asymmetry is the design: a reader can afford to know the schema, a
+ * writer cannot. `constitution_define` is where a binding is defined, and a
+ * second writer would be a second definition of what a binding is — the two
+ * would drift the first time the plane added a column or a rule.
+ *
+ * Stops at the first failure and reports how far it got, rather than pressing
+ * on: the steps are ordered so that binds precede the unbind, so stopping early
+ * leaves the code over-governed, which is the safe direction to fail in.
+ */
+export function applyRepair(
+  repoRoot,
+  steps,
+  call = callTools,
+  resolve = resolveServer,
+) {
+  const server = resolve(repoRoot, "lodestar");
+  if (!server) {
+    return { ok: false, done: 0, error: "no lodestar server binary found" };
+  }
+  let done = 0;
+  for (const step of steps) {
+    try {
+      call(server, repoRoot, [
+        {
+          name: "constitution_define",
+          arguments:
+            step.action === "bind"
+              ? {
+                  action: "bind",
+                  goal_id: step.goal_id,
+                  node_ids: [step.node_id],
+                  mode: step.mode,
+                }
+              : {
+                  action: "unbind",
+                  goal_id: step.goal_id,
+                  node_ids: [step.node_id],
+                },
+        },
+      ]);
+      done += 1;
+    } catch (error) {
+      return { ok: false, done, error: String(error.message ?? error) };
+    }
+  }
+  return { ok: true, done };
 }
 
 /** Binding rows from either the current or pre-rename Lodestar schema. */
@@ -214,6 +340,7 @@ async function main() {
 
   const argv = process.argv.slice(2);
   const check = argv.includes("--check");
+  const repair = argv.includes("--repair");
   const newSinceFlag = argv.indexOf("--new-since");
   if (newSinceFlag !== -1 && !argv[newSinceFlag + 1]) {
     throw new Error("binding-audit: --new-since requires a Git ref");
@@ -319,30 +446,50 @@ async function main() {
     let stale = 0;
     let elsewhere = 0;
     let split = 0;
+    const splitBindings = [];
     for (const binding of bindings) {
       if (!binding.node_id.startsWith("artifact:")) continue;
       const rel = binding.node_id.slice("artifact:".length);
       const holder = holderOf(rel);
       if (holder === "working tree") continue;
+      const descendantsOf = (file) =>
+        splitInto(file, {
+          listDir: (dir) => {
+            try {
+              return fs.readdirSync(path.join(repoRoot, dir));
+            } catch {
+              return [];
+            }
+          },
+        });
       if (holder) {
         // Alive on a branch that has not landed. Reporting this as stale is how
         // an agent gets talked into unbinding a peer's unmerged code.
         elsewhere += 1;
         console.log(`  IN FLIGHT  ${rel}   (${binding.goal_id})`);
         console.log(`             still present on ${holder} — not stale`);
+        // A file this worktree split, which another branch still holds whole,
+        // is both at once. The descendants need governing now; the old path
+        // must keep it until that branch lands or goes. `retire: false` binds
+        // without unbinding, which over-governs briefly rather than leaving
+        // either side bare.
+        const carried = descendantsOf(rel);
+        if (carried.length > 0) {
+          splitBindings.push({
+            ...binding,
+            descendants: carried,
+            retire: false,
+          });
+          console.log(
+            `             split here into ${carried.length} module(s); they will be bound without retiring this path`,
+          );
+        }
         continue;
       }
-      const descendants = splitInto(rel, {
-        listDir: (dir) => {
-          try {
-            return fs.readdirSync(path.join(repoRoot, dir));
-          } catch {
-            return [];
-          }
-        },
-      });
+      const descendants = descendantsOf(rel);
       if (descendants.length > 0) {
         split += 1;
+        splitBindings.push({ ...binding, descendants });
         console.log(`  SPLIT    ${rel}   (${binding.goal_id})`);
         console.log(
           `             became ${descendants.length} module(s); rebind them and unbind this path:`,
@@ -361,12 +508,35 @@ async function main() {
           "  is expected in a fleet. Unbinding them would strip governance from unmerged work.",
       );
     }
-    if (split > 0) {
+    const steps = repairPlan(splitBindings, bindings);
+    if (steps.length > 0) {
+      const retiring = splitBindings.filter((b) => b.retire !== false).length;
+      const carrying = splitBindings.length - retiring;
       console.log(
-        `\n  ${split} binding(s) name a file that became a module directory. The rust-module-length\n` +
-          "  control asks for exactly this split, so it recurs; rebind the descendants to the goal\n" +
-          "  the predecessor held, then unbind the old path.",
+        `\n  ${splitBindings.length} binding(s) name a file that became a module directory. The\n` +
+          "  rust-module-length control asks for exactly this split, so it recurs; the repair carries\n" +
+          `  the goal and mode across to the descendants${retiring > 0 ? ", and retires the dead path" : ""}` +
+          `${carrying > 0 ? `\n  (${carrying} of them stay bound: another branch still holds the whole file)` : ""}:`,
       );
+      for (const line of describeRepair(steps)) console.log(line);
+      if (repair) {
+        // Written through the Lodestar tool surface, never by SQL into
+        // `spec.db`: the plane owns its store, and a second writer would be a
+        // second definition of what a binding is.
+        const applied = applyRepair(repoRoot, steps);
+        console.log(
+          applied.ok
+            ? `\n  repaired: ${applied.done} step(s) applied.`
+            : `\n  repair FAILED after ${applied.done} step(s): ${applied.error}\n` +
+                "  Binds run before the unbind, so an interrupted repair leaves the code\n" +
+                "  over-governed rather than ungoverned. Re-run to converge.",
+        );
+        if (!applied.ok) process.exitCode = 1;
+      } else {
+        console.log(
+          "\n  Re-run with --repair to apply exactly the steps above.",
+        );
+      }
     }
 
     console.log("\n=== bindings stranded on superseded goals ===");

@@ -1,0 +1,160 @@
+//! Startup-time node-level connection trust (ADR-0137 clause 1).
+//!
+//! `ackplane-mcp`'s two existing tools (`check_enrollment_status`,
+//! `active_claims`) each dial their own ad hoc, unauthenticated gRPC channel
+//! per call -- neither authenticates *the connection itself* via `NodeSync`.
+//! ADR-0137 decision 1 requires exactly that: `ackplane-mcp` proves it is
+//! colocated with an already-enrolled node by completing the same
+//! `Hello -> ConnectionChallenge -> ChallengeResponse -> HelloAccepted`
+//! handshake `ackplane-supervisor` already performs
+//! (`crates/ackplane-client/src/node_sync.rs`), using the *same*
+//! `MINDLEAK_ACKPLANE_*` node identity `ackplane-supervisor` and
+//! `lodestar-mcp`'s federated claim path already read
+//! (`ackplane_client::node_identity`) -- no new configuration mechanism.
+//!
+//! **Named limitation, not a silent one:** ADR-0137 decision 1 states
+//! `ackplane-mcp` "cannot run at all against a repository with no enrolled
+//! node." This slice enforces that whenever an operator has *declared* a node
+//! identity (`ackplane_client::node_identity::resolve_node_identity` resolves
+//! `Some`): the handshake must then genuinely succeed, or this process
+//! refuses to serve, mirroring `endpoint::resolve_endpoint`'s existing
+//! refusal contract byte for byte. When no node identity is declared at all,
+//! this slice does not yet refuse -- `check_enrollment_status` (file-based
+//! candidate identity) and `active_claims` (no signer, by design) keep
+//! working exactly as they do today, unregressed. Declaring node identity but
+//! having it fail authentication is unambiguous and enforced today; a bare,
+//! unconfigured process failing to opt in is deliberately left to a later
+//! slice rather than guessed at. See
+//! `gaps.d/ackplane-mcp-does-not-yet-refuse-when-no-node-identity-is-declared-at-all.md`.
+//!
+//! Deliberately a one-shot proof, not a held-open connection: neither
+//! existing tool consumes the `NodeSync` stream itself (clause 6's concurrent-
+//! connection tolerance is proven once the handshake completes, at
+//! `crates/ackplane-mcp/tests/node_trust.rs`), so keeping it open would add a
+//! heartbeat/reconnect lifecycle this slice has no user for yet.
+
+use ackplane_client::node_identity::{resolve_node_identity, NODE_IDENTITY_ENV_VARS};
+use ackplane_client::NodeSyncConnection;
+
+/// The capability this front door's one-shot handshake declares. Distinct
+/// from `ackplane-supervisor`'s `"synchronize"` (which keeps the connection
+/// open to carry directives): naming it separately means a future server-side
+/// policy can tell the two apart if it ever needs to.
+const CAPABILITY: &str = "mcp-front-door";
+
+/// Prove this process is colocated with an enrolled node, when one is
+/// declared. `Ok(())` covers both a successful proof and "nothing declared,
+/// unchanged from today" (see the module doc's named limitation); only a
+/// declared-but-failing identity refuses.
+pub fn establish<F>(endpoint: &str, environment: &F) -> Result<(), String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let Some(identity) = resolve_node_identity(environment) else {
+        return Ok(());
+    };
+
+    let signer = identity.signer().map_err(|error| {
+        format!(
+            "declared an enrolled node identity ({vars}) but could not load its signing key: \
+             {error}",
+            vars = NODE_IDENTITY_ENV_VARS.join(", ")
+        )
+    })?;
+
+    crate::tools::runtime()?
+        .block_on(async {
+            NodeSyncConnection::open(
+                endpoint,
+                signer.as_ref(),
+                &identity.tenant_id,
+                &identity.repository_id,
+                vec![CAPABILITY.to_string()],
+                0,
+            )
+            .await
+        })
+        .map(|_connection| ())
+        .map_err(|error| {
+            format!(
+                "declared an enrolled node identity ({node_id}) but could not authenticate it \
+                 with Ackplane at {endpoint}: {error}. ackplane-mcp cannot run against a \
+                 repository whose declared node fails this proof (ADR-0137 clause 1).",
+                node_id = identity.node_id
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(pairs: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |name: &str| {
+            owned
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    /// The named limitation, pinned: today's unconfigured process is
+    /// unaffected by this slice.
+    #[test]
+    fn nothing_declared_is_not_refused() {
+        assert_eq!(establish("http://127.0.0.1:8443", &no_env), Ok(()));
+    }
+
+    /// A declared identity this process cannot even sign with (no seed, no
+    /// credential-facility entry) is refused with the declaration named, not
+    /// with an opaque connection error.
+    #[test]
+    fn a_declared_identity_with_no_reachable_key_is_refused_and_says_so() {
+        let environment = env(&[
+            ("MINDLEAK_ACKPLANE_TENANT_ID", "tenant-1"),
+            ("MINDLEAK_ACKPLANE_REPOSITORY_ID", "repository-1"),
+            ("MINDLEAK_ACKPLANE_NODE_ID", "node-1"),
+            ("MINDLEAK_ACKPLANE_SIGNING_KEY_ID", "signing-key-1"),
+            // No seed env var and (in a test process) no real credential-
+            // facility entry for this made-up account: signer() must fail.
+        ]);
+        let error = establish("http://127.0.0.1:8443", &environment)
+            .expect_err("no signer can be built for an account nothing ever provisioned");
+        assert!(
+            error.contains("MINDLEAK_ACKPLANE_TENANT_ID"),
+            "the refusal must name the declaration it could not use: {error}"
+        );
+    }
+
+    /// A fully declared, signable identity that the arbiter still refuses
+    /// (unreachable, in this test) is refused naming the node id and ADR-0137
+    /// clause 1, not a bare transport error.
+    #[test]
+    fn a_declared_identity_the_arbiter_cannot_reach_is_refused_and_says_why() {
+        let environment = env(&[
+            ("MINDLEAK_ACKPLANE_TENANT_ID", "tenant-1"),
+            ("MINDLEAK_ACKPLANE_REPOSITORY_ID", "repository-1"),
+            ("MINDLEAK_ACKPLANE_NODE_ID", "node-1"),
+            ("MINDLEAK_ACKPLANE_SIGNING_KEY_ID", "signing-key-1"),
+            (
+                "MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED",
+                "0101010101010101010101010101010101010101010101010101010101010101"
+                    .get(0..64)
+                    .unwrap(),
+            ),
+        ]);
+        // Port 0 on loopback never accepts a connection.
+        let error =
+            establish("http://127.0.0.1:0", &environment).expect_err("nothing listens on port 0");
+        assert!(error.contains("node-1"), "got: {error}");
+        assert!(error.contains("ADR-0137 clause 1"), "got: {error}");
+    }
+}
