@@ -708,6 +708,53 @@ async fn a_delegation_outside_the_verified_basis_is_refused() {
     );
 }
 
+/// Regression: `refusal_for` used to refuse unconditionally whenever
+/// `principal.policy_refs` was empty, even when the request itself named no
+/// policy either. That made a principal deliberately built with no adopted
+/// policy (ADR-0142 clause 5: a self-hosted loopback Work command principal
+/// does not gain an `AdministrationPolicy`-style policy layer) permanently
+/// unable to submit any command -- the exact capability ADR-0142 exists to
+/// unlock. Fails against the unfixed `is_empty() || ...` check; passes once
+/// the check is a plain equality between what the principal carries and
+/// what the request names.
+#[tokio::test]
+async fn a_principal_with_no_adopted_policy_authorizes_a_request_naming_none_either() {
+    let Some(database_url) = database_url() else {
+        eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+        return;
+    };
+    let suffix = unique_id("work-command-no-adopted-policy");
+    let tenant_id = format!("tenant-{suffix}");
+    let repository_id = format!("repository-{suffix}");
+    let authorization = WorkCommandAuthorization::Verified(VerifiedWorkCommandPrincipal {
+        principal_id: format!("principal-{suffix}"),
+        tenant_id: tenant_id.clone(),
+        repository_ids: vec![repository_id.clone()],
+        allowed_commands: vec![WorkCommandKind::CreateWork],
+        policy_refs: Vec::new(),
+        delegation_id: None,
+    });
+    let mut command = request(&tenant_id, &repository_id, &suffix);
+    command.policy_refs = Vec::new();
+    command.delegation_id = None;
+    let mut service = WorkCommandService::connect(&database_url)
+        .await
+        .expect("the command service should connect");
+
+    let outcome = service
+        .submit(authorization, command, SystemTime::now())
+        .await
+        .expect("a command matching an unpolicied, undelegated principal should be authorized");
+
+    assert!(
+        matches!(
+            outcome,
+            WorkCommandServiceOutcome::PendingConfirmation { .. }
+        ),
+        "expected a pending-confirmation preview, got {outcome:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_verified_in_scope_principal_records_a_replayable_pending_confirmation() {
     let Some(database_url) = database_url() else {

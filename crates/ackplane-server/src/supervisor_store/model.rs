@@ -109,6 +109,8 @@ pub enum SupervisorStoreError {
     InvalidStoredCapabilities { detail: String },
     #[error("stored {field} value {value} is invalid")]
     InvalidStoredEnum { field: &'static str, value: i16 },
+    #[error("supervisor outbox sequence {sequence} exceeds the supported range")]
+    OutboxSequenceOutOfRange { sequence: u64 },
 }
 
 pub(super) fn registration_values(

@@ -1,9 +1,10 @@
 # ADR-0146: A supervisor declares its own frame sequence; the server only echoes what it accepted
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-30
-- Deciders: MindLeak maintainers (proposed in session; awaiting repository-owner
-  review per this repo's adoption convention)
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-30 by the repository owner, authorized directly in
+  session — attributed human adoption after review.
 - Refines: [ADR-0141](0141-ackplane-reports-its-own-supervisor-position.md)
   (supplies the inbound half ADR-0141 assumed but did not specify)
 - Depends on: [ADR-0135](0135-a-directive-receipt-survives-a-dropped-connection.md)

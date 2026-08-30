@@ -1,9 +1,13 @@
 # ADR-0141: Ackplane reports its own supervisor position, not the client's echo
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-29
-- Deciders: MindLeak maintainers (proposed in session; awaiting repository-owner
-  review per this repo's adoption convention)
+- Deciders: MindLeak maintainers
+- Accepted: 2026-08-30 by the repository owner, authorized directly in
+  session — attributed human adoption after review. Accepted together with
+  [ADR-0146](0146-a-supervisor-declares-its-own-frame-sequence.md), which
+  supplies the inbound half this decision assumed; neither is implementable
+  alone.
 - Refines: [ADR-0116](0116-enrolled-supervisors-are-the-distributed-agent-runtime.md)
   decision 7 (on reconnect a supervisor reconciles positions and reports gaps)
 - Related: [ADR-0135](0135-a-directive-receipt-survives-a-dropped-connection.md)

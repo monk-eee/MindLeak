@@ -183,9 +183,11 @@ impl Projector {
     }
 }
 
+mod embeddings;
 mod neighborhood;
 mod rebuild;
 
+pub use embeddings::UnembeddedNode;
 pub use rebuild::run_projection_worker;
 
 #[cfg(test)]
