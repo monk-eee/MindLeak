@@ -324,6 +324,7 @@ async fn a_snapshot_request_with_no_adopted_policy_is_refused_with_a_named_reaso
             key_path: dir.join("key.bin"),
             pg_dump_path: "pg_dump".to_string(),
             pg_restore_path: "pg_restore".to_string(),
+            rehearsal_database_url: None,
         })),
         None,
     );
@@ -380,6 +381,7 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
             key_path: dir.join("key.bin"),
             pg_dump_path: "pg_dump".to_string(),
             pg_restore_path: "pg_restore".to_string(),
+            rehearsal_database_url: None,
         })),
         None,
     );

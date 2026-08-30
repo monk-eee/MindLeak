@@ -58,6 +58,7 @@ pub mod live_feed_store;
 mod migration_lock;
 pub mod projection;
 pub mod readiness;
+pub mod schema_migration;
 pub mod service;
 pub mod signing_keys;
 pub mod snapshot_provider;
