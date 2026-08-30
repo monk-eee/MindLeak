@@ -192,7 +192,7 @@ mod tests {
         .await
         .expect("create the published task");
 
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
         for (repository_id, task_id) in [

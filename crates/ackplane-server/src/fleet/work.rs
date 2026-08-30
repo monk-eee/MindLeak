@@ -239,7 +239,7 @@ mod tests {
         let (tenant_id, repository_id) =
             crate::test_support::enroll_and_activate(&database_url, &unique_id.to_string()).await;
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
 
@@ -315,7 +315,7 @@ mod tests {
         let (tenant_id, repository_id) =
             crate::test_support::enroll_and_activate(&database_url, &unique_id.to_string()).await;
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
 
@@ -395,7 +395,7 @@ mod tests {
         let (tenant_id, repository_id) =
             crate::test_support::enroll_and_activate(&database_url, &unique_id.to_string()).await;
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
         claims
@@ -474,7 +474,7 @@ mod tests {
         let (tenant_id, repository_id) =
             crate::test_support::enroll_and_activate(&database_url, &unique_id.to_string()).await;
         let granted_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
         claims
@@ -562,7 +562,7 @@ mod tests {
             crate::test_support::enroll_and_activate(&database_url, &unique_id.to_string()).await;
         let granted_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
         let page_at = granted_at + Duration::from_secs(100);
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
         for (task_id, lease_secs) in [
@@ -693,7 +693,7 @@ mod tests {
         }
 
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
         for (repository_id, task_id, owner_id, lease_secs) in [
@@ -802,7 +802,7 @@ mod tests {
         }
 
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
         for (repository_id, task_id, owner_id) in [
@@ -884,7 +884,7 @@ mod tests {
         .await;
 
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
-        let mut claims = ClaimStore::connect(&database_url)
+        let claims = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect claim store");
         for (task_id, lease_secs) in [("task:soonest", 60), ("task:latest", 300)] {

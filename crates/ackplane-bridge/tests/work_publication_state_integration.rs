@@ -185,7 +185,12 @@ async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositor
     .await;
 
     let orphan_task_id = format!("claim-{unique}");
-    let mut claims = ClaimStore::connect(&database_url)
+    let db_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let claims = ClaimStore::connect(&db_pool)
         .await
         .expect("connect claim store");
     let claim = claims
