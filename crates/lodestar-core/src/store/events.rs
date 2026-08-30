@@ -278,6 +278,11 @@ pub(crate) fn claim_window_on(connection: &Connection, task_id: &str) -> Result<
     let mut lapses = 0i64;
     let mut unleased = 0i64;
     let mut previous_lease: Option<i64> = None;
+    let mut replaced: Option<crate::ReplacedWindow> = None;
+    // A window displaced by a *release* rather than by another claim. It is
+    // not replaced until something takes over, so it waits here.
+    #[allow(clippy::type_complexity)]
+    let mut pending: Option<(Option<String>, Option<i64>, i64, i64)> = None;
 
     for event in &events {
         let key = (event.after.owner.clone(), event.after.claim_started_at);
@@ -296,7 +301,42 @@ pub(crate) fn claim_window_on(connection: &Connection, task_id: &str) -> Result<
                 .unwrap_or(0);
         } else if !same_window {
             // A different owner, or the same owner opening a fresh window:
-            // the previous window's holes do not travel with it.
+            // the previous window's holes do not travel with it. Record what
+            // was displaced before discarding its counters, so a replacement
+            // stops looking identical to a first claim.
+            //
+            // The sequence makes this subtle. A release is itself a window
+            // change, to an *unowned* state, so alice→release→bob produces two
+            // changes rather than one: the second displaces the gap, not
+            // alice. Reporting that gap would say a genuine handover replaced
+            // nobody. So an unowned state parks whatever it displaced in
+            // `pending` and a later claim collects it, which also means the
+            // unclaimed state a task is created in never reads as a window
+            // that the first claim "replaced".
+            if let Some((previous_owner, previous_started)) = window.take() {
+                let displaced = if previous_owner.is_some() {
+                    Some((previous_owner, previous_started, lapses, unleased))
+                } else {
+                    pending.take()
+                };
+                match (&key.0, displaced) {
+                    // A claim taking over: whatever real window preceded it is
+                    // what it replaced.
+                    (Some(_), Some((owner, started, held_lapses, held_unleased))) => {
+                        replaced = Some(crate::ReplacedWindow {
+                            owner_changed: owner.as_deref() != key.0.as_deref(),
+                            owner,
+                            started_at: started,
+                            lapses: held_lapses,
+                            unleased_seconds: held_unleased,
+                        });
+                    }
+                    // Moving to an unowned state: hold the displaced window
+                    // until something claims, rather than reporting the gap.
+                    (None, held) => pending = held,
+                    (Some(_), None) => {}
+                }
+            }
             lapses = 0;
             unleased = 0;
         } else if event.kind == TaskEventKind::Claimed {
@@ -318,6 +358,7 @@ pub(crate) fn claim_window_on(connection: &Connection, task_id: &str) -> Result<
         started_at: window.and_then(|(_, started)| started),
         lapses,
         unleased_seconds: unleased,
+        replaced,
     })
 }
 
@@ -727,7 +768,124 @@ mod tests {
         let window = s.claim_window(&task.id).unwrap();
         assert!(window.is_continuous());
         assert_eq!(window.started_at, None);
+        assert!(
+            window.replaced.is_none(),
+            "a task that was never claimed replaced nothing"
+        );
         assert_window_start_matches_row(&s, &task.id, "never claimed");
+    }
+
+    /// A first claim replaced nothing, and must say so — this is the reading a
+    /// replaced window has to be distinguishable *from*.
+    #[test]
+    fn a_first_claim_reports_no_replaced_window() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "first", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 600, NOW).unwrap());
+
+        let window = s.claim_window(&t.id).unwrap();
+        assert_eq!(window.lapses, 0);
+        assert!(window.replaced.is_none());
+    }
+
+    /// The incident this exists for. One session held one client-minted token,
+    /// but a live process running a superseded binary formatted its agent id
+    /// differently, so the ledger saw a *different owner* and opened a fresh
+    /// window. Counters reset with it — correctly, the old window's holes are
+    /// not this one's — and the result was `lapses: 0`, identical to a first
+    /// claim. Work committed under the earlier window then fell outside this
+    /// one and could not be certified, and nothing said why.
+    #[test]
+    fn a_window_replaced_by_an_owner_change_is_distinguishable_from_a_first_claim() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "identity", "", None, NOW).unwrap();
+
+        // The labelled id, as a process running the pre-ADR-0054 build reports.
+        assert!(s
+            .claim_task(&t.id, "session:v1:copilot:b4baf280", 60, NOW)
+            .unwrap());
+        // The same session, same token, after the id format collapsed.
+        assert!(s
+            .claim_task(&t.id, "session:v1:b4baf280", 600, NOW + 120)
+            .unwrap());
+
+        let window = s.claim_window(&t.id).unwrap();
+        assert_eq!(
+            window.lapses, 0,
+            "the fresh window genuinely has no holes of its own"
+        );
+        let replaced = window
+            .replaced
+            .expect("a window that displaced another must say so");
+        assert_eq!(
+            replaced.owner.as_deref(),
+            Some("session:v1:copilot:b4baf280")
+        );
+        assert_eq!(replaced.started_at, Some(NOW));
+        assert!(
+            replaced.owner_changed,
+            "the owner id changed, which is the question a reader needs to ask"
+        );
+    }
+
+    /// A same-owner replacement is ordinary — release, re-claim — and must not
+    /// read as an identity change, or the signal that matters gets lost in it.
+    #[test]
+    fn a_same_owner_reclaim_reports_a_replacement_without_an_owner_change() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "rework", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert!(s.release_task(&t.id, "alice", NOW + 30).unwrap());
+        assert!(s.claim_task(&t.id, "alice", 600, NOW + 60).unwrap());
+
+        let window = s.claim_window(&t.id).unwrap();
+        let replaced = window
+            .replaced
+            .expect("re-claiming after release opens a new window");
+        assert_eq!(replaced.owner.as_deref(), Some("alice"));
+        assert!(
+            !replaced.owner_changed,
+            "the same agent re-claiming is not an identity change"
+        );
+    }
+
+    /// Reporting a replacement must not make it discontinuous: replacing a
+    /// window is legitimate, and treating it as a hole would refuse work
+    /// ADR-0048 permits. This reports the fact; the reader judges it.
+    #[test]
+    fn a_replaced_window_is_still_continuous() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "handover", "", None, NOW).unwrap();
+
+        assert!(s.claim_task(&t.id, "alice", 600, NOW).unwrap());
+        assert!(s.release_task(&t.id, "alice", NOW + 10).unwrap());
+        assert!(s.claim_task(&t.id, "bob", 600, NOW + 20).unwrap());
+
+        let window = s.claim_window(&t.id).unwrap();
+        let replaced = window
+            .replaced
+            .clone()
+            .expect("a handover displaces the previous window");
+        assert!(
+            window.is_continuous(),
+            "a handover is not a lapse; certification behaviour is unchanged"
+        );
+        // The load-bearing half: a release clears the owner, so a naive
+        // comparison against the state immediately before the re-claim sees
+        // None and reports no change. Alice handing to Bob must still read as
+        // a different agent, or the identity-collapse signal this field exists
+        // for would be silently absent from exactly the case it describes.
+        assert_eq!(replaced.owner.as_deref(), Some("alice"));
+        assert!(
+            replaced.owner_changed,
+            "a different agent took the task; that is an owner change"
+        );
     }
 
     #[test]
