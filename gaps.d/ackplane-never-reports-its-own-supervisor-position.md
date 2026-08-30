@@ -61,3 +61,16 @@
   `supervisor_registrations`) was written, found to have no truthful source, and
   reverted rather than shipped as a field the server could only populate by
   guessing.
+- **The missing half is now proposed as
+  [ADR-0146](../docs/adr/0146-a-supervisor-declares-its-own-frame-sequence.md),
+  which refines ADR-0141 rather than replacing it; this gap stays OPEN until
+  both halves land.** It puts the outbox sequence on the frames the outbox
+  carries, so the server's report becomes an acknowledgement of what a
+  supervisor actually stated rather than a number the server derived. It
+  rejects the server-side count explicitly, keeps ADR-0141's optionality (an
+  absent value is not zero), corrects the carrier to `SupervisorFrameReceipt`
+  since `Hello` names only `producer_id`, and holds a frame sent outside the
+  outbox to carrying no sequence at all — absent there means "not part of the
+  resendable stream", never "sequence zero". Both halves must land together:
+  the outbound half alone changes nothing, and the reply half alone is the
+  defect this pair exists to avoid.
