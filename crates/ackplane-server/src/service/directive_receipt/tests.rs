@@ -145,6 +145,7 @@ fn receipt_for(directive: &AgentDirective) -> DirectiveReceipt {
         evidence_refs: Vec::new(),
         directive_sequence: directive.sequence,
         diagnostic: String::new(),
+        outbox_sequence: None,
     }
 }
 
@@ -223,6 +224,9 @@ async fn authenticated_receipts_persist_and_replay_with_a_supervisor_acknowledge
             session_id: fixture.session_id.clone(),
             idempotent_replay: false,
             projection_advanced: true,
+            // The fixture receipt declares no outbox sequence, so the server
+            // makes no independent statement rather than inventing a zero.
+            accepted_outbox_sequence: None,
         }
     );
 
@@ -252,6 +256,7 @@ async fn authenticated_receipts_persist_and_replay_with_a_supervisor_acknowledge
             session_id: fixture.session_id,
             idempotent_replay: true,
             projection_advanced: false,
+            accepted_outbox_sequence: None,
         }
     );
 }
@@ -305,6 +310,7 @@ async fn receipt_scope_mismatches_are_refused_before_the_durable_write() {
         )
         .await
         .expect("the valid receipt remains a fresh write")
+        .outcome
         .idempotent_replay
     );
 }

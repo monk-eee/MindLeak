@@ -292,6 +292,7 @@ fn applied_receipt(directive: &AgentDirective, occurred_at: SystemTime) -> v1::D
         evidence_refs: vec!["evidence:checkpoint".to_owned()],
         directive_sequence: directive.sequence,
         diagnostic: String::new(),
+        outbox_sequence: None,
     }
 }
 
@@ -948,6 +949,7 @@ async fn a_directive_never_issued_through_this_store_is_not_traceable_to_any_com
         evidence_refs: Vec::new(),
         directive_sequence: 1,
         diagnostic: String::new(),
+        outbox_sequence: None,
     };
 
     let result = store

@@ -145,6 +145,7 @@ fn receipt_for(directive: &AgentDirective, occurred_at: SystemTime) -> Directive
         evidence_refs: Vec::new(),
         directive_sequence: directive.sequence,
         diagnostic: String::new(),
+        outbox_sequence: None,
     }
 }
 
