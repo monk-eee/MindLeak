@@ -70,6 +70,7 @@ pub mod telemetry_store;
 mod test_support;
 pub mod work_command_store;
 pub mod work_command_vocabulary;
+pub mod work_query_service;
 pub mod work_store;
 
 use thiserror::Error;

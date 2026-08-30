@@ -842,35 +842,43 @@ second, Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s
 business rules -- every handler translates to an Ackplane RPC that already
 exists and is already authorized, deciding nothing about enrolment or
 signatures itself. Its tool surface today is `open_session`,
-`check_enrollment_status`, and `active_claims`. `open_session` implements
-ADR-0137 clause 2: identity is the session, not the process, sharing the same
-`mindleak-session` crate `mindleak-mcp`/`lodestar-mcp` already use, so it
-mints the same `session:v1:<hex>` form and accepts the same declared
-working-context fields; it consults no Ackplane endpoint, since opening a
-session grants no arbiter-side authority by itself. `check_enrollment_status`
-translates `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122).
-`active_claims` translates `ClaimDelegationService.ListActiveClaims`
+`check_enrollment_status`, `active_claims`, and `task_query`. `open_session`
+implements ADR-0137 clause 2: identity is the session, not the process,
+sharing the same `mindleak-session` crate `mindleak-mcp`/`lodestar-mcp`
+already use, so it mints the same `session:v1:<hex>` form and accepts the
+same declared working-context fields; it consults no Ackplane endpoint,
+since opening a session grants no arbiter-side authority by itself.
+`check_enrollment_status` translates `NodeEnrollmentService.CheckEnrollmentStatus`
+(ADR-0122). `active_claims` translates `ClaimDelegationService.ListActiveClaims`
 (ADR-0096, ADR-0139 clause 1's read half) -- read-only and unsigned, since it
-asks only what the arbiter already states about its own arbitration. It holds
-itself to a local-loopback Ackplane endpoint (ADR-0136 clause 4): neither
-today's enrolled-node possession proof nor Bridge's loopback developer token
-fits an arbitrary MCP client, so `endpoint::resolve_endpoint` refuses a
-non-loopback target rather than send that proof somewhere no decision has
-authorized yet. ADR-0137 resolved the authenticated-principal question by
-reusing the enrolled node's own Ed25519 key rather than minting a new
-principal type: when an operator declares that node's identity via the same
-`MINDLEAK_ACKPLANE_*` variables `ackplane-supervisor` and `lodestar-mcp`'s
-federated claim path already read (`ackplane_client::node_identity`),
-`node_trust::establish` completes the same `NodeSync` connection-challenge
-handshake `ackplane-supervisor` performs at startup, and this front door
-refuses to serve if that proof fails -- a declared-but-unconfigured process
-is unaffected (today's status quo), a named, deliberate limitation rather
-than a silent one pending a later slice. A `task_query`-named tool reading
-Industrial Work's broader projection (list/detail/history/waits/checkpoints/
-overlap/stalled, ADR-0139 clause 2) and a `pgvector`-backed recall store
+asks only what the arbiter already states about its own arbitration.
+`task_query` translates the new `WorkQueryService` (ADR-0139 clause 2): its
+`view` argument selects `list` (paged/filterable, ADR-0112 discipline),
+`detail` (task, acceptance, event history, and waits), or `doctor` (Board
+Doctor findings -- missing publication, impossible state/lease combinations,
+unresolved waits, and declared scope overlap), each a direct translation of
+`WorkStore`'s existing read methods, exactly as Bridge's own Work read
+surface already exposes them over HTTP. Every `list` answer carries ADR-0120
+decision 6's publication state (`current`/`claims_only`/`not_published`
+today; `lagging`/`unavailable` are not yet computed by either read surface).
+It holds itself to a local-loopback Ackplane endpoint (ADR-0136 clause 4):
+neither today's enrolled-node possession proof nor Bridge's loopback
+developer token fits an arbitrary MCP client, so `endpoint::resolve_endpoint`
+refuses a non-loopback target rather than send that proof somewhere no
+decision has authorized yet. ADR-0137 resolved the authenticated-principal
+question by reusing the enrolled node's own Ed25519 key rather than minting a
+new principal type: when an operator declares that node's identity via the
+same `MINDLEAK_ACKPLANE_*` variables `ackplane-supervisor` and
+`lodestar-mcp`'s federated claim path already read
+(`ackplane_client::node_identity`), `node_trust::establish` completes the same
+`NodeSync` connection-challenge handshake `ackplane-supervisor` performs at
+startup, and this front door refuses to serve if that proof fails -- a
+declared-but-unconfigured process is unaffected (today's status quo), a
+named, deliberate limitation rather than a silent one pending a later slice.
+A `pgvector`-backed recall store
 scoped to `projected_nodes` rather than the curated `knowledge` domain
-(ADR-0140) both remain open before this front door is usable end-to-end
-beyond claim arbitration and enrolment status.
+(ADR-0140) remains open before this front door is usable end-to-end beyond
+claim arbitration, enrolment status, and Work reads.
 
 ### `editors/vscode` (extension)
 
