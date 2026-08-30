@@ -133,11 +133,6 @@ pub struct ConformanceEvidence {
 /// a future ADR amendment, the same discipline ADR-0009 applies to what may
 /// populate `changed_node_ids`; this is deliberately not an escape hatch for
 /// "any Lodestar write".
-///
-/// `GoalSuperseded` is not a variant here: `supersede_goal` records no actor
-/// for the act itself (only a free-form `reason`), so there is nothing to
-/// verify against the claiming agent yet. Wiring it in needs that prerequisite
-/// fixed first, not a fabricated attribution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LedgerActKind {
@@ -151,6 +146,15 @@ pub enum LedgerActKind {
     /// A constitution amendment was recorded
     /// (`constitution_amendments.amended_by`/`created_at`).
     ConstitutionAmended,
+    /// A clause was retired and replaced
+    /// (`goals.superseded_by_agent`/`superseded_at`).
+    ///
+    /// Added by ADR-0144, which supplied the prerequisite ADR-0110 named:
+    /// `supersede_goal` used to record only a free-form reason, so there was no
+    /// actor to verify against the claiming agent and wiring it in would have
+    /// meant fabricating an attribution. A clause superseded before that
+    /// change still has no recorded actor, and is refused rather than guessed.
+    GoalSuperseded,
 }
 
 impl LedgerActKind {
@@ -161,6 +165,7 @@ impl LedgerActKind {
             LedgerActKind::DesignDecided => "design_decided",
             LedgerActKind::WaiverGranted => "waiver_granted",
             LedgerActKind::ConstitutionAmended => "constitution_amended",
+            LedgerActKind::GoalSuperseded => "goal_superseded",
         }
     }
 
@@ -174,6 +179,7 @@ impl LedgerActKind {
             "design_decided" => Some(LedgerActKind::DesignDecided),
             "waiver_granted" => Some(LedgerActKind::WaiverGranted),
             "constitution_amended" => Some(LedgerActKind::ConstitutionAmended),
+            "goal_superseded" => Some(LedgerActKind::GoalSuperseded),
             _ => None,
         }
     }

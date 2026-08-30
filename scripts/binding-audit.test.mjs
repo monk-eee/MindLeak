@@ -7,7 +7,10 @@ import {
   addedRustSources,
   configuredRepositoryDb,
   goalArtifactBindings,
+  applyRepair,
+  describeRepair,
   pathHolder,
+  repairPlan,
   splitInto,
   unboundSources,
 } from "./binding-audit.mjs";
@@ -214,4 +217,210 @@ test("a same-named directory with no Rust sources is not a split", () => {
     }),
     [],
   );
+});
+
+// --- repairing a split binding (repairPlan / describeRepair / applyRepair) ---
+
+const splitBinding = (overrides = {}) => ({
+  goal_id: "goal:ackplane-federation-service",
+  node_id: "artifact:crates/a/src/daemon.rs",
+  mode: "governed",
+  descendants: ["crates/a/src/daemon/frames.rs", "crates/a/src/daemon/mod.rs"],
+  ...overrides,
+});
+
+/// The repair four agents performed identically by hand: bind the descendants
+/// to the goal their predecessor held, then unbind the dead path. Nothing here
+/// is judged, which is the only reason automating it is safe.
+test("a split binding moves onto its descendants and drops the dead path", () => {
+  assert.deepEqual(repairPlan([splitBinding()], []), [
+    {
+      action: "bind",
+      goal_id: "goal:ackplane-federation-service",
+      node_id: "artifact:crates/a/src/daemon/frames.rs",
+      mode: "governed",
+    },
+    {
+      action: "bind",
+      goal_id: "goal:ackplane-federation-service",
+      node_id: "artifact:crates/a/src/daemon/mod.rs",
+      mode: "governed",
+    },
+    {
+      action: "unbind",
+      goal_id: "goal:ackplane-federation-service",
+      node_id: "artifact:crates/a/src/daemon.rs",
+    },
+  ]);
+});
+
+/// Ordering is load-bearing, not cosmetic. If the unbind ran first and the
+/// process died, the code would be left UNGOVERNED and invisible to
+/// conformance -- the exact failure this whole audit exists to catch.
+test("every bind precedes the unbind, so an interrupted repair over-governs", () => {
+  const steps = repairPlan([splitBinding()], []);
+  const unbindAt = steps.findIndex((step) => step.action === "unbind");
+  assert.equal(unbindAt, steps.length - 1);
+  assert.ok(steps.slice(0, unbindAt).every((step) => step.action === "bind"));
+});
+
+/// The fourth recorded occurrence was exactly this: descendants already bound,
+/// only the dead row left. A repair that re-bound them would still work, but
+/// this keeps a half-repaired split converging instead of accumulating.
+test("a descendant already bound to the same goal is not bound again", () => {
+  const steps = repairPlan(
+    [splitBinding()],
+    [
+      {
+        goal_id: "goal:ackplane-federation-service",
+        node_id: "artifact:crates/a/src/daemon/mod.rs",
+      },
+    ],
+  );
+  assert.deepEqual(
+    steps.map((step) => step.node_id),
+    [
+      "artifact:crates/a/src/daemon/frames.rs",
+      "artifact:crates/a/src/daemon.rs",
+    ],
+  );
+});
+
+/// A descendant bound to a DIFFERENT goal still needs this goal's binding: two
+/// goals may govern one file, and treating any existing binding as "covered"
+/// would silently drop the governance being carried across.
+test("a descendant bound to another goal still receives this one", () => {
+  const steps = repairPlan(
+    [splitBinding()],
+    [
+      {
+        goal_id: "goal:something-else",
+        node_id: "artifact:crates/a/src/daemon/mod.rs",
+      },
+    ],
+  );
+  assert.equal(steps.filter((step) => step.action === "bind").length, 2);
+});
+
+/// The mode is carried across, never re-decided. An advisory binding that
+/// silently became governed would tighten conformance as a side effect of
+/// moving a file.
+test("the binding mode carries across unchanged", () => {
+  const steps = repairPlan([splitBinding({ mode: "advisory" })], []);
+  assert.ok(
+    steps
+      .filter((step) => step.action === "bind")
+      .every((step) => step.mode === "advisory"),
+  );
+});
+
+test("nothing to repair plans nothing", () => {
+  assert.deepEqual(repairPlan([], []), []);
+});
+
+test("the printed plan names every step in reader-checkable terms", () => {
+  const lines = describeRepair(repairPlan([splitBinding()], []));
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /bind\s+artifact:crates\/a\/src\/daemon\/frames\.rs/);
+  assert.match(lines[2], /unbind\s+artifact:crates\/a\/src\/daemon\.rs/);
+});
+
+/// A ledger this script cannot reach must fail loudly, not report success over
+/// zero applied steps -- "nothing to do" and "could not do anything" are
+/// different answers.
+test("a missing server refuses rather than reporting an empty success", () => {
+  const result = applyRepair(
+    ".",
+    repairPlan([splitBinding()], []),
+    () => {
+      throw new Error("must not be called");
+    },
+    () => null,
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.done, 0);
+  assert.match(result.error, /no lodestar server/);
+});
+
+/// Writes go through constitution_define, never SQL: this script opens spec.db
+/// read-only to audit it, and a second writer would be a second definition of
+/// what a binding is.
+test("repair writes through the tool surface, one call per step", () => {
+  const calls = [];
+  const result = applyRepair(
+    ".",
+    repairPlan([splitBinding()], []),
+    (_server, _cwd, batch) => {
+      calls.push(batch[0]);
+      return [{}];
+    },
+    () => "/fake/lodestar",
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.done, 3);
+  assert.ok(calls.every((call) => call.name === "constitution_define"));
+  assert.deepEqual(
+    calls.map((call) => call.arguments.action),
+    ["bind", "bind", "unbind"],
+  );
+  assert.equal(calls[0].arguments.mode, "governed");
+});
+
+/// Stops where it broke and says how far it got, so a re-run converges from a
+/// known state instead of the reader guessing which half applied.
+test("a failing step stops the repair and reports how far it got", () => {
+  let seen = 0;
+  const result = applyRepair(
+    ".",
+    repairPlan([splitBinding()], []),
+    () => {
+      seen += 1;
+      if (seen === 2) throw new Error("ledger refused");
+      return [{}];
+    },
+    () => "/fake/lodestar",
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.done, 1);
+  assert.match(result.error, /ledger refused/);
+});
+
+/// The split-but-still-in-flight case, found by running this against the real
+/// ledger. This worktree split the file; another branch still holds it whole.
+/// Both are true, and the two needs point opposite ways: the descendants want
+/// governing now, the peer's unmerged file must keep its own. Binding without
+/// unbinding over-governs for as long as both exist, which is the safe
+/// direction -- the old path retires on its own once that branch lands or goes.
+test("a split still in flight elsewhere binds the descendants without retiring the path", () => {
+  const steps = repairPlan([splitBinding({ retire: false })], []);
+  assert.deepEqual(
+    steps.map((step) => `${step.action} ${step.node_id}`),
+    [
+      "bind artifact:crates/a/src/daemon/frames.rs",
+      "bind artifact:crates/a/src/daemon/mod.rs",
+    ],
+  );
+  assert.ok(
+    !steps.some((step) => step.action === "unbind"),
+    "unbinding here would strip governance from a peer's unmerged file",
+  );
+});
+
+/// Mixed input must not let one entry's disposition leak onto another.
+test("retiring and carrying splits are planned independently in one run", () => {
+  const steps = repairPlan(
+    [
+      splitBinding(),
+      splitBinding({
+        node_id: "artifact:crates/a/src/other.rs",
+        descendants: ["crates/a/src/other/mod.rs"],
+        retire: false,
+      }),
+    ],
+    [],
+  );
+  const unbinds = steps
+    .filter((step) => step.action === "unbind")
+    .map((step) => step.node_id);
+  assert.deepEqual(unbinds, ["artifact:crates/a/src/daemon.rs"]);
 });

@@ -18,9 +18,23 @@ impl Lodestar {
             .define_goal(kind, title, statement, parent, now_unix())
     }
 
-    pub fn supersede_goal(&self, old_id: &str, new_statement: &str, reason: &str) -> Result<Goal> {
+    /// Retire a clause and write its replacement.
+    ///
+    /// `agent` is recorded against the retired clause so the act is
+    /// attributable, which is what makes it usable as conformance evidence
+    /// (`LedgerActKind::GoalSuperseded`, ADR-0144). It is resolved through the
+    /// same session path every other identity-bearing call uses, so a caller
+    /// cannot name someone else as the one who did it.
+    pub fn supersede_goal(
+        &self,
+        old_id: &str,
+        new_statement: &str,
+        reason: &str,
+        agent: &str,
+    ) -> Result<Goal> {
+        let agent = self.resolve_agent(agent)?;
         self.store
-            .supersede_goal(old_id, new_statement, reason, now_unix())
+            .supersede_goal(old_id, new_statement, reason, agent, now_unix())
     }
 
     /// Import structured records supplied by an external ADR system. This
