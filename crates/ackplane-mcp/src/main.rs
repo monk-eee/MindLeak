@@ -9,6 +9,7 @@
 //! repository into the Industrial one.
 
 mod endpoint;
+mod node_trust;
 mod server;
 mod tools;
 
@@ -17,10 +18,17 @@ use mindleak_session::SessionRegistry;
 fn main() -> anyhow::Result<()> {
     let environment = |name: &str| std::env::var(name).ok();
 
-    // Settled once, before serving: which arbiter this front door may reach.
-    // A refusal deliberately does not exit -- see `server::run`.
+    // Settled once, before serving: which arbiter this front door may reach,
+    // and (ADR-0137 clause 1) whether a declared enrolled node authenticates
+    // there. A refusal deliberately does not exit -- see `server::run`.
     let (endpoint, refusal) = match endpoint::resolve_endpoint(&environment) {
-        Ok(endpoint) => (Some(endpoint), None),
+        Ok(endpoint) => match node_trust::establish(&endpoint, &environment) {
+            Ok(()) => (Some(endpoint), None),
+            Err(error) => {
+                eprintln!("ackplane-mcp: {error}");
+                (None, Some(error))
+            }
+        },
         Err(error) => {
             // stderr, never stdout: stdout is the JSON-RPC channel.
             eprintln!("ackplane-mcp: {error}");

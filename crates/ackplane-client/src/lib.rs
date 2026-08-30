@@ -49,6 +49,11 @@ pub use identity::{
 pub mod node_sync;
 pub use node_sync::NodeSyncConnection;
 
+pub mod node_identity;
+pub use node_identity::{
+    resolve_node_identity, NodeIdentity, NodeSignerSource, NODE_IDENTITY_ENV_VARS,
+};
+
 pub use ackplane_protocol::v1::{
     ActiveClaimSummary, ActiveClaimsRequest, ActiveClaimsResult, ClaimLeaseOutcome,
     ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest, ClaimReleaseRequest,

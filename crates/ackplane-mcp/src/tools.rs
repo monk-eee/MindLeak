@@ -469,7 +469,11 @@ fn rendered(node_id: &str, verified: bool, state: i32) -> Value {
     answer
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, String> {
+/// Shared with [`crate::node_trust`]: a fresh, single-threaded runtime to
+/// reach Ackplane from a blocking stdio call. One runtime per call rather
+/// than one for the process's lifetime, matching this front door's synchronous
+/// dispatch loop -- there is no ambient async context to reuse.
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, String> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
