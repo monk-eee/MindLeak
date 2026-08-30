@@ -52,8 +52,20 @@
   `Cargo.lock` returns no governing clause — so this is one file's binding, not
   a policy about manifests.
 
-  **Left for later, deliberately.** Three candidate repairs, none of which
-  should be taken as a drive-by while holding an unrelated claim:
+  **Fixed 2026-08-30: unbound (option 1).** `constitution_define(action="unbind",
+  goal_id="goal:adr-0030-unique-per-process-agent-identity@constitution:v4",
+  node_ids=["artifact:Cargo.toml"])` removed the binding; `advise` on
+  `artifact:Cargo.toml` now returns "no active clause governs this change" and
+  `binding-audit.mjs` is unaffected, exactly as predicted, since it measures
+  Rust source coverage only. Checked before unbinding, per option 3's own
+  caveat: ADR-0030's text (`docs/adr/0030-discrete-per-agent-identity.md`)
+  never mentions `Cargo.toml`, `[workspace.dependencies]`, or any manifest
+  entry, so nothing in that decision actually depended on the binding. Option
+  2 (rebind to a build-scoped goal) was not pursued: nothing here needs a new
+  goal to exist, and the manifest is simplest left ungoverned rather than
+  invented a governing goal for the sake of having one.
+
+  Three candidate repairs were named before this fix; kept for the record:
 
   1. *Unbind it.* Defensible: `scripts/binding-audit.mjs` measures coverage of
      Rust **source** files, so a manifest is outside the bar it enforces, and
