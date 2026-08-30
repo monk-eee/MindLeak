@@ -16,6 +16,7 @@ use ackplane_server::{
         EnrollmentSubmission,
     },
     fleet::FleetStore,
+    work_command_store::WorkCommandKind,
     work_store::{NewWorkTask, WorkStore},
 };
 use axum::{
@@ -227,21 +228,24 @@ async fn work_list_and_board_doctor_report_a_real_task_and_an_orphan_claim() {
     assert_eq!(list["total"], serde_json::json!(1));
     assert_eq!(list["items"][0]["task_id"], serde_json::json!(task_id));
     assert_eq!(list["items"][0]["state"], serde_json::json!("open"));
-    assert_eq!(
-        list["commands"],
-        serde_json::json!([
-            {"operation": "create_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "route_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "release_lease", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "answer_wait", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "submit_review", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "assign", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "steer", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "pause", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "resume", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-            {"operation": "drain", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."}
-        ])
-    );
+    // Regression: this list reported `authorization_unavailable` for all ten
+    // operations while the command routes executed every one of them (see
+    // `every_command_kind_records_a_pending_confirmation_under_the_verified_loopback_principal`
+    // in work_command_api_integration.rs). The page told an operator the board
+    // was read-only; the buttons worked. Deriving the expectation from
+    // `WorkCommandKind::ALL` rather than typing ten rows means narrowing what
+    // the principal grants fails this test until the page is narrowed too.
+    let expected_commands: Vec<Value> = WorkCommandKind::ALL
+        .iter()
+        .map(|kind| {
+            serde_json::json!({
+                "operation": kind.operation_name(),
+                "state": "available_without_policy",
+                "reason": "The hardened loopback profile is a verified principal for this single-tenant deployment, so this command executes. No policy layer is adopted, so nothing classifies it as routine or requiring review.",
+            })
+        })
+        .collect();
+    assert_eq!(list["commands"], Value::Array(expected_commands));
     assert_eq!(
         list["publication"],
         serde_json::json!({

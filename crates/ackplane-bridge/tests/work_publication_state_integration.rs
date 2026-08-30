@@ -15,6 +15,7 @@ use ackplane_server::{
         EnrollmentSubmission,
     },
     fleet::FleetStore,
+    work_command_store::WorkCommandKind,
     work_store::WorkStore,
 };
 use axum::{
@@ -132,19 +133,27 @@ async fn body_json(response: axum::response::Response) -> Value {
     serde_json::from_slice(&body).expect("parse Bridge JSON response")
 }
 
-fn authorization_unavailable_commands() -> Value {
-    json!([
-        {"operation": "create_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "route_work", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "release_lease", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "answer_wait", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "submit_review", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "assign", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "steer", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "pause", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "resume", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."},
-        {"operation": "drain", "state": "authorization_unavailable", "reason": "The Bridge loopback developer profile has no verified principal or authorization verifier."}
-    ])
+/// What the Work list reports for each command under the ADR-0142 hardened
+/// loopback profile: every kind the verified principal allows, executed with
+/// no policy layer adopted (clause 5).
+///
+/// Derived from `WorkCommandKind::ALL` rather than ten literal rows so that
+/// narrowing what the principal grants fails this test until the reported
+/// capability list is narrowed to match. This previously named every operation
+/// `authorization_unavailable` while the command routes executed all ten.
+fn loopback_command_capabilities() -> Value {
+    Value::Array(
+        WorkCommandKind::ALL
+            .iter()
+            .map(|kind| {
+                json!({
+                    "operation": kind.operation_name(),
+                    "state": "available_without_policy",
+                    "reason": "The hardened loopback profile is a verified principal for this single-tenant deployment, so this command executes. No policy layer is adopted, so nothing classifies it as routine or requiring review.",
+                })
+            })
+            .collect::<Vec<Value>>(),
+    )
 }
 
 #[tokio::test]
@@ -218,7 +227,7 @@ async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositor
             "total": 0,
             "page": 1,
             "page_size": 20,
-            "commands": authorization_unavailable_commands(),
+            "commands": loopback_command_capabilities(),
             "publication": {
                 "state": "claims_only",
                 "claims_only_total": 1,
@@ -258,7 +267,7 @@ async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositor
             "total": 0,
             "page": 1,
             "page_size": 20,
-            "commands": authorization_unavailable_commands(),
+            "commands": loopback_command_capabilities(),
             "publication": {
                 "state": "not_published",
                 "claims_only_total": 0,
@@ -291,6 +300,14 @@ fn work_page_renders_publication_and_disabled_command_availability_without_a_mut
         "id=\"commands\"",
         "renderCommands(capabilities)",
         "authorization_unavailable",
+        // The page must distinguish a command the API accepts from one it
+        // refuses, and must say why an accepted command's control is still
+        // disabled -- the page has no submit wiring, which is not the same
+        // claim as "no verified principal". Reporting both as a flat
+        // "unavailable" is the defect this guards.
+        "available_without_policy",
+        "This page does not submit them yet",
+        "no control wired to submit it",
         "command-authorization-reason",
         "control.disabled=true",
         "class=\"table-scroll\"",
