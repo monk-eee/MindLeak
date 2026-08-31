@@ -41,9 +41,10 @@ impl EvidenceStore {
         let fetch_limit = limit
             .checked_add(1)
             .ok_or(EvidenceStoreError::InvalidCursor)?;
+        let connection = self.connection().await?;
         let rows = match cursor {
             Some(cursor) => {
-                self.client
+                connection
                     .query(
                         "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                                 source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
@@ -67,7 +68,7 @@ impl EvidenceStore {
                     .await?
             }
             None => {
-                self.client
+                connection
                     .query(
                         "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                                 source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
