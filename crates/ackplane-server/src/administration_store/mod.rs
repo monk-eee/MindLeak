@@ -11,7 +11,12 @@
 //! (`purge_write::delete_purge_candidates`), because unlike a `pg_dump`
 //! subprocess a bounded SQL delete against one closed data category needs no
 //! separate provider. Export is built by [`crate::export_provider`], the
-//! same separation as Snapshot.
+//! same separation as Snapshot. ADR-0145 decision 4-5's recovery-execution
+//! preview/confirmation (`recovery_execution_write`) follows the same rule
+//! twice over: the safety Snapshot it requires is triggered by the caller
+//! before this store ever sees the preview, and confirming here never runs
+//! `pg_restore` -- it only records that a second, distinct enrolled key
+//! authorized the request, which slice 4's own execution step later consumes.
 #![allow(dead_code)]
 
 use tokio_postgres::{Client, NoTls};
@@ -31,12 +36,16 @@ const PURGE_CONFIRMATION_FINGERPRINT_MIGRATION: &str =
     include_str!("../../migrations/0052_administration_purge_confirmation_fingerprint.sql");
 const RECOVERY_REHEARSAL_MIGRATION: &str =
     include_str!("../../migrations/0057_administration_recovery_rehearsal.sql");
+const RECOVERY_EXECUTION_MIGRATION: &str =
+    include_str!("../../migrations/0058_administration_recovery_execution.sql");
 
 mod export_model;
 mod export_write;
 mod model;
 mod purge_model;
 mod purge_write;
+mod recovery_execution_model;
+mod recovery_execution_write;
 mod recovery_model;
 mod recovery_write;
 mod write;
@@ -53,6 +62,10 @@ pub use model::{
 pub use purge_model::{
     NewPurgeReceipt, PurgeDataCategory, PurgeOutcome, PurgePreviewRequest, PurgeReceipt,
     PurgeRequest, PurgeRequestOutcome, MAX_CONFIRMATION_WINDOW,
+};
+pub use recovery_execution_model::{
+    NewRecoveryConfirmation, RecoveryConfirmation, RecoveryConfirmationOutcome,
+    RecoveryExecutionPreviewRequest, RecoveryExecutionRequest, RecoveryExecutionRequestOutcome,
 };
 pub use recovery_model::{NewRecoveryInspection, NewRecoveryRehearsal};
 pub use recovery_write::{RecoveryInspection, RecoveryRehearsal};
@@ -116,6 +129,12 @@ impl AdministrationStore {
             RECOVERY_REHEARSAL_MIGRATION,
         )
         .await?;
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::ADMINISTRATION_RECOVERY_EXECUTION,
+            RECOVERY_EXECUTION_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 }
@@ -124,6 +143,8 @@ impl AdministrationStore {
 mod export_tests;
 #[cfg(test)]
 mod purge_tests;
+#[cfg(test)]
+mod recovery_execution_tests;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(test)]
