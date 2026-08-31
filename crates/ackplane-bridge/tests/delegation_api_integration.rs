@@ -165,8 +165,13 @@ fn use_request(
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
     let delegations = Arc::new(
-        DelegationStore::connect(database_url)
+        DelegationStore::connect(&db_pool)
             .await
             .expect("connect Delegation store"),
     );
@@ -199,7 +204,12 @@ async fn delegation_view_projects_authority_and_history_without_cross_tenant_or_
     let tenant_id = format!("tenant-{unique}");
     let repository_id = format!("repository-{unique}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
-    let mut store = DelegationStore::connect(&database_url)
+    let db_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let store = DelegationStore::connect(&db_pool)
         .await
         .expect("connect Delegation store for fixtures");
     let revoked = store
