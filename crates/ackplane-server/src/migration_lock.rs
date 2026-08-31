@@ -170,6 +170,11 @@ pub(crate) mod key {
     /// slice 1). `migration-audit --next` selected 57 from committed source;
     /// no live database was reachable to check for a higher applied key.
     pub(crate) const ADMINISTRATION_RECOVERY_REHEARSAL: i64 = 57;
+    /// `migrations/0058_administration_recovery_execution.sql` (ADR-0145
+    /// slice 2). `migration-audit --next` selected 58, checked against the
+    /// shared development database (`ackplane_test`) as well as committed
+    /// source: no live discrepancy above 57.
+    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION: i64 = 58;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
