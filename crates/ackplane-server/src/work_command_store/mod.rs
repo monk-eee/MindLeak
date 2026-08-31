@@ -8,8 +8,7 @@
 //! caller) may use -- a route that reaches [`WorkCommandStore`] directly
 //! without it is the contract violation ADR-0125 decision 11 rejects.
 
-use tokio_postgres::{Client, NoTls};
-
+use crate::db_pool::{PgConnection, PgPool};
 use crate::migration_lock;
 
 const MIGRATION: &str = include_str!("../../migrations/0037_work_commands.sql");
@@ -46,17 +45,15 @@ pub use service::{
 
 /// PostgreSQL persistence for immutable Work command requests and receipts.
 pub struct WorkCommandStore {
-    pub(crate) client: Client,
+    pool: PgPool,
 }
 
 impl WorkCommandStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane Work command store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be exactly
+    /// the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, WorkCommandStoreError> {
+        let mut client = pool.get().await?;
         migration_lock::migrate_locked(&mut client, migration_lock::key::WORK, WORK_MIGRATION)
             .await?;
         migration_lock::migrate_locked(&mut client, migration_lock::key::WORK_COMMANDS, MIGRATION)
@@ -91,7 +88,18 @@ impl WorkCommandStore {
             DIRECTIVES_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the life
+    /// of that transaction — which matters more here than in most stores: a
+    /// supervisor-directed command writes its Work/Claim effect and issues its
+    /// ADR-0107 directive on one transaction, so both must land on the same
+    /// connection or neither is atomic.
+    pub(crate) async fn connection(&self) -> Result<PgConnection, WorkCommandStoreError> {
+        Ok(self.pool.get().await?)
     }
 }
 

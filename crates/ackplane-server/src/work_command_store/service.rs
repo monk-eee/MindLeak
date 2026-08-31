@@ -90,15 +90,15 @@ pub struct WorkCommandService {
 }
 
 impl WorkCommandService {
-    pub async fn connect(database_url: &str) -> Result<Self, WorkCommandServiceError> {
+    pub async fn connect(pool: &crate::db_pool::PgPool) -> Result<Self, WorkCommandServiceError> {
         Ok(Self {
-            store: WorkCommandStore::connect(database_url).await?,
+            store: WorkCommandStore::connect(pool).await?,
         })
     }
 
     /// Checks identity and scope before the immutable command ledger is read or written.
     pub async fn submit(
-        &mut self,
+        &self,
         authorization: WorkCommandAuthorization,
         request: NewWorkCommand,
         now: SystemTime,
@@ -151,7 +151,7 @@ impl WorkCommandService {
     /// same one that issued the command; the payload must be the exact
     /// content the command's digest was fixed against at submission.
     pub async fn confirm(
-        &mut self,
+        &self,
         authorization: WorkCommandAuthorization,
         tenant_id: &str,
         repository_id: &str,

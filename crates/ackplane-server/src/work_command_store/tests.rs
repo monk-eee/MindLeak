@@ -179,7 +179,7 @@ fn verified_authorization(
 
 #[tokio::test]
 async fn an_identical_command_request_replays_its_original_record() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -188,7 +188,7 @@ async fn an_identical_command_request_replays_its_original_record() {
     let repository_id = format!("repository-{suffix}");
     let command = request(&tenant_id, &repository_id, &suffix);
     let now = SystemTime::now();
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&pool)
         .await
         .expect("the command store should connect");
 
@@ -208,7 +208,7 @@ async fn an_identical_command_request_replays_its_original_record() {
 
 #[tokio::test]
 async fn a_changed_request_under_one_idempotency_key_is_refused_without_overwrite() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -219,7 +219,7 @@ async fn a_changed_request_under_one_idempotency_key_is_refused_without_overwrit
     let mut changed = original.clone();
     changed.rationale = "Attempt to overwrite the original request.".to_owned();
     let now = SystemTime::now();
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&pool)
         .await
         .expect("the command store should connect");
 
@@ -243,7 +243,7 @@ async fn a_changed_request_under_one_idempotency_key_is_refused_without_overwrit
 
 #[tokio::test]
 async fn distinct_idempotency_keys_receive_distinct_server_assigned_command_ids() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -254,7 +254,7 @@ async fn distinct_idempotency_keys_receive_distinct_server_assigned_command_ids(
     let mut second_request = first_request.clone();
     second_request.idempotency_key = format!("idempotency-second-{suffix}");
     let now = SystemTime::now();
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&pool)
         .await
         .expect("the command store should connect");
 
@@ -275,7 +275,7 @@ async fn distinct_idempotency_keys_receive_distinct_server_assigned_command_ids(
 
 #[tokio::test]
 async fn create_work_refuses_an_existing_task_target() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -285,7 +285,7 @@ async fn create_work_refuses_an_existing_task_target() {
     let mut command = request(&tenant_id, &repository_id, &suffix);
     command.task_id = Some(format!("task-{suffix}"));
     command.expected_task_version = Some(1);
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&pool)
         .await
         .expect("the command store should connect");
 
@@ -299,7 +299,7 @@ async fn create_work_refuses_an_existing_task_target() {
 
 #[tokio::test]
 async fn existing_task_commands_require_a_task_and_expected_version() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -309,7 +309,7 @@ async fn existing_task_commands_require_a_task_and_expected_version() {
     let mut command = request(&tenant_id, &repository_id, &suffix);
     command.kind = WorkCommandKind::RouteWork;
     command.task_id = Some(format!("task-{suffix}"));
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&pool)
         .await
         .expect("the command store should connect");
 
@@ -323,7 +323,7 @@ async fn existing_task_commands_require_a_task_and_expected_version() {
 
 #[tokio::test]
 async fn an_identical_receipt_replays_but_changed_receipt_content_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -332,7 +332,7 @@ async fn an_identical_receipt_replays_but_changed_receipt_content_is_refused() {
     let repository_id = format!("repository-{suffix}");
     let command = request(&tenant_id, &repository_id, &suffix);
     let now = SystemTime::now();
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&pool)
         .await
         .expect("the command store should connect");
     let created = store
@@ -370,7 +370,7 @@ async fn an_identical_receipt_replays_but_changed_receipt_content_is_refused() {
 
 #[tokio::test]
 async fn a_receipt_cannot_target_a_command_in_another_tenant() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -379,7 +379,7 @@ async fn a_receipt_cannot_target_a_command_in_another_tenant() {
     let repository_id = format!("repository-{suffix}");
     let command = request(&tenant_id, &repository_id, &suffix);
     let now = SystemTime::now();
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&pool)
         .await
         .expect("the command store should connect");
     let created = store
@@ -410,7 +410,7 @@ async fn a_receipt_cannot_target_a_command_in_another_tenant() {
 
 #[tokio::test]
 async fn the_loopback_profile_returns_authorization_unavailable_without_writing_a_command() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -419,7 +419,7 @@ async fn the_loopback_profile_returns_authorization_unavailable_without_writing_
     let repository_id = format!("repository-{suffix}");
     let command = request(&tenant_id, &repository_id, &suffix);
     let now = SystemTime::now();
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -457,14 +457,14 @@ async fn the_loopback_profile_returns_authorization_unavailable_without_writing_
 
 #[tokio::test]
 async fn a_missing_principal_is_refused_before_command_persistence() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("work-command-missing-principal");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -487,7 +487,7 @@ async fn a_missing_principal_is_refused_before_command_persistence() {
 
 #[tokio::test]
 async fn a_claimed_principal_that_differs_from_the_verified_principal_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -499,7 +499,7 @@ async fn a_claimed_principal_that_differs_from_the_verified_principal_is_refused
         panic!("the fixture must provide a verified principal");
     };
     principal.principal_id = format!("forged-principal-{suffix}");
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -522,7 +522,7 @@ async fn a_claimed_principal_that_differs_from_the_verified_principal_is_refused
 
 #[tokio::test]
 async fn an_out_of_tenant_principal_is_refused_before_any_command_is_persisted() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -536,7 +536,7 @@ async fn an_out_of_tenant_principal_is_refused_before_any_command_is_persisted()
         panic!("the fixture must provide a verified principal");
     };
     principal.tenant_id = format!("other-tenant-{suffix}");
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -570,7 +570,7 @@ async fn an_out_of_tenant_principal_is_refused_before_any_command_is_persisted()
 
 #[tokio::test]
 async fn an_out_of_scope_repository_is_refused_before_command_persistence() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -582,7 +582,7 @@ async fn an_out_of_scope_repository_is_refused_before_command_persistence() {
         panic!("the fixture must provide a verified principal");
     };
     principal.repository_ids = vec![format!("other-repository-{suffix}")];
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -605,7 +605,7 @@ async fn an_out_of_scope_repository_is_refused_before_command_persistence() {
 
 #[tokio::test]
 async fn a_verified_principal_without_operation_permission_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -617,7 +617,7 @@ async fn a_verified_principal_without_operation_permission_is_refused() {
         panic!("the fixture must provide a verified principal");
     };
     principal.allowed_commands.clear();
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -640,7 +640,7 @@ async fn a_verified_principal_without_operation_permission_is_refused() {
 
 #[tokio::test]
 async fn a_policy_reference_outside_the_verified_basis_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -652,7 +652,7 @@ async fn a_policy_reference_outside_the_verified_basis_is_refused() {
         panic!("the fixture must provide a verified principal");
     };
     principal.policy_refs = vec![format!("other-policy-{suffix}")];
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -675,7 +675,7 @@ async fn a_policy_reference_outside_the_verified_basis_is_refused() {
 
 #[tokio::test]
 async fn a_delegation_outside_the_verified_basis_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -687,7 +687,7 @@ async fn a_delegation_outside_the_verified_basis_is_refused() {
         panic!("the fixture must provide a verified principal");
     };
     principal.delegation_id = Some(format!("other-delegation-{suffix}"));
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -719,7 +719,7 @@ async fn a_delegation_outside_the_verified_basis_is_refused() {
 /// what the request names.
 #[tokio::test]
 async fn a_principal_with_no_adopted_policy_authorizes_a_request_naming_none_either() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -737,7 +737,7 @@ async fn a_principal_with_no_adopted_policy_authorizes_a_request_naming_none_eit
     let mut command = request(&tenant_id, &repository_id, &suffix);
     command.policy_refs = Vec::new();
     command.delegation_id = None;
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -757,7 +757,7 @@ async fn a_principal_with_no_adopted_policy_authorizes_a_request_naming_none_eit
 
 #[tokio::test]
 async fn a_verified_in_scope_principal_records_a_replayable_pending_confirmation() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -766,7 +766,7 @@ async fn a_verified_in_scope_principal_records_a_replayable_pending_confirmation
     let repository_id = format!("repository-{suffix}");
     let command = request(&tenant_id, &repository_id, &suffix);
     let now = SystemTime::now();
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
@@ -951,7 +951,7 @@ async fn confirming_create_work_applies_and_creates_the_task() {
         &suffix,
         vec![WorkCommandKind::CreateWork],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1037,7 +1037,7 @@ async fn confirming_create_work_against_an_existing_task_id_conflicts() {
         &suffix,
         vec![WorkCommandKind::CreateWork],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1104,7 +1104,7 @@ async fn confirming_route_work_applies_and_bumps_the_task_version() {
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1180,7 +1180,7 @@ async fn confirming_route_work_against_a_stale_version_conflicts() {
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1267,7 +1267,7 @@ async fn confirming_release_lease_applies_and_reopens_a_claimed_task() {
         &suffix,
         vec![WorkCommandKind::ReleaseLease],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1344,7 +1344,7 @@ async fn confirming_release_lease_without_a_claim_is_refused() {
         &suffix,
         vec![WorkCommandKind::ReleaseLease],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1431,7 +1431,7 @@ async fn confirming_release_lease_against_a_changed_owner_conflicts() {
         &suffix,
         vec![WorkCommandKind::ReleaseLease],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1510,7 +1510,7 @@ async fn confirming_answer_wait_applies_and_records_the_answer() {
         &suffix,
         vec![WorkCommandKind::AnswerWait],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1602,7 +1602,7 @@ async fn confirming_answer_wait_against_an_already_answered_wait_conflicts() {
         &suffix,
         vec![WorkCommandKind::AnswerWait],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1670,7 +1670,7 @@ async fn confirming_submit_review_applies_and_moves_the_task_to_in_review() {
         &suffix,
         vec![WorkCommandKind::SubmitReview],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1743,7 +1743,7 @@ async fn confirming_the_same_command_twice_replays_without_re_applying_the_effec
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1841,7 +1841,7 @@ async fn confirming_an_expired_command_reports_expired_without_applying_the_effe
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1917,7 +1917,7 @@ async fn confirming_a_changed_payload_is_refused_as_a_digest_mismatch() {
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1954,7 +1954,7 @@ async fn confirming_a_changed_payload_is_refused_as_a_digest_mismatch() {
 
 #[tokio::test]
 async fn confirming_an_unknown_command_id_reports_command_not_found() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1972,7 +1972,7 @@ async fn confirming_an_unknown_command_id_reports_command_not_found() {
         &suffix,
         vec![WorkCommandKind::SubmitReview],
     );
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
 
