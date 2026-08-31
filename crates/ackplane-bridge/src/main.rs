@@ -163,7 +163,7 @@ async fn main() {
             return;
         }
     };
-    let projector = match Projector::connect(config.database_url()).await {
+    let projector = match Projector::connect(&db_pool).await {
         Ok(projector) => Arc::new(projector),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's graph projection: {error}");
@@ -212,7 +212,7 @@ async fn main() {
             return;
         }
     };
-    let human_decision_store = match HumanDecisionStore::connect(config.database_url()).await {
+    let human_decision_store = match HumanDecisionStore::connect(&db_pool).await {
         Ok(decisions) => Arc::new(decisions),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane human decisions: {error}");

@@ -23,9 +23,9 @@ impl Projector {
         repository_id: &str,
         model: &str,
         limit: i64,
-    ) -> Result<Vec<UnembeddedNode>, tokio_postgres::Error> {
-        let rows = self
-            .client
+    ) -> Result<Vec<UnembeddedNode>, ProjectionError> {
+        let connection = self.connection().await?;
+        let rows = connection
             .query(
                 "SELECT n.node_id, n.label FROM projected_nodes n \
                  WHERE n.tenant_id = $1 AND n.repository_id = $2 \
@@ -66,9 +66,10 @@ impl Projector {
         node_id: &str,
         model: &str,
         embedding: &[f32],
-    ) -> Result<(), tokio_postgres::Error> {
+    ) -> Result<(), ProjectionError> {
         let vector = Vector::from(embedding.to_vec());
-        self.client
+        let connection = self.connection().await?;
+        connection
             .execute(
                 "INSERT INTO projected_node_embeddings \
                  (tenant_id, repository_id, node_id, model, embedding, updated_at) \
@@ -90,7 +91,7 @@ mod tests {
     use crate::test_support::uuid_ish;
 
     async fn projected_node(
-        projector: &mut Projector,
+        projector: &Projector,
         ledger: &mut LedgerStore,
         tenant: &str,
         repo: &str,
@@ -124,13 +125,15 @@ mod tests {
     #[tokio::test]
     async fn a_projected_node_with_no_embedding_is_reported_missing() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
         projected_node(
-            &mut projector,
+            &projector,
             &mut ledger,
             &tenant,
             &repo,
@@ -154,13 +157,15 @@ mod tests {
     #[tokio::test]
     async fn a_node_stops_being_reported_missing_once_embedded() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
         projected_node(
-            &mut projector,
+            &projector,
             &mut ledger,
             &tenant,
             &repo,
@@ -190,13 +195,15 @@ mod tests {
     #[tokio::test]
     async fn missing_is_scoped_per_model() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
         projected_node(
-            &mut projector,
+            &projector,
             &mut ledger,
             &tenant,
             &repo,
@@ -226,13 +233,15 @@ mod tests {
     #[tokio::test]
     async fn upserting_the_same_node_and_model_again_replaces_the_embedding() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
         projected_node(
-            &mut projector,
+            &projector,
             &mut ledger,
             &tenant,
             &repo,
@@ -261,7 +270,9 @@ mod tests {
             .expect("second embedding replaces the first");
 
         let row = projector
-            .client
+            .connection()
+            .await
+            .expect("checkout connection to read back the embedding")
             .query_one(
                 "SELECT embedding FROM projected_node_embeddings \
                  WHERE tenant_id = $1 AND repository_id = $2 AND node_id = $3 AND model = $4",
@@ -279,7 +290,9 @@ mod tests {
     #[tokio::test]
     async fn an_embedding_for_an_unprojected_node_is_refused() {
         let url = require_test_database!();
-        let projector = Projector::connect(&url).await.expect("connect projector");
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
@@ -293,8 +306,11 @@ mod tests {
             )
             .await
             .expect_err("a node absent from the projection is refused");
+        let ProjectionError::Database(database_error) = &error else {
+            panic!("expected a database error, got: {error}");
+        };
         assert_eq!(
-            error.code(),
+            database_error.code(),
             Some(&tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION),
             "got: {error}"
         );

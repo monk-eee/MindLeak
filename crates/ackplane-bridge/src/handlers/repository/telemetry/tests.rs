@@ -142,7 +142,7 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
                 .expect("connect Claim store"),
         ),
         projector: Arc::new(
-            Projector::connect(database_url)
+            Projector::connect(&db_pool)
                 .await
                 .expect("connect Projector"),
         ),

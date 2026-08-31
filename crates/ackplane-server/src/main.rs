@@ -91,7 +91,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let projector = match Projector::connect(config.database_url()).await {
+            let projector = match Projector::connect(&db_pool).await {
                 Ok(projector) => projector,
                 Err(error) => {
                     eprintln!(
