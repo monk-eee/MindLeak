@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 use super::{model::AdministrationStoreError, *};
 use crate::test_support::unique_id;
 
-fn database_url() -> Option<String> {
-    std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
+fn pool() -> Option<crate::db_pool::PgPool> {
+    crate::test_support::test_pool()
 }
 
 fn policy_request(
@@ -27,12 +27,12 @@ fn policy_request(
 
 #[tokio::test]
 async fn an_identical_policy_request_replays_its_original_record() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-policy-replay");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -57,12 +57,12 @@ async fn an_identical_policy_request_replays_its_original_record() {
 
 #[tokio::test]
 async fn a_changed_policy_request_under_the_same_idempotency_key_conflicts() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-policy-conflict");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -86,12 +86,12 @@ async fn a_changed_policy_request_under_the_same_idempotency_key_conflicts() {
 
 #[tokio::test]
 async fn a_snapshot_request_with_no_active_policy_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-snapshot-no-policy");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -114,12 +114,12 @@ async fn a_snapshot_request_with_no_active_policy_is_refused() {
 
 #[tokio::test]
 async fn a_snapshot_request_under_an_active_policy_succeeds_and_replays() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-snapshot-active-policy");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -155,12 +155,12 @@ async fn a_snapshot_request_under_an_active_policy_succeeds_and_replays() {
 
 #[tokio::test]
 async fn an_expired_policy_no_longer_authorizes_a_snapshot_request() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-snapshot-expired-policy");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -197,12 +197,12 @@ async fn an_expired_policy_no_longer_authorizes_a_snapshot_request() {
 
 #[tokio::test]
 async fn a_snapshot_receipt_replays_and_conflicts_like_every_other_immutable_receipt() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-snapshot-receipt");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -272,12 +272,12 @@ async fn a_snapshot_receipt_replays_and_conflicts_like_every_other_immutable_rec
 
 #[tokio::test]
 async fn a_revoked_policy_no_longer_authorizes_a_snapshot_request() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-snapshot-revoked-policy");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -291,7 +291,9 @@ async fn a_revoked_policy_no_longer_authorizes_a_snapshot_request() {
         .expect("policy adoption should succeed")
         .policy;
     store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .execute(
             "UPDATE administration_policies SET revoked_at = now(), revoked_by = $1 \
              WHERE policy_id = $2",

@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 use super::{model::AdministrationStoreError, *};
 use crate::test_support::unique_id;
 
-fn database_url() -> Option<String> {
-    std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
+fn pool() -> Option<crate::db_pool::PgPool> {
+    crate::test_support::test_pool()
 }
 
 fn purge_policy_request(adopted_by: &str, tenant_id: &str, suffix: &str) -> PolicyAdoptionRequest {
@@ -43,14 +43,16 @@ fn preview_request(
 }
 
 async fn insert_telemetry_event(
-    store: &mut AdministrationStore,
+    store: &AdministrationStore,
     tenant_id: &str,
     repository_id: &str,
     telemetry_id: &str,
     occurred_at: SystemTime,
 ) {
     store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage insert")
         .execute(
             "INSERT INTO telemetry_events (tenant_id, repository_id, telemetry_id, node_id, \
                  kind, name, outcome, duration_ms, occurred_at) \
@@ -63,12 +65,12 @@ async fn insert_telemetry_event(
 
 #[tokio::test]
 async fn a_preview_with_no_active_purge_policy_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-purge-no-policy");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -92,21 +94,21 @@ async fn a_preview_with_no_active_purge_policy_is_refused() {
 
 #[tokio::test]
 async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-purge-preview-confirm");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
     let now = SystemTime::now();
     let cutoff = now - Duration::from_secs(3600);
     insert_telemetry_event(
-        &mut store,
+        &store,
         &tenant_id,
         &repository_id,
         &format!("old-1-{suffix}"),
@@ -114,7 +116,7 @@ async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
     )
     .await;
     insert_telemetry_event(
-        &mut store,
+        &store,
         &tenant_id,
         &repository_id,
         &format!("old-2-{suffix}"),
@@ -122,7 +124,7 @@ async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
     )
     .await;
     insert_telemetry_event(
-        &mut store,
+        &store,
         &tenant_id,
         &repository_id,
         &format!("new-1-{suffix}"),
@@ -132,7 +134,7 @@ async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
     // A different tenant's old event must never be counted or deleted by
     // this request.
     insert_telemetry_event(
-        &mut store,
+        &store,
         &format!("foreign-{tenant_id}"),
         &repository_id,
         &format!("foreign-old-{suffix}"),
@@ -210,7 +212,9 @@ async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
     );
 
     let remaining: i64 = store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .query_one(
             "SELECT COUNT(*) FROM telemetry_events WHERE tenant_id = $1",
             &[&tenant_id],
@@ -224,7 +228,9 @@ async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
     );
 
     let foreign_remaining: i64 = store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .query_one(
             "SELECT COUNT(*) FROM telemetry_events WHERE tenant_id = $1",
             &[&format!("foreign-{tenant_id}")],
@@ -240,21 +246,21 @@ async fn preview_counts_only_matching_rows_and_confirm_deletes_exactly_those() {
 
 #[tokio::test]
 async fn confirming_after_the_window_expires_refuses_without_deleting() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-purge-expired-confirmation");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
     let now = SystemTime::now();
     let cutoff = now - Duration::from_secs(3600);
     insert_telemetry_event(
-        &mut store,
+        &store,
         &tenant_id,
         &repository_id,
         &format!("old-{suffix}"),
@@ -305,7 +311,9 @@ async fn confirming_after_the_window_expires_refuses_without_deleting() {
     );
 
     let remaining: i64 = store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .query_one(
             "SELECT COUNT(*) FROM telemetry_events WHERE tenant_id = $1",
             &[&tenant_id],
@@ -321,21 +329,21 @@ async fn confirming_after_the_window_expires_refuses_without_deleting() {
 
 #[tokio::test]
 async fn confirming_after_the_policy_is_revoked_refuses_without_deleting() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-purge-revoked-policy");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
     let now = SystemTime::now();
     let cutoff = now - Duration::from_secs(3600);
     insert_telemetry_event(
-        &mut store,
+        &store,
         &tenant_id,
         &repository_id,
         &format!("old-{suffix}"),
@@ -367,7 +375,9 @@ async fn confirming_after_the_policy_is_revoked_refuses_without_deleting() {
         .expect("the preview should succeed");
 
     store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .execute(
             "UPDATE administration_policies SET revoked_at = now(), revoked_by = $1 \
              WHERE policy_id = $2",
@@ -395,7 +405,9 @@ async fn confirming_after_the_policy_is_revoked_refuses_without_deleting() {
     );
 
     let remaining: i64 = store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .query_one(
             "SELECT COUNT(*) FROM telemetry_events WHERE tenant_id = $1",
             &[&tenant_id],
@@ -411,21 +423,21 @@ async fn confirming_after_the_policy_is_revoked_refuses_without_deleting() {
 
 #[tokio::test]
 async fn confirming_with_the_requesting_signing_key_is_refused_and_retryable() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-purge-self-confirm");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
     let now = SystemTime::now();
     let cutoff = now - Duration::from_secs(3600);
     insert_telemetry_event(
-        &mut store,
+        &store,
         &tenant_id,
         &repository_id,
         &format!("old-{suffix}"),
@@ -485,7 +497,9 @@ async fn confirming_with_the_requesting_signing_key_is_refused_and_retryable() {
     );
 
     let remaining_before_retry: i64 = store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .query_one(
             "SELECT COUNT(*) FROM telemetry_events WHERE tenant_id = $1",
             &[&tenant_id],
@@ -515,14 +529,14 @@ async fn confirming_with_the_requesting_signing_key_is_refused_and_retryable() {
 
 #[tokio::test]
 async fn rotated_key_id_with_the_requesters_fingerprint_is_refused_and_retryable() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-purge-cloned-key");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
     let policy = store
@@ -586,21 +600,21 @@ async fn rotated_key_id_with_the_requesters_fingerprint_is_refused_and_retryable
 
 #[tokio::test]
 async fn confirming_with_an_empty_signing_key_is_refused_and_retryable() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-purge-empty-confirm");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
     let now = SystemTime::now();
     let cutoff = now - Duration::from_secs(3600);
     insert_telemetry_event(
-        &mut store,
+        &store,
         &tenant_id,
         &repository_id,
         &format!("old-{suffix}"),
@@ -671,14 +685,14 @@ async fn confirming_with_an_empty_signing_key_is_refused_and_retryable() {
 
 #[tokio::test]
 async fn legacy_unsigned_preview_cannot_be_confirmed() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-purge-legacy-preview");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
     let policy = store
@@ -704,7 +718,9 @@ async fn legacy_unsigned_preview_cannot_be_confirmed() {
         .await
         .expect("the preview should succeed before simulating legacy data");
     store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .execute(
             "UPDATE administration_purge_requests \
              SET requesting_node_id = NULL, requesting_public_key_fingerprint = NULL \

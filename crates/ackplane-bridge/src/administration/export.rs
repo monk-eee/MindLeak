@@ -98,7 +98,7 @@ pub(super) async fn request_export(
     };
 
     let outcome = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .request_export(&new_request, now)
             .await
@@ -108,7 +108,7 @@ pub(super) async fn request_export(
     // A replay of a request that already has a receipt must return that
     // receipt again, not query and write the artifact a second time.
     let existing_receipt = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .export_receipt_for_request(&outcome.request.request_id)
             .await
@@ -184,7 +184,7 @@ async fn execute_and_record_export(
         }
     };
 
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     administration
         .record_export_receipt(&new_receipt, now)
         .await
@@ -195,7 +195,7 @@ pub(super) async fn export_receipt(
     State(state): State<AdministrationApiState>,
     Path((repository_id, request_id)): Path<(String, String)>,
 ) -> Result<Json<ExportReceiptResponse>, StatusCode> {
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     // The request itself names its `requested_by` principal and
     // `repository_id`; only the tenant and repository that made it may read
     // the receipt, mirroring every other Snapshot/purge ownership check.

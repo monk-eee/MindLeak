@@ -23,7 +23,6 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 async fn administration_state(
@@ -31,13 +30,18 @@ async fn administration_state(
     fleet: Arc<FleetStore>,
     tenant_id: &str,
 ) -> AdministrationApiState {
-    let administration = AdministrationStore::connect(database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let administration = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept Administration store connections");
     AdministrationApiState::new(
         fleet,
         Arc::from(tenant_id.to_string()),
-        Arc::new(Mutex::new(administration)),
+        Arc::new(administration),
         None,
         None,
     )
@@ -310,14 +314,20 @@ async fn a_snapshot_request_with_no_adopted_policy_is_refused_with_a_named_reaso
             .await
             .expect("the test database should accept Fleet connections"),
     );
-    let administration = AdministrationStore::connect(&database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
+    let administration = AdministrationStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
+    )
+    .await
+    .expect("the test database should accept Administration store connections");
     let dir = std::env::temp_dir().join(format!("ackplane-snapshot-refusal-{suffix}"));
     let state = AdministrationApiState::new(
         fleet,
         Arc::from(tenant_id.clone()),
-        Arc::new(Mutex::new(administration)),
+        Arc::new(administration),
         Some(Arc::new(SnapshotProviderConfig {
             database_url: database_url.clone(),
             snapshot_dir: dir.clone(),
@@ -367,15 +377,21 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
             .await
             .expect("the test database should accept Fleet connections"),
     );
-    let administration = AdministrationStore::connect(&database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
+    let administration = AdministrationStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
+    )
+    .await
+    .expect("the test database should accept Administration store connections");
     let dir = std::env::temp_dir().join(format!("ackplane-snapshot-integration-{suffix}"));
     let _ = std::fs::remove_dir_all(&dir);
     let state = AdministrationApiState::new(
         fleet,
         Arc::from(tenant_id.clone()),
-        Arc::new(Mutex::new(administration)),
+        Arc::new(administration),
         Some(Arc::new(SnapshotProviderConfig {
             database_url: database_url.clone(),
             snapshot_dir: dir.clone(),
@@ -465,9 +481,15 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
 
     // A different tenant token must not read this receipt back merely by
     // knowing (or guessing) the request id.
-    let foreign_administration = AdministrationStore::connect(&database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
+    let foreign_administration = AdministrationStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
+    )
+    .await
+    .expect("the test database should accept Administration store connections");
     let foreign_router = administration_routes(AdministrationApiState::new(
         Arc::new(
             FleetStore::connect(&database_url)
@@ -475,7 +497,7 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
                 .expect("the test database should accept Fleet connections"),
         ),
         Arc::from(format!("foreign-{tenant_id}")),
-        Arc::new(Mutex::new(foreign_administration)),
+        Arc::new(foreign_administration),
         None,
         None,
     ));
