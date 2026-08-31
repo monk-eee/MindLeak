@@ -118,7 +118,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
+            let constitution_store = match ConstitutionStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(

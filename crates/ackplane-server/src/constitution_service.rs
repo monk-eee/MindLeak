@@ -12,7 +12,6 @@ use std::time::SystemTime;
 
 use ackplane_protocol::constitution_auth::ConstitutionOperation;
 use ackplane_protocol::v1;
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 use crate::constitution_signature::{self, ConstitutionAuthRefusal};
@@ -22,13 +21,13 @@ use crate::constitution_store::{
 };
 
 pub struct ConstitutionGrpcService {
-    store: Arc<Mutex<ConstitutionStore>>,
+    store: Arc<ConstitutionStore>,
 }
 
 impl ConstitutionGrpcService {
     pub fn new(store: ConstitutionStore) -> Self {
         Self {
-            store: Arc::new(Mutex::new(store)),
+            store: Arc::new(store),
         }
     }
 
@@ -58,8 +57,6 @@ impl ConstitutionGrpcService {
         };
         let resolution = self
             .store
-            .lock()
-            .await
             .resolve_signing_key(&binding)
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
@@ -84,8 +81,6 @@ impl ConstitutionGrpcService {
         // never be able to burn a legitimate nonce out from under its owner.
         let fresh = self
             .store
-            .lock()
-            .await
             .consume_constitution_nonce(
                 &authentication.signing_key_id,
                 &authentication.nonce,
@@ -134,6 +129,10 @@ fn store_error(error: ConstitutionStoreError) -> Status {
             format!("proposal {proposal_id} has been withdrawn and cannot be re-proposed"),
         ),
         ConstitutionStoreError::Database(error) => Status::internal(error.to_string()),
+        // A bounded pool timeout is a condition the caller can retry, not an
+        // internal fault (ADR-0143 decision 5, mirroring ClaimStore's mapping).
+        ConstitutionStoreError::PoolExhausted(error) => Status::unavailable(error.to_string()),
+        ConstitutionStoreError::SigningKey(error) => Status::internal(error.to_string()),
     }
 }
 
@@ -200,8 +199,6 @@ impl v1::constitution_service_server::ConstitutionService for ConstitutionGrpcSe
         // changes, not after -- so a rejected republish never silently moves
         // the active pointer.
         self.store
-            .lock()
-            .await
             .record_publication(RecordConstitutionPublicationRequest {
                 tenant_id: request.tenant_id.clone(),
                 repository_id: request.repository_id.clone(),
@@ -217,8 +214,6 @@ impl v1::constitution_service_server::ConstitutionService for ConstitutionGrpcSe
             .await
             .map_err(store_error)?;
         self.store
-            .lock()
-            .await
             .publish(PublishConstitutionRequest {
                 tenant_id: request.tenant_id,
                 repository_id: request.repository_id,
@@ -249,8 +244,6 @@ impl v1::constitution_service_server::ConstitutionService for ConstitutionGrpcSe
         .await?;
         let active = self
             .store
-            .lock()
-            .await
             .get_active(&request.tenant_id, &request.repository_id)
             .await
             .map_err(store_error)?;
@@ -403,11 +396,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_unauthenticated_publish_is_refused() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
-        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let store = ConstitutionStore::connect(&pool).await.unwrap();
         let service = ConstitutionGrpcService::new(store);
         let identity = TestIdentity::fresh("unauthenticated");
 
@@ -442,7 +435,9 @@ mod tests {
         register_test_key(&database_url, &identity).await;
         let request =
             authenticated_publish_request(&identity, "version-1", 1, "v1", vec![default_clause()]);
-        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let store = ConstitutionStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .unwrap();
         let service = ConstitutionGrpcService::new(store);
 
         let first = service
@@ -466,7 +461,9 @@ mod tests {
         register_test_key(&database_url, &identity).await;
         let publish_request =
             authenticated_publish_request(&identity, "version-7", 3, "v1", vec![default_clause()]);
-        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let store = ConstitutionStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .unwrap();
         let service = ConstitutionGrpcService::new(store);
 
         service
@@ -516,7 +513,9 @@ mod tests {
         };
         let identity = TestIdentity::fresh("not-found");
         register_test_key(&database_url, &identity).await;
-        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let store = ConstitutionStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .unwrap();
         let service = ConstitutionGrpcService::new(store);
 
         let key = signing_key();
@@ -574,7 +573,8 @@ mod tests {
         // operation-shaped fields only (version_id/version/status/clause
         // count), none of which changed, so the existing signature is still
         // valid for this mutated request.
-        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let pool = crate::test_support::gated_test_pool();
+        let store = ConstitutionStore::connect(&pool).await.unwrap();
         let service = ConstitutionGrpcService::new(store);
 
         service
@@ -582,7 +582,7 @@ mod tests {
             .await
             .expect("publish should succeed");
 
-        let verification_store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let verification_store = ConstitutionStore::connect(&pool).await.unwrap();
         let recorded = verification_store
             .get_publication(
                 &identity.tenant_id,
@@ -612,7 +612,9 @@ mod tests {
         };
         let identity = TestIdentity::fresh("immutability");
         register_test_key(&database_url, &identity).await;
-        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let store = ConstitutionStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .unwrap();
         let service = ConstitutionGrpcService::new(store);
 
         let first_request = authenticated_publish_request(
@@ -687,7 +689,9 @@ mod tests {
             "",
             vec![default_clause()],
         );
-        let store = ConstitutionStore::connect(&database_url).await.unwrap();
+        let store = ConstitutionStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .unwrap();
         let service = ConstitutionGrpcService::new(store);
 
         let result = service

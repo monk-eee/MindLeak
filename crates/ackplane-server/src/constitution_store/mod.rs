@@ -19,7 +19,7 @@ pub use publication_history::{ConstitutionPublication, RecordConstitutionPublica
 
 use std::time::SystemTime;
 
-use tokio_postgres::{Client, NoTls};
+use crate::db_pool::{PgConnection, PgPool};
 
 const MIGRATION: &str = include_str!("../../migrations/0009_constitution.sql");
 const NONCE_MIGRATION: &str =
@@ -32,6 +32,10 @@ const PROPOSALS_MIGRATION: &str = include_str!("../../migrations/0038_constituti
 pub enum ConstitutionStoreError {
     #[error("constitution database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("constitution store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
+    #[error("constitution signing key error: {0}")]
+    SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("version_id must not be empty")]
     EmptyVersionId,
     #[error("constitution publication schema_version must not be empty")]
@@ -93,53 +97,60 @@ pub struct ActiveConstitution {
 }
 
 pub struct ConstitutionStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl ConstitutionStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane constitution store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not
+    /// a database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, ConstitutionStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CONSTITUTION,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CONSTITUTION_AUTHENTICATION_NONCES,
             NONCE_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CONSTITUTION_PUBLICATION_HISTORY,
             PUBLICATION_HISTORY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CONSTITUTION_PROPOSALS,
             PROPOSALS_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, ConstitutionStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Resolve the signing key a constitution request's authentication
     /// claims, judged as of now. Mirrors `KnowledgeStore::resolve_signing_key`:
     /// the decision itself lives in `signing_keys` and is pure, this only
     /// owns the connection.
+    ///
+    /// Returns `ConstitutionStoreError` rather than `SigningKeyError` because
+    /// obtaining the connection is now a way this can fail, and that is the
+    /// store's concern -- `signing_keys` never sees a pool.
     pub async fn resolve_signing_key(
         &self,
         binding: &crate::signing_keys::EnvelopeBinding<'_>,
-    ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
-        crate::signing_keys::resolve(&self.client, binding).await
+    ) -> Result<crate::signing_keys::KeyResolution, ConstitutionStoreError> {
+        let connection = self.connection().await?;
+        Ok(crate::signing_keys::resolve(&connection, binding).await?)
     }
 
     /// Consume a (signing_key_id, nonce) pair exactly once (anti-replay for
@@ -154,7 +165,8 @@ impl ConstitutionStore {
         now: SystemTime,
     ) -> Result<bool, ConstitutionStoreError> {
         let inserted = self
-            .client
+            .connection()
+            .await?
             .execute(
                 "INSERT INTO constitution_authentication_nonces (signing_key_id, nonce, consumed_at) \
                  VALUES ($1, $2, $3) ON CONFLICT (signing_key_id, nonce) DO NOTHING",
@@ -170,14 +182,17 @@ impl ConstitutionStore {
     /// complete new snapshot, not an incremental diff this projection would
     /// otherwise have to reconcile clause-by-clause.
     pub async fn publish(
-        &mut self,
+        &self,
         request: PublishConstitutionRequest,
     ) -> Result<SystemTime, ConstitutionStoreError> {
         if request.version_id.trim().is_empty() {
             return Err(ConstitutionStoreError::EmptyVersionId);
         }
         let published_at = SystemTime::now();
-        let transaction = self.client.transaction().await?;
+        // One connection, checked out once and held until commit (ADR-0143
+        // decision 4).
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         transaction
             .execute(
                 "INSERT INTO constitution_snapshots \
@@ -236,8 +251,10 @@ impl ConstitutionStore {
         tenant_id: &str,
         repository_id: &str,
     ) -> Result<Option<ActiveConstitution>, ConstitutionStoreError> {
-        let Some(snapshot) = self
-            .client
+        // One connection for both statements, matching this method's original
+        // same-client read sequence.
+        let connection = self.connection().await?;
+        let Some(snapshot) = connection
             .query_opt(
                 "SELECT version_id, version, status, published_at FROM constitution_snapshots \
                  WHERE tenant_id = $1 AND repository_id = $2",
@@ -247,8 +264,7 @@ impl ConstitutionStore {
         else {
             return Ok(None);
         };
-        let clause_rows = self
-            .client
+        let clause_rows = connection
             .query(
                 "SELECT clause_id, slug, kind, title, statement, status, consequence, scope, \
                         rationale \
@@ -296,8 +312,8 @@ mod tests {
     }
 
     pub(super) async fn store() -> Option<ConstitutionStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(ConstitutionStore::connect(&database_url).await.unwrap())
+        let pool = crate::test_support::test_pool()?;
+        Some(ConstitutionStore::connect(&pool).await.unwrap())
     }
 
     pub(super) fn clause(id: &str) -> ClauseSnapshot {
@@ -316,7 +332,7 @@ mod tests {
 
     #[tokio::test]
     async fn publishing_a_snapshot_makes_it_the_active_one() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -363,7 +379,7 @@ mod tests {
     /// must not survive alongside the new one.
     #[tokio::test]
     async fn republishing_replaces_the_prior_snapshot_and_its_clauses() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -405,7 +421,7 @@ mod tests {
 
     #[tokio::test]
     async fn publishing_an_empty_version_id_is_refused() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };

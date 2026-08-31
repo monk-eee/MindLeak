@@ -61,10 +61,7 @@ const GRAPH_PAGE: &str = include_str!("../static/graph.html");
 struct AppState {
     fleet: Arc<FleetStore>,
     knowledge: Arc<KnowledgeStore>,
-    // A plain read-only Arc until ADR-0126: propose_clause takes &mut self,
-    // so the same Mutex-per-mutable-store pattern claims/ClaimStore already
-    // uses applies here too.
-    constitution: Arc<Mutex<ConstitutionStore>>,
+    constitution: Arc<ConstitutionStore>,
     claims: Arc<ClaimStore>,
     projector: Arc<Projector>,
     readiness: Arc<ReadinessStore>,
@@ -145,8 +142,8 @@ async fn main() {
             return;
         }
     };
-    let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
-        Ok(constitution) => Arc::new(Mutex::new(constitution)),
+    let constitution_store = match ConstitutionStore::connect(&db_pool).await {
+        Ok(constitution) => Arc::new(constitution),
         Err(error) => {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane constitution domain: {error}"

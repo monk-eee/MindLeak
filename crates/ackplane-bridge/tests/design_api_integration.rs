@@ -317,7 +317,14 @@ async fn recording_a_materialization_is_idempotent_and_conflicts_on_reuse() {
     // `constitution_publications` -- a materialization must name a
     // publication that genuinely exists, not an arbitrary string.
     let version_id = format!("constitution-{unique}");
-    let mut constitution_store = ConstitutionStore::connect(&database_url).await.unwrap();
+    let constitution_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let constitution_store = ConstitutionStore::connect(&constitution_pool)
+        .await
+        .unwrap();
     constitution_store
         .record_publication(RecordConstitutionPublicationRequest {
             tenant_id: tenant_id.clone(),

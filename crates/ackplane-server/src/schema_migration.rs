@@ -54,7 +54,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     EvidenceStore::connect(database_url)
         .await
         .map_err(|error| format!("evidence schema failed: {error}"))?;
-    ConstitutionStore::connect(database_url)
+    ConstitutionStore::connect(&pool)
         .await
         .map_err(|error| format!("constitution schema failed: {error}"))?;
     TelemetryStore::connect(database_url)

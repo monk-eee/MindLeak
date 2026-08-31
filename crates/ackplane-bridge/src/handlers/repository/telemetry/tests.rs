@@ -29,7 +29,6 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use super::repository_telemetry;
@@ -132,11 +131,11 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
                 .await
                 .expect("connect Knowledge store"),
         ),
-        constitution: Arc::new(Mutex::new(
-            ConstitutionStore::connect(database_url)
+        constitution: Arc::new(
+            ConstitutionStore::connect(&db_pool)
                 .await
                 .expect("connect Constitution store"),
-        )),
+        ),
         claims: Arc::new(
             ClaimStore::connect(&db_pool)
                 .await

@@ -139,7 +139,6 @@ pub(super) mod tests {
     };
     use ed25519_dalek::{Signer, SigningKey};
     use sha2::{Digest, Sha256};
-    use tokio::sync::Mutex;
 
     use super::*;
 
@@ -289,11 +288,11 @@ pub(super) mod tests {
                     .await
                     .expect("connect Knowledge store"),
             ),
-            constitution: Arc::new(Mutex::new(
-                ConstitutionStore::connect(database_url)
+            constitution: Arc::new(
+                ConstitutionStore::connect(&db_pool)
                     .await
                     .expect("connect Constitution store"),
-            )),
+            ),
             claims: Arc::new(
                 ClaimStore::connect(&db_pool)
                     .await
