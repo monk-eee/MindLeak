@@ -522,9 +522,9 @@ mod tests {
         };
         ledger.append(&envelope).await.expect("append envelope");
 
-        let mut projector = Projector::connect(&database_url)
-            .await
-            .expect("connect projector");
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         projector
             .rebuild(&tenant_id, &repository_id)
             .await
@@ -600,9 +600,9 @@ mod tests {
         };
         ledger.append(&envelope).await.expect("append envelope");
 
-        let mut projector = Projector::connect(&database_url)
-            .await
-            .expect("connect projector");
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         projector
             .rebuild(&tenant_id, &repository_id)
             .await

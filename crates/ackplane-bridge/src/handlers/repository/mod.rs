@@ -300,7 +300,7 @@ pub(super) mod tests {
                     .expect("connect Claim store"),
             ),
             projector: Arc::new(
-                Projector::connect(database_url)
+                Projector::connect(&db_pool)
                     .await
                     .expect("connect Projector"),
             ),
