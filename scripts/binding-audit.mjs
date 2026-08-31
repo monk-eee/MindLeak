@@ -55,10 +55,45 @@ export function addedRustSources(run, base) {
   ].sort();
 }
 
+/**
+ * Rust source files this branch deleted relative to a Git ref -- the
+ * `--diff-filter=A` counterpart `addedRustSources` never covers, so a module
+ * split entirely within one branch (a bound `X.rs` replaced by
+ * `X/{mod,siblings}.rs`, none of which exist on the base ref yet) had no
+ * branch-scoped signal at all: `addedRustSources` sees only new paths, and
+ * the ledger-wide stale/SPLIT scan in this file's own `main()` only fires on
+ * a full, unscoped run nobody runs automatically.
+ */
+export function deletedRustSources(run, base) {
+  return [
+    ...new Set(
+      run([
+        "diff",
+        "--diff-filter=D",
+        "--name-only",
+        `${base}...HEAD`,
+        "--",
+        "crates",
+      ])
+        .split(/\r?\n/)
+        .map((file) => file.trim().replace(/\\/g, "/"))
+        .filter((file) => /^crates\/[^/]+\/src\/.+\.rs$/.test(file)),
+    ),
+  ].sort();
+}
+
 /** Added source files for which the ledger has no artifact binding. */
 export function unboundSources(files, boundNodeIds) {
   const bound = new Set(boundNodeIds);
   return files.filter((file) => !bound.has(`artifact:${file}`)).sort();
+}
+
+/** Deleted source files the ledger still binds to a goal -- candidates for
+ * `splitInto` classification, scoped to this branch rather than the whole
+ * repository-shared ledger. */
+export function deletedBoundSources(files, boundNodeIds) {
+  const bound = new Set(boundNodeIds);
+  return files.filter((file) => bound.has(`artifact:${file}`)).sort();
 }
 
 /**
@@ -374,6 +409,51 @@ async function main() {
       console.log(
         `summary: ${missing.length} of ${added.length} newly added Rust source files are unbound`,
       );
+
+      // The counterpart this section lacked: a bound file THIS branch deleted
+      // gets no signal at all from `added`/`missing` above, so a module split
+      // entirely within one branch (a bound X.rs -> X/{mod,siblings}.rs, none
+      // of which exist on `base` yet) published invisibly until someone ran a
+      // full, unscoped audit by hand (gaps.d/splitting-a-bound-module-strands-
+      // its-goal-binding.md). Reusing `splitInto` here is the same
+      // classification the full audit already applies, just scoped to this
+      // branch's own diff instead of the whole repository-shared ledger.
+      const deleted = deletedRustSources(run, base);
+      const deletedBound = deletedBoundSources(deleted, bound);
+      if (deletedBound.length > 0) {
+        console.log(`\n=== bindings for files deleted since ${base} ===`);
+        const bindingFor = (file) =>
+          bindings.find((binding) => binding.node_id === `artifact:${file}`);
+        for (const file of deletedBound) {
+          const binding = bindingFor(file);
+          const descendants = splitInto(file, {
+            listDir: (dir) => {
+              try {
+                return fs.readdirSync(path.join(repoRoot, dir));
+              } catch {
+                return [];
+              }
+            },
+          });
+          if (descendants.length > 0) {
+            console.log(`  SPLIT    ${file}   (${binding.goal_id})`);
+            console.log(
+              `             became ${descendants.length} module(s); rebind them and unbind this path:`,
+            );
+            for (const descendant of descendants) {
+              console.log(`               ${descendant}`);
+            }
+          } else {
+            console.log(`  DELETED  ${file}   (${binding.goal_id})`);
+            console.log(
+              "             no successor found; unbind if this removal was intentional",
+            );
+          }
+        }
+        console.log(
+          "\n  Run a full `node scripts/binding-audit.mjs --repair` to apply the split repair above.",
+        );
+      }
       return;
     }
 
