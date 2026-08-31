@@ -12,7 +12,6 @@ use ackplane_protocol::supervisor::{
 };
 use ackplane_protocol::v1::{self, AgentDirective};
 use prost::Message;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use super::model::{WorkCommandKind, WorkCommandOutcome};
 use super::payload::{
@@ -271,9 +270,7 @@ async fn fetch_command_directive_id(
 }
 
 fn rfc3339(value: SystemTime) -> String {
-    OffsetDateTime::from(value)
-        .format(&Rfc3339)
-        .expect("test timestamps are representable as RFC3339")
+    crate::wire_format::rfc3339(value).expect("test timestamps are representable as RFC3339")
 }
 
 fn applied_receipt(directive: &AgentDirective, occurred_at: SystemTime) -> v1::DirectiveReceipt {

@@ -4,7 +4,6 @@ use std::{sync::Arc, time::SystemTime};
 
 use ackplane_protocol::v1;
 use ed25519_dalek::VerifyingKey;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
