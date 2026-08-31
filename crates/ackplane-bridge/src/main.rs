@@ -245,8 +245,8 @@ async fn main() {
             return;
         }
     };
-    let design_store = match DesignStore::connect(config.database_url()).await {
-        Ok(design) => Arc::new(Mutex::new(design)),
+    let design_store = match DesignStore::connect(&db_pool).await {
+        Ok(design) => Arc::new(design),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's Design domain: {error}");
             return;

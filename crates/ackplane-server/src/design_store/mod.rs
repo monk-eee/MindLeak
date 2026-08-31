@@ -16,7 +16,8 @@
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
-use tokio_postgres::{Client, NoTls};
+
+use crate::db_pool::{PgConnection, PgPool};
 
 const MIGRATION: &str = include_str!("../../migrations/0027_industrial_designs.sql");
 const WORK_REFERENCE_MIGRATION: &str =
@@ -38,6 +39,8 @@ const WORK_DEPENDENCY_MIGRATION: &str = include_str!("../../migrations/0028_work
 pub enum DesignStoreError {
     #[error("industrial design database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("design store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("design_id must not be empty")]
     EmptyDesignId,
     #[error("design title must not be empty")]
@@ -168,48 +171,55 @@ struct DesignIdentityPayload {
 }
 
 pub struct DesignStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl DesignStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane design store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not
+    /// a database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, DesignStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::EVIDENCE,
             EVIDENCE_DEPENDENCY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CONSTITUTION_PUBLICATION_HISTORY,
             CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::WORK,
             WORK_DEPENDENCY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::INDUSTRIAL_DESIGNS,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::INDUSTRIAL_DESIGN_WORK_REFERENCE,
             WORK_REFERENCE_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the
+    /// life of that transaction, which is the one case where holding a
+    /// connection across `.await` points is correct rather than accidental.
+    async fn connection(&self) -> Result<PgConnection, DesignStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Propose a design: an idempotent-checked insert of the design row plus
@@ -217,7 +227,7 @@ impl DesignStore {
     /// identical retry (same identity fields) is a no-op; the same
     /// `design_id` reused with different content is refused.
     pub async fn create_design(
-        &mut self,
+        &self,
         request: CreateDesignRequest,
     ) -> Result<(), DesignStoreError> {
         if request.design_id.trim().is_empty() {
@@ -245,7 +255,8 @@ impl DesignStore {
             serde_json::to_vec(&payload).expect("DesignIdentityPayload always serializes");
         let content_digest = Sha256::digest(&payload_bytes).to_vec();
 
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
                 "SELECT content_digest FROM industrial_designs \
@@ -322,13 +333,14 @@ impl DesignStore {
     /// deliberately unenforced beyond that race -- ADR-0121 decision 3
     /// leaves the broader state-machine policy to a later decision.
     pub async fn record_decision(
-        &mut self,
+        &self,
         request: RecordDecisionRequest,
     ) -> Result<(), DesignStoreError> {
         if request.actor.trim().is_empty() {
             return Err(DesignStoreError::EmptyActor);
         }
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let updated = transaction
             .execute(
                 "UPDATE industrial_designs SET lifecycle_state = $4, updated_at = now() \
@@ -441,14 +453,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_created_design_reads_back_as_proposed() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
         let design_id = unique_id("design");
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
 
         store
             .create_design(create_request(&tenant_id, &repository_id, &design_id))
@@ -475,11 +487,11 @@ mod tests {
 
     #[tokio::test]
     async fn get_design_returns_none_for_an_unknown_design() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
-        let store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
 
         let design = store
             .get_design(
@@ -494,14 +506,14 @@ mod tests {
 
     #[tokio::test]
     async fn creating_the_same_design_twice_is_an_idempotent_no_op() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
         let design_id = unique_id("design");
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
 
         store
             .create_design(create_request(&tenant_id, &repository_id, &design_id))
@@ -525,14 +537,14 @@ mod tests {
 
     #[tokio::test]
     async fn creating_a_different_design_under_the_same_id_is_rejected() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
         let design_id = unique_id("design");
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
 
         store
             .create_design(create_request(&tenant_id, &repository_id, &design_id))
@@ -551,14 +563,14 @@ mod tests {
 
     #[tokio::test]
     async fn recording_a_decision_appends_history_and_moves_lifecycle_state() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
         let design_id = unique_id("design");
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
         store
             .create_design(create_request(&tenant_id, &repository_id, &design_id))
             .await
@@ -596,11 +608,11 @@ mod tests {
 
     #[tokio::test]
     async fn recording_a_decision_against_an_unknown_design_is_refused() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
         let design_id = unique_id("design");
 
         let result = store
@@ -623,14 +635,14 @@ mod tests {
 
     #[tokio::test]
     async fn recording_a_decision_with_a_stale_expected_state_is_refused() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
         let design_id = unique_id("design");
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
         store
             .create_design(create_request(&tenant_id, &repository_id, &design_id))
             .await
@@ -677,11 +689,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_reference_to_a_nonexistent_evidence_record_is_refused() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
         let mut request = create_request(
             &unique_id("tenant"),
             &unique_id("repository"),
@@ -696,11 +708,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_reference_to_a_nonexistent_work_task_is_refused() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
         let mut request = create_request(
             &unique_id("tenant"),
             &unique_id("repository"),
@@ -722,6 +734,8 @@ mod tests {
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
         let task_id = unique_id("task");
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut work_store = crate::work_store::WorkStore::connect(&database_url)
             .await
             .unwrap();
@@ -744,7 +758,7 @@ mod tests {
             .await
             .expect("creating the work task should succeed");
 
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
         let mut request = create_request(&tenant_id, &repository_id, &unique_id("design"));
         request.work_task_id = Some(task_id.clone());
         let design_id = request.design_id.clone();
