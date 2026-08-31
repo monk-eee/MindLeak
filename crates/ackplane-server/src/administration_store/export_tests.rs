@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 use super::{model::AdministrationStoreError, *};
 use crate::test_support::unique_id;
 
-fn database_url() -> Option<String> {
-    std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
+fn pool() -> Option<crate::db_pool::PgPool> {
+    crate::test_support::test_pool()
 }
 
 fn export_policy_request(adopted_by: &str, tenant_id: &str, suffix: &str) -> PolicyAdoptionRequest {
@@ -42,12 +42,12 @@ fn export_request(
 
 #[tokio::test]
 async fn an_export_request_with_no_active_policy_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-export-no-policy");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -71,14 +71,14 @@ async fn an_export_request_with_no_active_policy_is_refused() {
 
 #[tokio::test]
 async fn an_export_request_under_an_active_policy_succeeds_and_replays() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-export-active-policy");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -116,14 +116,14 @@ async fn an_export_request_under_an_active_policy_succeeds_and_replays() {
 
 #[tokio::test]
 async fn a_changed_export_request_under_the_same_idempotency_key_conflicts() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-export-conflict");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -158,14 +158,14 @@ async fn a_changed_export_request_under_the_same_idempotency_key_conflicts() {
 
 #[tokio::test]
 async fn an_export_receipt_replays_and_conflicts_like_every_other_immutable_receipt() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-export-receipt");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -236,14 +236,14 @@ async fn an_export_receipt_replays_and_conflicts_like_every_other_immutable_rece
 
 #[tokio::test]
 async fn a_revoked_policy_no_longer_authorizes_an_export_request() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-export-revoked-policy");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -257,7 +257,9 @@ async fn a_revoked_policy_no_longer_authorizes_an_export_request() {
         .expect("policy adoption should succeed")
         .policy;
     store
-        .client
+        .connection()
+        .await
+        .expect("checkout connection for sabotage query")
         .execute(
             "UPDATE administration_policies SET revoked_at = now(), revoked_by = $1 \
              WHERE policy_id = $2",

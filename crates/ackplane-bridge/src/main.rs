@@ -263,8 +263,8 @@ async fn main() {
             return;
         }
     };
-    let administration_store = match AdministrationStore::connect(config.database_url()).await {
-        Ok(administration) => Arc::new(Mutex::new(administration)),
+    let administration_store = match AdministrationStore::connect(&db_pool).await {
+        Ok(administration) => Arc::new(administration),
         Err(error) => {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane's Administration domain: {error}"

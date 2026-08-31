@@ -30,7 +30,6 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 const CONFIRMATION_WINDOW_SECONDS: u64 = 900;
@@ -142,21 +141,21 @@ async fn administration_router(
             .await
             .expect("the test database should accept Fleet connections"),
     );
-    let administration = AdministrationStore::connect(database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
     let db_pool = ackplane_server::db_pool::build_pool(
         database_url,
         ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
     )
     .expect("the test pool builds from the gated database url");
+    let administration = AdministrationStore::connect(&db_pool)
+        .await
+        .expect("the test database should accept Administration store connections");
     let claims = ClaimStore::connect(&db_pool)
         .await
         .expect("the test database should accept Claim connections");
     administration_routes(AdministrationApiState::with_claims(
         fleet,
         Arc::from(tenant_id.to_owned()),
-        Arc::new(Mutex::new(administration)),
+        Arc::new(administration),
         Arc::new(claims),
         snapshot,
         None,
@@ -280,7 +279,7 @@ fn confirmation_body(
 }
 
 async fn adopt_policy(
-    administration: &mut AdministrationStore,
+    administration: &AdministrationStore,
     operation: AdministrationOperation,
     idempotency_key: String,
 ) -> String {
@@ -326,17 +325,23 @@ async fn safety_snapshot_failure_fails_the_recovery_preview() {
     )
     .await;
 
-    let mut administration = AdministrationStore::connect(&database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
+    let administration = AdministrationStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
+    )
+    .await
+    .expect("the test database should accept Administration store connections");
     let snapshot_policy_id = adopt_policy(
-        &mut administration,
+        &administration,
         AdministrationOperation::Snapshot,
         format!("snapshot-policy-{suffix}"),
     )
     .await;
     let recovery_policy_id = adopt_policy(
-        &mut administration,
+        &administration,
         AdministrationOperation::RecoveryExecution,
         format!("recovery-policy-{suffix}"),
     )
@@ -434,17 +439,23 @@ async fn distinct_enrolled_keys_preview_and_confirm_a_recovery_execution() {
     )
     .await;
 
-    let mut administration = AdministrationStore::connect(&database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
+    let administration = AdministrationStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
+    )
+    .await
+    .expect("the test database should accept Administration store connections");
     let snapshot_policy_id = adopt_policy(
-        &mut administration,
+        &administration,
         AdministrationOperation::Snapshot,
         format!("snapshot-policy-{suffix}"),
     )
     .await;
     let recovery_policy_id = adopt_policy(
-        &mut administration,
+        &administration,
         AdministrationOperation::RecoveryExecution,
         format!("recovery-policy-{suffix}"),
     )
