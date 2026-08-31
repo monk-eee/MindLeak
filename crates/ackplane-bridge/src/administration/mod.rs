@@ -145,6 +145,10 @@ pub fn administration_routes(state: AdministrationApiState) -> Router {
             post(recovery_execution::confirm_recovery_execution),
         )
         .route(
+            "/api/v1/administration/recovery-executions/:request_id/execute",
+            post(recovery_execution_run::execute_recovery_execution),
+        )
+        .route(
             "/api/v1/administration/recovery-executions/:request_id",
             get(recovery_execution::recovery_execution_status),
         )
@@ -164,6 +168,7 @@ mod policy;
 mod purge;
 mod recovery;
 mod recovery_execution;
+mod recovery_execution_run;
 mod snapshot;
 
 #[derive(Serialize)]
@@ -396,6 +401,7 @@ fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
         | AdministrationStoreError::UnknownRecoveryExecutionRequest { .. } => StatusCode::NOT_FOUND,
         AdministrationStoreError::UnknownRecoveryArtifact
         | AdministrationStoreError::RecoveryArtifactManifestMismatch
+        | AdministrationStoreError::RecoveryExecutionNotConfirmed
         | AdministrationStoreError::NoPassingRehearsalForArtifact => StatusCode::CONFLICT,
         error @ (AdministrationStoreError::Database(_)
         | AdministrationStoreError::UnknownOperation { .. }

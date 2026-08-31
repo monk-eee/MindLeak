@@ -605,5 +605,37 @@ async fn distinct_enrolled_keys_preview_and_confirm_a_recovery_execution() {
     assert_eq!(status, StatusCode::OK, "body was {body:?}");
     assert_eq!(body["request_id"], json!(request_id));
 
+    // Executing the now-confirmed request against a deployment that has
+    // never attested single-tenant (this fixture's `single_tenant_attested:
+    // false`, decision 6's own default) is refused outright -- a durable
+    // `Refused` receipt, never a `pg_restore` attempt.
+    let (execute_status, execute_body) = post_json(
+        &router,
+        &format!("/api/v1/administration/recovery-executions/{request_id}/execute"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(execute_status, StatusCode::OK, "body was {execute_body:?}");
+    assert_eq!(execute_body["outcome"], json!("refused"));
+    assert!(
+        execute_body["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("single-tenant"),
+        "reason was {:?}",
+        execute_body["reason"]
+    );
+
+    // Idempotent: replaying execution against an already-decided request
+    // returns the same receipt rather than re-evaluating it.
+    let (replay_status, replay_body) = post_json(
+        &router,
+        &format!("/api/v1/administration/recovery-executions/{request_id}/execute"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(replay_status, StatusCode::OK, "body was {replay_body:?}");
+    assert_eq!(replay_body["receipt_id"], execute_body["receipt_id"]);
+
     let _ = std::fs::remove_dir_all(&dir);
 }
