@@ -175,6 +175,17 @@ pub fn rejection(key: &DedupKey, error: &AppendError) -> v1::Rejection {
                 "the ledger was unavailable; retry with backoff".to_string(),
             )
         }
+        // A bounded pool timeout is a condition the caller can retry, not a
+        // permanent fault: `Unavailable` is the one rejection reason that says
+        // so (ADR-0143 decision 5, mirroring ClaimStore's own gRPC mapping).
+        AppendError::PoolExhausted(error) => {
+            tracing::error!(%error, record = %record_identity(key), "ledger append failed");
+            (
+                v1::RejectionReason::Unavailable,
+                true,
+                "the ledger was unavailable; retry with backoff".to_string(),
+            )
+        }
     };
     v1::Rejection {
         record_id: record_identity(key),

@@ -353,7 +353,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let envelope = EventEnvelope {
@@ -411,7 +414,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         for sequence in 1..=3i64 {
@@ -494,7 +500,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let fact = StructuralFact {
@@ -572,7 +581,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let fact = StructuralFact {
@@ -818,7 +830,10 @@ mod tests {
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
         let signing_key_id = format!("fleet-signing-key-{unique_id}");
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let envelope = EventEnvelope {
@@ -913,7 +928,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let envelope = EventEnvelope {

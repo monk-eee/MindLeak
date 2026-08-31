@@ -64,7 +64,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let ledger = match LedgerStore::connect(config.database_url()).await {
+            let ledger = match LedgerStore::connect(&db_pool).await {
                 Ok(ledger) => ledger,
                 Err(error) => {
                     eprintln!(

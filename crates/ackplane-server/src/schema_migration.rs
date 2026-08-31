@@ -36,7 +36,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     // none is left half-migrated.
     let pool = crate::db_pool::build_pool(database_url, crate::db_pool::SERVICE_POOL_MAX_SIZE)
         .map_err(|error| format!("building the database pool failed: {error}"))?;
-    LedgerStore::connect(database_url)
+    LedgerStore::connect(&pool)
         .await
         .map_err(|error| format!("ledger schema failed: {error}"))?;
     EnrollmentStore::connect(&pool)

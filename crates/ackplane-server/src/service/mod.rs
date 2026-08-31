@@ -86,11 +86,12 @@ pub enum ConnectionState {
     Rejected,
 }
 
-/// The concrete gRPC service. The ledger is deliberately serialized: its
-/// append transaction borrows the PostgreSQL client mutably, and ordering on a
-/// stream is part of the receipt contract.
+/// The concrete gRPC service.
 pub struct NodeSyncService {
-    ledger: Arc<Mutex<LedgerStore>>,
+    /// Not behind a `Mutex`, unlike `work`: since ADR-0143 this store checks a
+    /// connection out of the shared pool per call, so concurrent callers no
+    /// longer contend for one shared `Client` and nothing here needs `&mut`.
+    ledger: Arc<LedgerStore>,
     /// Not behind a `Mutex`, unlike `ledger` and `work`: since ADR-0143 this
     /// store checks a connection out of the shared pool per call, so
     /// concurrent callers no longer contend for one shared `Client` and
@@ -111,7 +112,7 @@ impl NodeSyncService {
     /// supervisor facts receive a retryable unavailable result.
     pub fn new(ledger: LedgerStore, flow_control: v1::FlowControl) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
+            ledger: Arc::new(ledger),
             supervisor: None,
             directives: None,
             work: None,
@@ -127,7 +128,7 @@ impl NodeSyncService {
         flow_control: v1::FlowControl,
     ) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
+            ledger: Arc::new(ledger),
             supervisor: Some(Arc::new(supervisor)),
             directives: None,
             work: None,
@@ -144,7 +145,7 @@ impl NodeSyncService {
         flow_control: v1::FlowControl,
     ) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
+            ledger: Arc::new(ledger),
             supervisor: Some(Arc::new(supervisor)),
             directives: Some(Arc::new(directives)),
             work: None,
@@ -160,7 +161,7 @@ impl NodeSyncService {
         flow_control: v1::FlowControl,
     ) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
+            ledger: Arc::new(ledger),
             supervisor: None,
             directives: None,
             work: Some(Arc::new(Mutex::new(work))),
@@ -178,7 +179,7 @@ impl NodeSyncService {
         flow_control: v1::FlowControl,
     ) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
+            ledger: Arc::new(ledger),
             supervisor: Some(Arc::new(supervisor)),
             directives: Some(Arc::new(directives)),
             work: Some(Arc::new(Mutex::new(work))),
@@ -333,16 +334,12 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                     &mut state,
                                     |envelope| {
                                         let ledger = Arc::clone(&ledger);
-                                        async move { ledger.lock().await.append(&envelope).await }
+                                        async move { ledger.append(&envelope).await }
                                     },
                                     |binding| {
                                         let ledger = Arc::clone(&ledger);
                                         async move {
-                                            ledger
-                                                .lock()
-                                                .await
-                                                .resolve_signing_key(&binding.as_binding())
-                                                .await
+                                            ledger.resolve_signing_key(&binding.as_binding()).await
                                         }
                                     },
                                 )

@@ -285,7 +285,9 @@ mod tests {
         payload_type: &str,
         payload: Vec<u8>,
     ) {
-        let mut ledger = LedgerStore::connect(database_url)
+        let pool = crate::db_pool::build_pool(database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&pool)
             .await
             .expect("connect ledger store");
         ledger

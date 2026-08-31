@@ -1241,7 +1241,10 @@ mod tests {
             &rehearsal_url,
             "ackplane_rehearsal_pass_source",
             |source_url| async move {
-                crate::ledger::LedgerStore::connect(&source_url)
+                let source_pool =
+                    crate::db_pool::build_pool(&source_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                        .expect("the ephemeral source database url should build a pool");
+                crate::ledger::LedgerStore::connect(&source_pool)
                     .await
                     .expect("migrating the ephemeral source database should succeed");
 
@@ -1307,7 +1310,10 @@ mod tests {
             &rehearsal_url,
             "ackplane_rehearsal_mismatch_source",
             |source_url| async move {
-                crate::ledger::LedgerStore::connect(&source_url)
+                let source_pool =
+                    crate::db_pool::build_pool(&source_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                        .expect("the ephemeral source database url should build a pool");
+                crate::ledger::LedgerStore::connect(&source_pool)
                     .await
                     .expect("migrating the ephemeral source database should succeed");
 

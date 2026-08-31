@@ -247,7 +247,12 @@ pub(super) mod tests {
         repository_id: &str,
         unique: &str,
     ) {
-        let mut ledger = LedgerStore::connect(database_url)
+        let ledger_pool = ackplane_server::db_pool::build_pool(
+            database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let envelope = EventEnvelope {
