@@ -20,7 +20,8 @@ impl KnowledgeStore {
         validate_reach(&request.reach_node_ids, request.reach_goal_id.as_deref())?;
         let knowledge_id = unique_knowledge_id();
         let confirmed_at = SystemTime::now();
-        self.client
+        let connection = self.connection().await?;
+        connection
             .execute(
                 "INSERT INTO knowledge \
                  (tenant_id, repository_id, knowledge_id, content, source_ref, recorded_by, reach_node_ids, reach_goal_id, half_life_hours, confirmed_at, lifecycle_state) \
@@ -41,7 +42,7 @@ impl KnowledgeStore {
             )
             .await?;
         if let Some((model, embedding)) = &request.embedding {
-            self.client
+            connection
                 .execute(
                     "INSERT INTO knowledge_embeddings \
                      (tenant_id, repository_id, knowledge_id, model, embedding) \

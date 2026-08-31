@@ -38,7 +38,8 @@ impl KnowledgeStore {
         }
         let reconfirmation_id = unique_reconfirmation_id();
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "WITH refreshed AS ( \
                     UPDATE knowledge \

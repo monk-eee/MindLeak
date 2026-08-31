@@ -44,10 +44,11 @@ impl KnowledgeStore {
         limit: i64,
     ) -> Result<RecallResult, KnowledgeStoreError> {
         let ranked_by_similarity = embedding.is_some();
+        let connection = self.connection().await?;
         let rows = match embedding {
             Some((model, query)) => {
                 let query = pgvector::Vector::from(query);
-                self.client
+                connection
                     .query(
                         &format!(
                             "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
@@ -71,7 +72,7 @@ impl KnowledgeStore {
                     .await?
             }
             None => {
-                self.client
+                connection
                     .query(
                         &format!(
                             "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
@@ -115,7 +116,8 @@ impl KnowledgeStore {
             .map(|cursor| cursor.knowledge_id.as_str())
             .unwrap_or_default();
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \
@@ -173,7 +175,8 @@ impl KnowledgeStore {
         limit: i64,
     ) -> Result<Vec<KnowledgeHistoryEntry>, KnowledgeStoreError> {
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "SELECT k.knowledge_id, k.content, k.source_ref, k.recorded_by, k.reach_node_ids, k.reach_goal_id, k.confirmed_at, \

@@ -100,7 +100,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let knowledge_store = match KnowledgeStore::connect(config.database_url()).await {
+            let knowledge_store = match KnowledgeStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(

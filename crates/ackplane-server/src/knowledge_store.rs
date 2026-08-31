@@ -14,7 +14,7 @@
 
 use std::time::SystemTime;
 
-use tokio_postgres::Client;
+use crate::db_pool::PgPool;
 
 mod activation;
 mod connection;
@@ -42,6 +42,10 @@ pub use supersession::{KnowledgeSupersession, SupersedeKnowledgeRequest};
 pub enum KnowledgeStoreError {
     #[error("knowledge database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("knowledge store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
+    #[error("knowledge signing key error: {0}")]
+    SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("half_life_hours must be greater than zero")]
     InvalidHalfLife,
     #[error("content must not be empty")]
@@ -205,7 +209,7 @@ pub struct RecallResult {
 }
 
 pub struct KnowledgeStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl KnowledgeStore {
@@ -218,7 +222,8 @@ impl KnowledgeStore {
         retired_by: &str,
     ) -> Result<bool, KnowledgeStoreError> {
         let updated = self
-            .client
+            .connection()
+            .await?
             .execute(
                 "UPDATE knowledge SET retired_at = now(), retired_reason = $4, retired_by = $5 \
                  WHERE tenant_id = $1 AND repository_id = $2 AND knowledge_id = $3 AND retired_at IS NULL",
@@ -253,8 +258,8 @@ pub(super) mod tests {
     }
 
     pub(in crate::knowledge_store) async fn store() -> Option<KnowledgeStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(KnowledgeStore::connect(&database_url).await.unwrap())
+        let pool = crate::test_support::test_pool()?;
+        Some(KnowledgeStore::connect(&pool).await.unwrap())
     }
 
     #[tokio::test]
@@ -341,7 +346,9 @@ pub(super) mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
-        let store = KnowledgeStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = KnowledgeStore::connect(&pool)
             .await
             .expect("connect knowledge store");
         let (tenant_id, repository_id) = unique_scope("future-confirmed");
@@ -906,7 +913,9 @@ pub(super) mod tests {
         };
         let (tenant_id, repository_id) = unique_scope("active-page");
         let migration = store
-            .client
+            .connection()
+            .await
+            .unwrap()
             .query_one(
                 "SELECT EXISTS (\
                      SELECT 1 FROM ackplane_schema_migrations WHERE migration_key = $1\
@@ -934,7 +943,9 @@ pub(super) mod tests {
             ("knowledge:retired", confirmed_at[0]),
         ] {
             store
-                .client
+                .connection()
+                .await
+                .unwrap()
                 .execute(
                     "INSERT INTO knowledge \
                      (tenant_id, repository_id, knowledge_id, content, source_ref, half_life_hours, confirmed_at) \
@@ -963,7 +974,9 @@ pub(super) mod tests {
             .expect("retire excluded fixture");
         let (other_tenant_id, _) = unique_scope("active-page-other");
         store
-            .client
+            .connection()
+            .await
+            .unwrap()
             .execute(
                 "INSERT INTO knowledge \
                  (tenant_id, repository_id, knowledge_id, content, source_ref, half_life_hours, confirmed_at) \
