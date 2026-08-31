@@ -28,6 +28,7 @@ pub(super) const EVENT_COLUMNS: &str = "delegation_id, stream_position, event_ki
     expected_prior_version, resulting_version, idempotency_key, payload_digest, schema_version, recorded_at";
 
 mod authorization;
+mod digest;
 mod model;
 mod read;
 mod replay;
@@ -43,9 +44,10 @@ pub use model::{
     DelegationRevocationRequest, DelegationStoreError,
 };
 
+use digest::{grant_payload_digest, revocation_payload_digest};
 use model::{
-    event_schema_version, grant_payload_digest, normalize_timestamp, projection_at_event,
-    revocation_payload_digest, row_to_event, validate_grant, validate_revocation,
+    event_schema_version, normalize_timestamp, projection_at_event, row_to_event, validate_grant,
+    validate_revocation,
 };
 use replay::{
     advance_stream, grant_event_from_transaction, idempotent_outcome, lock_stream,
