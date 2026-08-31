@@ -38,8 +38,8 @@ impl KnowledgeStore {
             return Err(KnowledgeStoreError::MissingAuthorizationBasis);
         }
         let activation_id = unique_activation_id();
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "WITH promoted AS ( \
                     UPDATE knowledge \
@@ -73,8 +73,7 @@ impl KnowledgeStore {
                 activated_at: row.get("activated_at"),
             });
         }
-        let current = self
-            .client
+        let current = connection
             .query_opt(
                 "SELECT lifecycle_state, retired_at FROM knowledge \
                  WHERE tenant_id = $1 AND repository_id = $2 AND knowledge_id = $3",

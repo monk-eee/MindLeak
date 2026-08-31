@@ -407,6 +407,17 @@ fn knowledge_store_error(error: KnowledgeStoreError) -> StatusCode {
             tracing::error!(%error, "Bridge Knowledge lifecycle query failed");
             StatusCode::INTERNAL_SERVER_ERROR
         }
+        // A pool-checkout timeout is a transient, retryable fault rather than
+        // a permanent one (ADR-0143 decision 5) -- 503 says so, mirroring
+        // `ClaimStore`'s own gRPC `unavailable` mapping.
+        KnowledgeStoreError::PoolExhausted(error) => {
+            tracing::error!(%error, "Bridge Knowledge store could not obtain a database connection");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        KnowledgeStoreError::SigningKey(error) => {
+            tracing::error!(%error, "Bridge Knowledge signing key resolution failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
         KnowledgeStoreError::InvalidHalfLife
         | KnowledgeStoreError::EmptyContent
         | KnowledgeStoreError::EmptyReconfirmationEvidence
