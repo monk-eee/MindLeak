@@ -52,7 +52,12 @@ async fn start_sync_server(database_url: &str) -> TestServer {
     let supervisors = SupervisorStore::connect(database_url)
         .await
         .expect("the gated test database should accept supervisor migrations");
-    let directives = DirectiveStore::connect(database_url)
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let directives = DirectiveStore::connect(&db_pool)
         .await
         .expect("the gated test database should accept directive migrations");
 
@@ -440,7 +445,12 @@ async fn a_directive_that_expired_while_disconnected_is_receipted_expired() {
 
     // Issued with a short window, then the connection drops before it can be
     // delivered.
-    let mut directives = DirectiveStore::connect(&database_url)
+    let directive_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let directives = DirectiveStore::connect(&directive_pool)
         .await
         .expect("the directive store should connect");
     directives
