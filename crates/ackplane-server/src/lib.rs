@@ -69,6 +69,7 @@ pub mod telemetry_signature;
 pub mod telemetry_store;
 #[cfg(test)]
 mod test_support;
+mod wire_format;
 pub mod work_command_store;
 pub mod work_command_vocabulary;
 pub mod work_query_service;

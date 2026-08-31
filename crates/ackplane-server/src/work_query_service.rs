@@ -183,8 +183,7 @@ fn parse_state(raw: &str) -> Option<WorkTaskState> {
 }
 
 fn rfc3339(timestamp: SystemTime) -> Result<String, String> {
-    time::OffsetDateTime::from(timestamp)
-        .format(&time::format_description::well_known::Rfc3339)
+    crate::wire_format::rfc3339(timestamp)
         .map_err(|error| format!("could not format a Work timestamp: {error}"))
 }
 

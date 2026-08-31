@@ -79,9 +79,9 @@ fn use_request(
 }
 
 async fn store() -> Option<DelegationStore> {
-    let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+    let pool = crate::test_support::test_pool()?;
     Some(
-        DelegationStore::connect(&database_url)
+        DelegationStore::connect(&pool)
             .await
             .expect("the test database should accept delegation connections"),
     )
@@ -122,7 +122,7 @@ async fn wait_for_projection_lock_waiters(monitor: &Client) {
 
 #[tokio::test]
 async fn authorization_records_an_immutable_receipt_and_replays_only_identical_input() {
-    let Some(mut store) = store().await else {
+    let Some(store) = store().await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -193,7 +193,7 @@ async fn authorization_records_an_immutable_receipt_and_replays_only_identical_i
 // unique-key error instead of replaying the other request's immutable receipt.
 #[tokio::test]
 async fn concurrent_identical_authorization_replays_after_the_projection_lock() {
-    let Some(mut store) = store().await else {
+    let Some(store) = store().await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -239,10 +239,16 @@ async fn concurrent_identical_authorization_replays_after_the_projection_lock() 
         .await
         .expect("lock delegation projection");
 
-    let mut first = DelegationStore::connect(&database_url)
+    // Both racers share ONE pool deliberately. The premise this test rests on is
+    // that two authorizations hold two identifiably separate connections for the
+    // duration of their transactions -- so serving them from the same pool is
+    // the case that has to keep working, not one to route around (ADR-0143
+    // decision 4).
+    let racers = crate::test_support::gated_test_pool();
+    let first = DelegationStore::connect(&racers)
         .await
         .expect("open first authorization connection");
-    let mut second = DelegationStore::connect(&database_url)
+    let second = DelegationStore::connect(&racers)
         .await
         .expect("open second authorization connection");
     let now = SystemTime::now();
@@ -286,7 +292,7 @@ async fn concurrent_identical_authorization_replays_after_the_projection_lock() 
 
 #[tokio::test]
 async fn authorization_refuses_session_scope_and_basis_mismatches_without_consuming_limits() {
-    let Some(mut store) = store().await else {
+    let Some(store) = store().await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -465,7 +471,7 @@ async fn authorization_refuses_session_scope_and_basis_mismatches_without_consum
 
 #[tokio::test]
 async fn revoked_or_not_yet_effective_delegations_are_safely_refused() {
-    let Some(mut store) = store().await else {
+    let Some(store) = store().await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };

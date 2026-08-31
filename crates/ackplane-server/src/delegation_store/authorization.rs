@@ -23,11 +23,16 @@ impl DelegationStore {
     /// receipt. The caller supplies the authoritative server time, never a
     /// browser or agent clock.
     pub async fn authorize_use(
-        &mut self,
+        &self,
         request: DelegationUseRequest,
         now: std::time::SystemTime,
     ) -> Result<DelegationUseOutcome, DelegationUseError> {
-        write::authorize_use(&mut self.client, request, now).await
+        // One connection for the whole held transaction (ADR-0143 decision 4):
+        // the `FOR UPDATE` lock on the projection row is session-scoped, and the
+        // concurrent-replay test depends on a waiter blocking against a stable
+        // connection identity for as long as the holder's transaction is open.
+        let mut connection = self.pool.get().await?;
+        write::authorize_use(&mut connection, request, now).await
     }
 
     /// Lists one delegation's use decisions in durable receipt order. The
@@ -40,8 +45,9 @@ impl DelegationStore {
         after: Option<&DelegationUseReceiptCursor>,
         requested_limit: i64,
     ) -> Result<DelegationUseReceiptPage, DelegationUseError> {
+        let connection = self.pool.get().await?;
         read::list_use_receipts(
-            &self.client,
+            &connection,
             tenant_id,
             repository_id,
             delegation_id,
