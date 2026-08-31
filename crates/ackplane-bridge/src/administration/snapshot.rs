@@ -81,7 +81,7 @@ pub(super) async fn request_platform_snapshot(
     };
 
     let outcome = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .request_snapshot(&new_request, now)
             .await
@@ -91,7 +91,7 @@ pub(super) async fn request_platform_snapshot(
     // A replay of a request that already has a receipt must return that
     // receipt again, not run `pg_dump` a second time for the same identity.
     let existing_receipt = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .snapshot_receipt_for_request(&outcome.request.request_id)
             .await
@@ -149,7 +149,7 @@ pub(super) async fn execute_and_record_snapshot(
             }
         };
 
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     administration
         .record_snapshot_receipt(&new_receipt, now)
         .await
@@ -160,7 +160,7 @@ pub(super) async fn platform_snapshot_receipt(
     State(state): State<AdministrationApiState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<SnapshotReceiptResponse>, StatusCode> {
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     // The request itself names its `requested_by` principal; a receipt is
     // only disclosed to the tenant token that made the request, not to any
     // caller who can guess or enumerate a request id.

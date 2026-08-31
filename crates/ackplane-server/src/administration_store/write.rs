@@ -21,13 +21,14 @@ impl AdministrationStore {
     /// (ADR-0119 decision 2, ADR-0128 decision 2: the policy half of the
     /// authorization basis a verified principal alone never satisfies).
     pub async fn adopt_policy(
-        &mut self,
+        &self,
         request: &PolicyAdoptionRequest,
     ) -> Result<PolicyWriteOutcome, AdministrationStoreError> {
         validate_policy_request(request)?;
         let assigned_id = assigned_policy_id(request);
         let digest = policy_digest(request)?;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         if let Some(policy) = existing_policy_by_id(&transaction, &assigned_id).await? {
             let outcome = replay_policy_or_conflict(policy, &digest)?;
@@ -78,13 +79,13 @@ impl AdministrationStore {
     /// every future privileged operation) must find before it does anything
     /// else (ADR-0119 decision 2).
     pub async fn active_policy(
-        &mut self,
+        &self,
         operation: AdministrationOperation,
         scope: &AdministrationScope,
         now: SystemTime,
     ) -> Result<Option<AdministrationPolicy>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_policies \
                  WHERE operation = $1 AND scope_kind = $2 \
@@ -105,14 +106,15 @@ impl AdministrationStore {
     /// Records a Snapshot request, refusing one with no active policy
     /// (ADR-0119 decision 2), or returns its exact prior retry.
     pub async fn request_snapshot(
-        &mut self,
+        &self,
         request: &NewSnapshotRequest,
         now: SystemTime,
     ) -> Result<SnapshotRequestOutcome, AdministrationStoreError> {
         validate_snapshot_request(request)?;
         let assigned_id = assigned_request_id(request);
         let digest = snapshot_request_digest(request)?;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         if let Some(existing) = existing_request_by_id(&transaction, &assigned_id).await? {
             let outcome = replay_request_or_conflict(existing, &digest)?;
@@ -180,14 +182,15 @@ impl AdministrationStore {
     /// outcome (ADR-0119 decision 3: a web response never claims completion
     /// without a receipt).
     pub async fn record_snapshot_receipt(
-        &mut self,
+        &self,
         receipt: &NewSnapshotReceipt,
         now: SystemTime,
     ) -> Result<SnapshotReceipt, AdministrationStoreError> {
         validate_snapshot_receipt(receipt, now)?;
         let digest = snapshot_receipt_digest(receipt)?;
         let assigned_id = assigned_receipt_id(receipt);
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         ensure_request_exists(&transaction, &receipt.request_id).await?;
         if let Some(existing) = existing_receipt_by_id(&transaction, &assigned_id).await? {
@@ -233,11 +236,11 @@ impl AdministrationStore {
 
     /// The receipt for a given request, if one has been recorded yet.
     pub async fn snapshot_receipt_for_request(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<SnapshotReceipt>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_snapshot_receipts WHERE request_id = $1",
                 &[&request_id],
@@ -250,11 +253,11 @@ impl AdministrationStore {
     /// `requested_by` before disclosing its receipt to a different tenant
     /// token than the one that made it.
     pub async fn snapshot_request(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<SnapshotRequest>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_snapshot_requests WHERE request_id = $1",
                 &[&request_id],
