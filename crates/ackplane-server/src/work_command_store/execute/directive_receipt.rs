@@ -26,11 +26,12 @@ impl WorkCommandStore {
     /// Prompt, or Terminate directive, for instance -- and the caller's own
     /// `DirectiveStore::record_receipt` remains the sole durable record.
     pub async fn apply_directive_receipt(
-        &mut self,
+        &self,
         receipt: &v1::DirectiveReceipt,
         now: SystemTime,
     ) -> Result<Option<WorkCommandReceiptWriteOutcome>, WorkCommandStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let outcome = apply_in_transaction(&transaction, receipt, now).await?;
         transaction.commit().await?;
         Ok(outcome)

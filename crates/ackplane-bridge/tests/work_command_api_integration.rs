@@ -26,7 +26,6 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 fn unique_id(prefix: &str) -> String {
@@ -109,11 +108,16 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
-    let commands = Arc::new(Mutex::new(
-        WorkCommandService::connect(database_url)
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let commands = Arc::new(
+        WorkCommandService::connect(&db_pool)
             .await
             .expect("connect Work command service"),
-    ));
+    );
     let fleet = Arc::new(
         FleetStore::connect(database_url)
             .await
