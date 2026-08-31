@@ -52,6 +52,18 @@ pub struct SnapshotProviderConfig {
     /// unset, in which case [`rehearse_recovery`] refuses outright rather
     /// than inventing a scratch target.
     pub rehearsal_database_url: Option<String>,
+    /// ADR-0145 decision 6: whether an operator has attested that this
+    /// deployment hosts exactly one tenant. Defaults to `false`, so production
+    /// recovery execution is refused on every deployment until it is set
+    /// explicitly.
+    ///
+    /// Deliberately never inferred from the number of tenant rows observed. A
+    /// platform that happens to hold one tenant today can onboard a second
+    /// tomorrow, and a restore that was safe when it was configured would
+    /// silently stop being safe without anything changing in this file. This
+    /// is a durable operator decision about the deployment's shape, not a
+    /// runtime headcount.
+    pub single_tenant_attested: bool,
 }
 
 impl SnapshotProviderConfig {
@@ -60,6 +72,7 @@ impl SnapshotProviderConfig {
     pub const PG_DUMP_PATH_ENV: &'static str = "ACKPLANE_PG_DUMP_PATH";
     pub const PG_RESTORE_PATH_ENV: &'static str = "ACKPLANE_PG_RESTORE_PATH";
     pub const REHEARSAL_DATABASE_URL_ENV: &'static str = "ACKPLANE_REHEARSAL_DATABASE_URL";
+    pub const SINGLE_TENANT_ATTESTED_ENV: &'static str = "ACKPLANE_SINGLE_TENANT_ATTESTED";
     const DEFAULT_PG_DUMP_PATH: &'static str = "pg_dump";
     const DEFAULT_PG_RESTORE_PATH: &'static str = "pg_restore";
 
@@ -82,6 +95,14 @@ impl SnapshotProviderConfig {
         let pg_restore_path = value(Self::PG_RESTORE_PATH_ENV)
             .unwrap_or_else(|| Self::DEFAULT_PG_RESTORE_PATH.to_string());
         let rehearsal_database_url = value(Self::REHEARSAL_DATABASE_URL_ENV);
+        // Only an exact, unambiguous opt-in attests. Anything else -- unset,
+        // "yes", "1", "TRUE ", a typo -- leaves it false, because the failure
+        // direction matters: reading a malformed value as an attestation would
+        // enable a whole-database restore on a platform nobody confirmed is
+        // single-tenant, while reading it as absent only refuses a capability
+        // the operator can re-enable by fixing the value.
+        let single_tenant_attested = value(Self::SINGLE_TENANT_ATTESTED_ENV)
+            .is_some_and(|raw| raw.eq_ignore_ascii_case("true"));
         Some(Self {
             database_url,
             snapshot_dir,
@@ -89,7 +110,23 @@ impl SnapshotProviderConfig {
             pg_dump_path,
             pg_restore_path,
             rehearsal_database_url,
+            single_tenant_attested,
         })
+    }
+
+    /// The gate production recovery execution must pass (ADR-0145 decision 6).
+    ///
+    /// Separate from executing anything, and checked before any destructive
+    /// step, so the refusal is a decision about the deployment rather than a
+    /// failure discovered partway through a restore. Slice 4's execution path
+    /// calls this first; rehearsal deliberately does not, because a rehearsal
+    /// restores into a scratch database and is useful on every deployment
+    /// shape (decision 1).
+    pub fn ensure_recovery_execution_permitted(&self) -> Result<(), SnapshotProviderError> {
+        if self.single_tenant_attested {
+            return Ok(());
+        }
+        Err(SnapshotProviderError::MultiTenantRecoveryUnavailable)
     }
 }
 
@@ -171,6 +208,19 @@ pub enum SnapshotProviderError {
     RehearsalDatabaseIsAuthoritative,
     #[error("could not provision the scratch rehearsal database: {0}")]
     RehearsalProvisionFailed(String),
+    /// ADR-0145 decision 6. Every deployment hits this until an operator sets
+    /// `ACKPLANE_SINGLE_TENANT_ATTESTED=true`, by design: a safe multi-tenant
+    /// restore is a distinct, larger capability (restoring one tenant's rows
+    /// out of a whole-database dump) that ADR-0145 does not design, so
+    /// execution ships only for the shape where "restore everything" and
+    /// "restore this tenant" are the same operation.
+    #[error(
+        "recovery execution is refused: this deployment is not attested single-tenant. \
+         Restoring a platform Snapshot replaces the whole database, so on a multi-tenant \
+         deployment it would overwrite every other tenant's data. Set \
+         ACKPLANE_SINGLE_TENANT_ATTESTED=true only if this deployment hosts exactly one tenant"
+    )]
+    MultiTenantRecoveryUnavailable,
 }
 
 impl From<io::Error> for SnapshotProviderError {
@@ -851,6 +901,115 @@ mod tests {
         assert_eq!(config.pg_dump_path, "pg_dump");
     }
 
+    /// Regression: the attestation must default to refusing.
+    ///
+    /// THE BUG THIS PREVENTS. Restoring a platform Snapshot replaces the whole
+    /// database, so on a multi-tenant deployment it overwrites every other
+    /// tenant's data. ADR-0145 decision 6 therefore ships execution only where
+    /// an operator has explicitly attested the deployment hosts one tenant. A
+    /// field defaulting to `true`, or inferred from anything, would enable the
+    /// destructive path on every deployment that never thought about it.
+    #[test]
+    fn a_deployment_that_never_attested_refuses_recovery_execution() {
+        let config = SnapshotProviderConfig::resolve(
+            |key| {
+                (key == SnapshotProviderConfig::SNAPSHOT_DIR_ENV).then(|| "/snapshots".to_string())
+            },
+            "postgresql://x".to_string(),
+        )
+        .expect("a snapshot dir alone should resolve");
+
+        assert!(
+            !config.single_tenant_attested,
+            "an unset attestation must default to false"
+        );
+        assert!(matches!(
+            config.ensure_recovery_execution_permitted(),
+            Err(SnapshotProviderError::MultiTenantRecoveryUnavailable)
+        ));
+    }
+
+    #[test]
+    fn an_explicit_attestation_permits_recovery_execution() {
+        let config = SnapshotProviderConfig::resolve(
+            |key| match key {
+                SnapshotProviderConfig::SNAPSHOT_DIR_ENV => Some("/snapshots".to_string()),
+                SnapshotProviderConfig::SINGLE_TENANT_ATTESTED_ENV => Some("true".to_string()),
+                _ => None,
+            },
+            "postgresql://x".to_string(),
+        )
+        .expect("a snapshot dir alone should resolve");
+
+        assert!(config.single_tenant_attested);
+        assert!(config.ensure_recovery_execution_permitted().is_ok());
+    }
+
+    /// Regression: only an exact opt-in attests.
+    ///
+    /// THE BUG THIS PREVENTS. The tempting implementation treats "is this
+    /// variable set to something truthy?" generously — `"1"`, `"yes"`, `"on"`.
+    /// Every one of those would let a typo, or a shell that exports `"0"` as a
+    /// non-empty string, enable a whole-database restore on a platform nobody
+    /// confirmed is single-tenant. The failure directions are not symmetric:
+    /// reading a malformed value as absent only refuses a capability the
+    /// operator can re-enable, while reading it as an attestation destroys
+    /// other tenants' data.
+    #[test]
+    fn a_value_that_is_not_exactly_true_does_not_attest() {
+        for raw in ["", " ", "1", "yes", "on", "false", "0", "trueish", "ture"] {
+            let config = SnapshotProviderConfig::resolve(
+                |key| match key {
+                    SnapshotProviderConfig::SNAPSHOT_DIR_ENV => Some("/snapshots".to_string()),
+                    SnapshotProviderConfig::SINGLE_TENANT_ATTESTED_ENV => Some(raw.to_string()),
+                    _ => None,
+                },
+                "postgresql://x".to_string(),
+            )
+            .expect("a snapshot dir alone should resolve");
+
+            assert!(
+                !config.single_tenant_attested,
+                "{raw:?} must not be read as an attestation"
+            );
+            assert!(config.ensure_recovery_execution_permitted().is_err());
+        }
+    }
+
+    /// Case and surrounding whitespace are the operator's, not a second
+    /// setting: `TRUE` and ` true ` are the same explicit answer.
+    #[test]
+    fn an_attestation_is_case_and_whitespace_insensitive() {
+        for raw in ["true", "TRUE", "True", "  true  "] {
+            let config = SnapshotProviderConfig::resolve(
+                |key| match key {
+                    SnapshotProviderConfig::SNAPSHOT_DIR_ENV => Some("/snapshots".to_string()),
+                    SnapshotProviderConfig::SINGLE_TENANT_ATTESTED_ENV => Some(raw.to_string()),
+                    _ => None,
+                },
+                "postgresql://x".to_string(),
+            )
+            .expect("a snapshot dir alone should resolve");
+
+            assert!(config.single_tenant_attested, "{raw:?} must attest");
+        }
+    }
+
+    /// The refusal has to tell an operator what to do about it. A typed error
+    /// nobody can act on just moves the dead end.
+    #[test]
+    fn the_refusal_names_the_setting_that_would_permit_it() {
+        let message = SnapshotProviderError::MultiTenantRecoveryUnavailable.to_string();
+        assert!(
+            message.contains("ACKPLANE_SINGLE_TENANT_ATTESTED"),
+            "the refusal must name the setting, got {message}"
+        );
+        assert!(
+            message.contains("exactly one tenant"),
+            "the refusal must say when setting it is safe, got {message}"
+        );
+    }
+
     #[tokio::test]
     async fn load_or_generate_key_reuses_an_existing_key_on_later_calls() {
         let dir = temp_dir("ackplane-snapshot-key-test");
@@ -894,6 +1053,7 @@ mod tests {
             pg_dump_path: "pg_dump".to_string(),
             pg_restore_path: "pg_restore".to_string(),
             rehearsal_database_url: None,
+            single_tenant_attested: false,
         };
 
         let artifact = create_platform_snapshot(&config, "test-request")
@@ -955,6 +1115,7 @@ mod tests {
             pg_dump_path: "pg_dump".to_string(),
             pg_restore_path: "pg_restore".to_string(),
             rehearsal_database_url: None,
+            single_tenant_attested: false,
         };
 
         let report = inspect_snapshot_artifact(
@@ -982,6 +1143,7 @@ mod tests {
             pg_dump_path: "pg_dump".to_string(),
             pg_restore_path: "pg_restore".to_string(),
             rehearsal_database_url,
+            single_tenant_attested: false,
         }
     }
 
