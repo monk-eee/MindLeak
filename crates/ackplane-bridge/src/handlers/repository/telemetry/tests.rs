@@ -148,7 +148,7 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
                 .expect("connect Projector"),
         ),
         readiness: Arc::new(
-            ReadinessStore::connect(database_url)
+            ReadinessStore::connect(&db_pool)
                 .await
                 .expect("connect Readiness store"),
         ),
