@@ -214,6 +214,16 @@ fn snapshot_error_reason(error: &SnapshotProviderError) -> String {
         SnapshotProviderError::RehearsalProvisionFailed(_) => {
             "the recovery rehearsal scratch database could not be provisioned.".to_string()
         }
+        // ADR-0145 slice 3: also not reachable from this route -- recovery
+        // execution has no Bridge surface until slice 4 -- but unlike the
+        // rehearsal arms above, this one names the operator action, because a
+        // refusal an operator can resolve is worth nothing if the message does
+        // not say how.
+        SnapshotProviderError::MultiTenantRecoveryUnavailable => {
+            "recovery execution is refused: this deployment is not attested single-tenant. \
+             Set ACKPLANE_SINGLE_TENANT_ATTESTED=true only if it hosts exactly one tenant."
+                .to_string()
+        }
     }
 }
 
