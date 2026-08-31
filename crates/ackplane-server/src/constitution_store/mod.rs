@@ -27,6 +27,8 @@ const NONCE_MIGRATION: &str =
 const PUBLICATION_HISTORY_MIGRATION: &str =
     include_str!("../../migrations/0026_constitution_publication_history.sql");
 const PROPOSALS_MIGRATION: &str = include_str!("../../migrations/0038_constitution_proposals.sql");
+const DISPLAY_LABEL_MIGRATION: &str =
+    include_str!("../../migrations/0059_design_constitution_display_label.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConstitutionStoreError {
@@ -126,6 +128,12 @@ impl ConstitutionStore {
             &mut client,
             crate::migration_lock::key::CONSTITUTION_PROPOSALS,
             PROPOSALS_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::DESIGN_CONSTITUTION_DISPLAY_LABEL,
+            DISPLAY_LABEL_MIGRATION,
         )
         .await?;
         Ok(Self { client })

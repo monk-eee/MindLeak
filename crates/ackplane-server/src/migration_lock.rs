@@ -175,6 +175,11 @@ pub(crate) mod key {
     /// shared development database (`ackplane_test`) as well as committed
     /// source: no live discrepancy above 57.
     pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION: i64 = 58;
+    /// `migrations/0059_design_constitution_display_label.sql` (ADR-0142
+    /// decision 4). `migration-audit --next` selected 59 from committed
+    /// source; no live database was reachable to check for a higher
+    /// applied key.
+    pub(crate) const DESIGN_CONSTITUTION_DISPLAY_LABEL: i64 = 59;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
