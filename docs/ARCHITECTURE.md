@@ -786,7 +786,26 @@ state needing the same custody controls as a full-database backup.
 Administration policy adoption (`administration/policy.rs`) and the platform
 Snapshot request/receipt flow (`administration/snapshot.rs`) are their own
 files for the same module-length reason Purge/Recovery/Export already are.
-ADR-0111's claim recovery is unchanged.
+ADR-0111's claim recovery is unchanged. ADR-0145 decisions 4-5 add a fifth
+privileged class inside `administration/recovery.rs`: production
+recovery-execution preview/confirmation, requiring its own adopted
+`RecoveryExecution` policy and always platform-scoped (never per-tenant or
+per-repository, per decision 6) -- there is no `:repository_id` path segment
+for these routes, unlike Purge. It reuses ADR-0134's dual-signing-key
+Lifecycle-purge pattern verbatim (`RecoveryExecutionOperation`, a distinct
+domain separator so a purge-confirming key's signature can never verify for a
+recovery-execution operation or the reverse). The preview's explicit impact
+plan (decision 5) names the artifact and its digest, the passing rehearsal
+report relied on, and triggers a fresh platform Snapshot as its own "one
+before" safety point -- an ordinary Snapshot request/receipt, just captured as
+part of preview construction rather than a separate caller round trip; its
+failure fails the preview outright, before any recovery-execution request row
+exists. Confirming here never runs `pg_restore`: it only records that a
+second, distinct enrolled key authorized the request (`Confirmed`/`Refused`/
+`Expired`), which is a strictly narrower outcome vocabulary than Purge's own
+receipt -- production execution itself, gated on rehearsal freshness and
+`single_tenant_attested`, is separate, later work this ADR names but does not
+implement yet.
 
 | Route | Serves |
 |---|---|
@@ -832,6 +851,9 @@ ADR-0111's claim recovery is unchanged.
 | `GET /api/v1/administration/snapshots/:request_id/inspect` | The most recently recorded inspection report for a Snapshot request, if any, tenant-scoped like every other Snapshot/purge read. |
 | `POST /api/v1/repositories/:repository_id/administration/exports` | ADR-0119 decision 5: requests, then synchronously executes, a bounded/redacted Export of `telemetry_events` -- refuses (`409`, no request row created) without an active tenant-scoped `Export` policy, otherwise queries at most `max_records` rows, redacts every internal identifier, and records a `succeeded`/`failed` receipt naming its schema version, record count, and exactly which fields were redacted. Idempotent like Snapshot: a replayed request returns the original receipt rather than re-running the query. |
 | `GET /api/v1/repositories/:repository_id/administration/exports/:request_id` | The receipt recorded for one prior Export request, if any, tenant- and repository-scoped like every other Snapshot/purge/export read. |
+| `POST /api/v1/administration/recovery-executions` | ADR-0145 decisions 4-5: previews a production recovery execution -- refuses (`409`, no request row created) without an active platform-scoped `RecoveryExecution` policy, an artifact whose declared digest matches its own recorded Snapshot receipt, or a named rehearsal report that actually passed for that exact digest. Triggers a fresh platform Snapshot as its own pre-restore safety point as part of preview construction; that Snapshot's failure fails this preview outright, before any recovery-execution request row exists. Always platform-scoped -- there is no `:repository_id` path segment, unlike Purge. |
+| `POST /api/v1/administration/recovery-executions/:request_id/confirm` | Authorizes (never executes) a previously previewed recovery execution: the confirming enrolled key must be distinct from the one that created the preview (ADR-0134's pattern, reused verbatim). Records `confirmed`/`refused`/`expired` only -- `pg_restore` against production is separate, later work this ADR names but does not implement yet. Tenant-scoped for disclosure even though the operation itself is platform-scoped. |
+| `GET /api/v1/administration/recovery-executions/:request_id` | The recovery-execution request recorded for one prior preview, if any, under the same tenant-disclosure rule as confirm. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
 Neither Ackplane nor Bridge speak MCP today — the former is gRPC-only, the

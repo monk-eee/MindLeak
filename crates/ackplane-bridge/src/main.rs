@@ -138,7 +138,7 @@ async fn main() {
             return;
         }
     };
-    let knowledge_store = match KnowledgeStore::connect(config.database_url()).await {
+    let knowledge_store = match KnowledgeStore::connect(&db_pool).await {
         Ok(knowledge) => Arc::new(knowledge),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane knowledge domain: {error}");

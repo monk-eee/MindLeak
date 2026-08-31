@@ -91,6 +91,8 @@ const CONTEXT_PACKET_SUMMARY_RS: &str =
 const ADMINISTRATION_RS: &str = include_str!("../src/administration/mod.rs");
 const ADMINISTRATION_PURGE_RS: &str = include_str!("../src/administration/purge.rs");
 const ADMINISTRATION_RECOVERY_RS: &str = include_str!("../src/administration/recovery.rs");
+const ADMINISTRATION_RECOVERY_EXECUTION_RS: &str =
+    include_str!("../src/administration/recovery_execution.rs");
 const ADMINISTRATION_EXPORT_RS: &str = include_str!("../src/administration/export.rs");
 const ADMINISTRATION_POLICY_RS: &str = include_str!("../src/administration/policy.rs");
 const ADMINISTRATION_SNAPSHOT_RS: &str = include_str!("../src/administration/snapshot.rs");
@@ -184,6 +186,7 @@ const HANDLER_SOURCES: &[&str] = &[
     ADMINISTRATION_RS,
     ADMINISTRATION_PURGE_RS,
     ADMINISTRATION_RECOVERY_RS,
+    ADMINISTRATION_RECOVERY_EXECUTION_RS,
     ADMINISTRATION_EXPORT_RS,
     ADMINISTRATION_POLICY_RS,
     ADMINISTRATION_SNAPSHOT_RS,
