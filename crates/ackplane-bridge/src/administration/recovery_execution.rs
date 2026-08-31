@@ -168,7 +168,7 @@ pub(super) async fn preview_recovery_execution(
     // captured.
     let snapshot_request = {
         use ackplane_server::administration_store::{AdministrationScope, NewSnapshotRequest};
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .request_snapshot(
                 &NewSnapshotRequest {
@@ -183,7 +183,7 @@ pub(super) async fn preview_recovery_execution(
             .map_err(administration_error_status)?
     };
     let existing_safety_receipt = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .snapshot_receipt_for_request(&snapshot_request.request.request_id)
             .await
@@ -228,7 +228,7 @@ pub(super) async fn preview_recovery_execution(
         confirmation_window,
         idempotency_key,
     };
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let outcome = administration
         .preview_recovery_execution(&preview_request, now)
         .await
@@ -283,7 +283,7 @@ pub(super) async fn confirm_recovery_execution(
     // made it, exactly like Lifecycle purge, even though the operation
     // itself is always platform-scoped (ADR-0145 decision 6).
     {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         let request = administration
             .recovery_execution_request(&request_id)
             .await
@@ -303,7 +303,7 @@ pub(super) async fn confirm_recovery_execution(
         now,
     )
     .await?;
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let confirmation = administration
         .confirm_recovery_execution(
             &request_id,
@@ -321,7 +321,7 @@ pub(super) async fn recovery_execution_status(
     State(state): State<AdministrationApiState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<RecoveryExecutionPreviewResponse>, StatusCode> {
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let request = administration
         .recovery_execution_request(&request_id)
         .await

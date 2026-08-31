@@ -61,7 +61,7 @@ pub(super) async fn inspect_snapshot(
     };
 
     let (artifact_path, manifest_digest) = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         // The request itself names its `requested_by` principal; only the
         // tenant that made it may inspect its artifact, mirroring every
         // other Snapshot/purge ownership check in this module.
@@ -96,7 +96,7 @@ pub(super) async fn inspect_snapshot(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let inspection = administration
         .record_recovery_inspection(
             &NewRecoveryInspection {
@@ -120,7 +120,7 @@ pub(super) async fn latest_snapshot_inspection(
     State(state): State<AdministrationApiState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<RecoveryInspectionResponse>, StatusCode> {
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let request = administration
         .snapshot_request(&request_id)
         .await

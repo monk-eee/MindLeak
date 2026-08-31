@@ -19,14 +19,14 @@ impl AdministrationStore {
     /// and the caller (the Bridge route) is expected to have already checked
     /// that before running the inspection this records.
     pub async fn record_recovery_inspection(
-        &mut self,
+        &self,
         inspection: &NewRecoveryInspection,
         now: SystemTime,
     ) -> Result<RecoveryInspection, AdministrationStoreError> {
         validate(inspection, now)?;
         let inspection_id = assigned_inspection_id(inspection)?;
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_one(
                 "INSERT INTO administration_recovery_inspections (inspection_id, request_id, \
                      requested_by, integrity_verified, decryption_verified, archive_valid, \
@@ -51,11 +51,11 @@ impl AdministrationStore {
 
     /// The most recently recorded inspection for a request, if any.
     pub async fn latest_recovery_inspection(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<RecoveryInspection>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_recovery_inspections \
                  WHERE request_id = $1 ORDER BY recorded_at DESC LIMIT 1",
@@ -69,14 +69,14 @@ impl AdministrationStore {
     /// named Snapshot request to already exist (the foreign key enforces
     /// this), exactly like `record_recovery_inspection`.
     pub async fn record_recovery_rehearsal(
-        &mut self,
+        &self,
         rehearsal: &NewRecoveryRehearsal,
         now: SystemTime,
     ) -> Result<RecoveryRehearsal, AdministrationStoreError> {
         validate_rehearsal(rehearsal, now)?;
         let rehearsal_id = assigned_rehearsal_id(rehearsal)?;
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_one(
                 "INSERT INTO administration_recovery_rehearsals (rehearsal_id, request_id, \
                      requested_by, manifest_digest, restore_duration_ms, \
@@ -109,11 +109,11 @@ impl AdministrationStore {
     /// a different artifact, or a failed rehearsal of this one, must not
     /// satisfy a later execution's freshness requirement.
     pub async fn latest_passing_recovery_rehearsal(
-        &mut self,
+        &self,
         manifest_digest: &[u8],
     ) -> Result<Option<RecoveryRehearsal>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_recovery_rehearsals \
                  WHERE manifest_digest = $1 AND passed = true \
@@ -131,11 +131,11 @@ impl AdministrationStore {
     /// rehearsal of that digest exists, which `latest_passing_recovery_rehearsal`
     /// alone would not distinguish from a caller naming an unrelated report.
     pub async fn recovery_rehearsal(
-        &mut self,
+        &self,
         rehearsal_id: &str,
     ) -> Result<Option<RecoveryRehearsal>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_recovery_rehearsals WHERE rehearsal_id = $1",
                 &[&rehearsal_id],

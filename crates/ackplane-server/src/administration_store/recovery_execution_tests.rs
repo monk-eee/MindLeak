@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 use super::*;
 use crate::test_support::unique_id;
 
-fn database_url() -> Option<String> {
-    std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
+fn pool() -> Option<crate::db_pool::PgPool> {
+    crate::test_support::test_pool()
 }
 
 fn snapshot_policy_request(adopted_by: &str, suffix: &str) -> PolicyAdoptionRequest {
@@ -40,7 +40,7 @@ fn recovery_policy_request(adopted_by: &str, suffix: &str) -> PolicyAdoptionRequ
 /// distinct per fixture (`fixture_digest`) so the preview's own
 /// cross-referenced digest checks have something meaningful to distinguish.
 async fn succeeded_snapshot_receipt(
-    store: &mut AdministrationStore,
+    store: &AdministrationStore,
     snapshot_policy_id: &str,
     suffix: &str,
     label: &str,
@@ -83,7 +83,7 @@ fn fixture_digest(seed: u8) -> Vec<u8> {
 }
 
 async fn passing_rehearsal(
-    store: &mut AdministrationStore,
+    store: &AdministrationStore,
     artifact_request_id: &str,
     suffix: &str,
     digest: Vec<u8>,
@@ -138,12 +138,12 @@ fn preview_request(
 
 #[tokio::test]
 async fn a_preview_with_no_active_recovery_policy_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-execution-no-policy");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -155,7 +155,7 @@ async fn a_preview_with_no_active_recovery_policy_is_refused() {
 
     let digest = fixture_digest(1);
     let artifact = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "artifact",
@@ -163,15 +163,14 @@ async fn a_preview_with_no_active_recovery_policy_is_refused() {
     )
     .await;
     let safety = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "safety",
         fixture_digest(2),
     )
     .await;
-    let rehearsal =
-        passing_rehearsal(&mut store, &artifact.request_id, &suffix, digest.clone()).await;
+    let rehearsal = passing_rehearsal(&store, &artifact.request_id, &suffix, digest.clone()).await;
 
     let result = store
         .preview_recovery_execution(
@@ -194,12 +193,12 @@ async fn a_preview_with_no_active_recovery_policy_is_refused() {
 
 #[tokio::test]
 async fn a_preview_whose_declared_digest_does_not_match_the_artifacts_own_receipt_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-execution-digest-mismatch");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -216,7 +215,7 @@ async fn a_preview_whose_declared_digest_does_not_match_the_artifacts_own_receip
         .policy;
     let real_digest = fixture_digest(3);
     let artifact = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "artifact",
@@ -224,20 +223,15 @@ async fn a_preview_whose_declared_digest_does_not_match_the_artifacts_own_receip
     )
     .await;
     let safety = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "safety",
         fixture_digest(4),
     )
     .await;
-    let rehearsal = passing_rehearsal(
-        &mut store,
-        &artifact.request_id,
-        &suffix,
-        real_digest.clone(),
-    )
-    .await;
+    let rehearsal =
+        passing_rehearsal(&store, &artifact.request_id, &suffix, real_digest.clone()).await;
 
     let declared_digest = fixture_digest(9); // deliberately different from real_digest
     let result = store
@@ -261,12 +255,12 @@ async fn a_preview_whose_declared_digest_does_not_match_the_artifacts_own_receip
 
 #[tokio::test]
 async fn a_preview_naming_a_rehearsal_that_never_passed_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-execution-failed-rehearsal");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -283,7 +277,7 @@ async fn a_preview_naming_a_rehearsal_that_never_passed_is_refused() {
         .policy;
     let digest = fixture_digest(5);
     let artifact = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "artifact",
@@ -291,7 +285,7 @@ async fn a_preview_naming_a_rehearsal_that_never_passed_is_refused() {
     )
     .await;
     let safety = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "safety",
@@ -339,12 +333,12 @@ async fn a_preview_naming_a_rehearsal_that_never_passed_is_refused() {
 
 #[tokio::test]
 async fn a_valid_preview_records_the_explicit_impact_plan_and_replays_idempotently() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-execution-preview");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -361,7 +355,7 @@ async fn a_valid_preview_records_the_explicit_impact_plan_and_replays_idempotent
         .policy;
     let digest = fixture_digest(7);
     let artifact = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "artifact",
@@ -369,15 +363,14 @@ async fn a_valid_preview_records_the_explicit_impact_plan_and_replays_idempotent
     )
     .await;
     let safety = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "safety",
         fixture_digest(8),
     )
     .await;
-    let rehearsal =
-        passing_rehearsal(&mut store, &artifact.request_id, &suffix, digest.clone()).await;
+    let rehearsal = passing_rehearsal(&store, &artifact.request_id, &suffix, digest.clone()).await;
 
     let request = preview_request(
         &policy.policy_id,
@@ -407,12 +400,12 @@ async fn a_valid_preview_records_the_explicit_impact_plan_and_replays_idempotent
 
 #[tokio::test]
 async fn confirming_with_the_previewing_signing_keys_own_fingerprint_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-execution-self-confirm");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -429,7 +422,7 @@ async fn confirming_with_the_previewing_signing_keys_own_fingerprint_is_refused(
         .policy;
     let digest = fixture_digest(11);
     let artifact = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "artifact",
@@ -437,15 +430,14 @@ async fn confirming_with_the_previewing_signing_keys_own_fingerprint_is_refused(
     )
     .await;
     let safety = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "safety",
         fixture_digest(12),
     )
     .await;
-    let rehearsal =
-        passing_rehearsal(&mut store, &artifact.request_id, &suffix, digest.clone()).await;
+    let rehearsal = passing_rehearsal(&store, &artifact.request_id, &suffix, digest.clone()).await;
     let request = preview_request(
         &policy.policy_id,
         &artifact.request_id,
@@ -478,12 +470,12 @@ async fn confirming_with_the_previewing_signing_keys_own_fingerprint_is_refused(
 #[tokio::test]
 async fn confirming_with_a_distinct_key_records_a_confirmed_authorization_and_replays_idempotently()
 {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-execution-confirm");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -500,7 +492,7 @@ async fn confirming_with_a_distinct_key_records_a_confirmed_authorization_and_re
         .policy;
     let digest = fixture_digest(13);
     let artifact = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "artifact",
@@ -508,15 +500,14 @@ async fn confirming_with_a_distinct_key_records_a_confirmed_authorization_and_re
     )
     .await;
     let safety = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "safety",
         fixture_digest(14),
     )
     .await;
-    let rehearsal =
-        passing_rehearsal(&mut store, &artifact.request_id, &suffix, digest.clone()).await;
+    let rehearsal = passing_rehearsal(&store, &artifact.request_id, &suffix, digest.clone()).await;
     let request = preview_request(
         &policy.policy_id,
         &artifact.request_id,
@@ -566,12 +557,12 @@ async fn confirming_with_a_distinct_key_records_a_confirmed_authorization_and_re
 
 #[tokio::test]
 async fn confirming_after_the_window_expires_refuses_without_authorizing() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-execution-expired");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -588,7 +579,7 @@ async fn confirming_after_the_window_expires_refuses_without_authorizing() {
         .policy;
     let digest = fixture_digest(15);
     let artifact = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "artifact",
@@ -596,15 +587,14 @@ async fn confirming_after_the_window_expires_refuses_without_authorizing() {
     )
     .await;
     let safety = succeeded_snapshot_receipt(
-        &mut store,
+        &store,
         &snapshot_policy.policy_id,
         &suffix,
         "safety",
         fixture_digest(16),
     )
     .await;
-    let rehearsal =
-        passing_rehearsal(&mut store, &artifact.request_id, &suffix, digest.clone()).await;
+    let rehearsal = passing_rehearsal(&store, &artifact.request_id, &suffix, digest.clone()).await;
     let mut request = preview_request(
         &policy.policy_id,
         &artifact.request_id,
