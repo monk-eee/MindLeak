@@ -11,6 +11,7 @@ use std::{
 
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
 use ackplane_server::{
+    db_pool::PgPool,
     enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
@@ -111,9 +112,9 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
         .expect("activate enrollment");
 }
 
-async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+async fn application(pool: &PgPool, database_url: &str, tenant_id: &str) -> axum::Router {
     let knowledge = Arc::new(
-        KnowledgeStore::connect(database_url)
+        KnowledgeStore::connect(pool)
             .await
             .expect("connect Knowledge store"),
     );
@@ -169,7 +170,15 @@ async fn knowledge_history_exposes_lifecycle_provenance_without_cross_tenant_dat
         &format!("foreign-{unique}"),
     )
     .await;
-    let knowledge = KnowledgeStore::connect(&database_url)
+    // One pool for this test binary (ADR-0143 decision 7): the Knowledge
+    // store below and `application()`'s own construction share it, rather
+    // than each opening a separate raw connection.
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let knowledge = KnowledgeStore::connect(&pool)
         .await
         .expect("connect Knowledge store");
     let active = knowledge
@@ -211,7 +220,7 @@ async fn knowledge_history_exposes_lifecycle_provenance_without_cross_tenant_dat
         .await
         .expect("retire knowledge"));
 
-    let app = application(&database_url, &tenant_id).await;
+    let app = application(&pool, &database_url, &tenant_id).await;
     let all = app
         .clone()
         .oneshot(
@@ -362,7 +371,15 @@ async fn revalidation_queue_classifies_active_records_and_stays_within_its_tenan
         &format!("foreign-{unique}"),
     )
     .await;
-    let knowledge = KnowledgeStore::connect(&database_url)
+    // One pool for this test binary (ADR-0143 decision 7): the Knowledge
+    // store below and `application()`'s own construction share it, rather
+    // than each opening a separate raw connection.
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let knowledge = KnowledgeStore::connect(&pool)
         .await
         .expect("connect Knowledge store");
 
@@ -413,7 +430,7 @@ async fn revalidation_queue_classifies_active_records_and_stays_within_its_tenan
         .await
         .expect("record contradicting evidence");
 
-    let app = application(&database_url, &tenant_id).await;
+    let app = application(&pool, &database_url, &tenant_id).await;
     let unfiltered = app
         .clone()
         .oneshot(

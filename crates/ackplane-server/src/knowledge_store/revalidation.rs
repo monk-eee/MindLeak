@@ -155,7 +155,8 @@ impl KnowledgeStore {
             .unwrap_or_default();
         let classification_filter = classification_filter.map(|value| value as i16);
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "WITH classified AS ( \
@@ -235,7 +236,8 @@ impl KnowledgeStore {
         knowledge_id: &str,
     ) -> Result<Option<RevalidationQueueEntry>, KnowledgeStoreError> {
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 &format!(
                     "WITH classified AS ( \
@@ -389,7 +391,9 @@ mod tests {
         hours_ago: f64,
     ) {
         store
-            .client
+            .connection()
+            .await
+            .unwrap()
             .execute(
                 "UPDATE knowledge SET confirmed_at = now() - ($1 * interval '1 hour') \
                  WHERE tenant_id = $2 AND repository_id = $3 AND knowledge_id = $4",
@@ -407,7 +411,9 @@ mod tests {
         hours: f64,
     ) {
         store
-            .client
+            .connection()
+            .await
+            .unwrap()
             .execute(
                 "UPDATE knowledge SET revalidate_after_hours = $1 \
                  WHERE tenant_id = $2 AND repository_id = $3 AND knowledge_id = $4",

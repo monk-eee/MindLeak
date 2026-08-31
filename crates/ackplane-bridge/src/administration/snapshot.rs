@@ -114,7 +114,7 @@ pub(super) async fn request_platform_snapshot(
     }))
 }
 
-async fn execute_and_record_snapshot(
+pub(super) async fn execute_and_record_snapshot(
     state: &AdministrationApiState,
     snapshot_config: &SnapshotProviderConfig,
     request_id: &str,

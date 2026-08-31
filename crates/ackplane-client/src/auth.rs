@@ -17,7 +17,9 @@ use ed25519_dalek::{Signer, SigningKey};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub use ackplane_protocol::claim_auth::ClaimOperation;
-pub use ackplane_protocol::purge_confirmation_auth::LifecyclePurgeOperation;
+pub use ackplane_protocol::purge_confirmation_auth::{
+    LifecyclePurgeOperation, RecoveryExecutionOperation,
+};
 pub use ackplane_protocol::v1::ClaimAuthentication;
 
 /// A repository node's capability to prove its identity for a claim request.
@@ -192,6 +194,27 @@ pub fn authenticate_lifecycle_purge(
 ) -> ClaimAuthentication {
     let mut authentication = unsigned_authentication(signer);
     let bytes = ackplane_protocol::purge_confirmation_auth::lifecycle_purge_signing_bytes(
+        tenant_id,
+        repository_id,
+        operation,
+        &authentication,
+    );
+    authentication.signature = signer.sign(&bytes);
+    authentication
+}
+
+/// Build and sign an enrolled-key authentication for one Recovery-execution
+/// operation (ADR-0145 decision 4). The Bridge verifies these bytes before it
+/// creates a preview or authorizes a confirmation; mirrors
+/// [`authenticate_lifecycle_purge`] exactly, with a distinct domain separator.
+pub fn authenticate_recovery_execution(
+    signer: &dyn ClaimSigner,
+    tenant_id: &str,
+    repository_id: &str,
+    operation: &RecoveryExecutionOperation,
+) -> ClaimAuthentication {
+    let mut authentication = unsigned_authentication(signer);
+    let bytes = ackplane_protocol::purge_confirmation_auth::recovery_execution_signing_bytes(
         tenant_id,
         repository_id,
         operation,
