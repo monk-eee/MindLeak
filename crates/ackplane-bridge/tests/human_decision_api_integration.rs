@@ -129,8 +129,13 @@ fn decision_request(
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
     let decisions = Arc::new(
-        HumanDecisionStore::connect(database_url)
+        HumanDecisionStore::connect(&db_pool)
             .await
             .expect("connect Human decision store"),
     );
@@ -175,7 +180,12 @@ async fn the_decision_queue_shows_waiting_escalations_and_their_resolutions() {
     let tenant_id = format!("tenant-{unique}");
     let repository_id = format!("repository-{unique}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
-    let mut store = HumanDecisionStore::connect(&database_url)
+    let fixture_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let store = HumanDecisionStore::connect(&fixture_pool)
         .await
         .expect("connect Human decision store for fixtures");
     let waiting = store
@@ -322,7 +332,12 @@ async fn the_decision_queue_refuses_a_repository_outside_the_bridge_tenant() {
     let tenant_id = format!("tenant-{unique}");
     let repository_id = format!("repository-{unique}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
-    let mut store = HumanDecisionStore::connect(&database_url)
+    let fixture_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let store = HumanDecisionStore::connect(&fixture_pool)
         .await
         .expect("connect Human decision store for fixtures");
     store
@@ -365,7 +380,12 @@ async fn the_decision_queue_pages_without_dropping_or_repeating_a_request() {
     let tenant_id = format!("tenant-{unique}");
     let repository_id = format!("repository-{unique}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
-    let mut store = HumanDecisionStore::connect(&database_url)
+    let fixture_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let store = HumanDecisionStore::connect(&fixture_pool)
         .await
         .expect("connect Human decision store for fixtures");
     let mut expected = Vec::new();
