@@ -4,7 +4,6 @@ use std::{sync::Arc, time::SystemTime};
 
 use ackplane_protocol::v1;
 use ed25519_dalek::VerifyingKey;
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 use crate::{
@@ -17,16 +16,17 @@ use crate::{
     },
 };
 
-/// The gRPC enrollment authority. Database access is serialized because the
-/// store owns one PostgreSQL client and each authority operation is atomic.
+/// The gRPC enrollment authority. The store's own bounded pool (ADR-0143)
+/// serializes database access, not this service -- every authority operation
+/// checks out its own connection and is atomic within its own transaction.
 pub struct NodeEnrollmentService {
-    store: Arc<Mutex<EnrollmentStore>>,
+    store: Arc<EnrollmentStore>,
 }
 
 impl NodeEnrollmentService {
     pub fn new(store: EnrollmentStore) -> Self {
         Self {
-            store: Arc::new(Mutex::new(store)),
+            store: Arc::new(store),
         }
     }
 }
@@ -41,8 +41,6 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
             submission_from_wire(request.into_inner()).map_err(Status::invalid_argument)?;
         let status = self
             .store
-            .lock()
-            .await
             .submit(&submission)
             .await
             .map_err(map_store_error)?;
@@ -61,8 +59,6 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
         })?;
         let challenge = self
             .store
-            .lock()
-            .await
             .issue_challenge(&binding, &nonce, SystemTime::now())
             .await
             .map_err(map_store_error)?;
@@ -94,8 +90,6 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
         let signing_key_id = new_signing_key_id().map_err(Status::internal)?;
         let result = self
             .store
-            .lock()
-            .await
             .activate(&activation, &receipt_id, &signing_key_id, SystemTime::now())
             .await
             .map_err(map_store_error)?;
@@ -117,8 +111,6 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
             key_rotation_from_wire(request.into_inner()).map_err(Status::invalid_argument)?;
         let result = self
             .store
-            .lock()
-            .await
             .rotate_key(&rotation, SystemTime::now())
             .await
             .map_err(map_store_error)?;
@@ -162,8 +154,6 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
         let now = SystemTime::now();
         let binding = self
             .store
-            .lock()
-            .await
             .find_binding(
                 &tenant_id,
                 &repository_id,
@@ -195,8 +185,6 @@ impl v1::node_enrollment_service_server::NodeEnrollmentService for NodeEnrollmen
         let authentication = authentication.expect("checked non-empty above");
         let fresh = self
             .store
-            .lock()
-            .await
             .consume_status_nonce(
                 &tenant_id,
                 &repository_id,
@@ -317,6 +305,9 @@ mod tests {
                 println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
                 return;
             };
+            let pool =
+                crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                    .expect("the test pool builds from a valid database url");
             let unique = crate::test_support::uuid_ish();
             let tenant_id = format!("enrollment-status-tenant-{unique}");
             let repository_id = "repo-a".to_owned();
@@ -333,7 +324,7 @@ mod tests {
             )
             .await;
 
-            let store = EnrollmentStore::connect(&database_url)
+            let store = EnrollmentStore::connect(&pool)
                 .await
                 .expect("connect enrollment store");
             let service = NodeEnrollmentService::new(store);
@@ -372,6 +363,9 @@ mod tests {
                 println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
                 return;
             };
+            let pool =
+                crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                    .expect("the test pool builds from a valid database url");
             let unique = crate::test_support::uuid_ish();
             let tenant_id = format!("enrollment-status-pending-tenant-{unique}");
             let repository_id = "repo-a".to_owned();
@@ -379,7 +373,7 @@ mod tests {
             let signing_key = SigningKey::from_bytes(&[unique as u8; 32]);
             let fingerprint = public_key_fingerprint(&signing_key.verifying_key().to_bytes());
 
-            let mut submitting_store = EnrollmentStore::connect(&database_url)
+            let submitting_store = EnrollmentStore::connect(&pool)
                 .await
                 .expect("connect enrollment store for submission");
             submitting_store
@@ -399,7 +393,7 @@ mod tests {
                 .await
                 .expect("submitting the pending enrollment request should succeed");
 
-            let store = EnrollmentStore::connect(&database_url)
+            let store = EnrollmentStore::connect(&pool)
                 .await
                 .expect("connect enrollment store for the status check");
             let service = NodeEnrollmentService::new(store);
@@ -432,6 +426,9 @@ mod tests {
                 println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
                 return;
             };
+            let pool =
+                crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                    .expect("the test pool builds from a valid database url");
             let unique = crate::test_support::uuid_ish();
             let tenant_id = format!("enrollment-status-revoked-tenant-{unique}");
             let repository_id = "repo-a".to_owned();
@@ -468,7 +465,7 @@ mod tests {
             .expect("revoke the test key");
             transaction.commit().await.expect("commit revocation");
 
-            let store = EnrollmentStore::connect(&database_url)
+            let store = EnrollmentStore::connect(&pool)
                 .await
                 .expect("connect enrollment store");
             let service = NodeEnrollmentService::new(store);
@@ -507,7 +504,10 @@ mod tests {
             let unique = crate::test_support::uuid_ish();
             let signing_key = SigningKey::from_bytes(&[unique as u8; 32]);
 
-            let store = EnrollmentStore::connect(&database_url)
+            let pool =
+                crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                    .expect("the test pool builds from a valid database url");
+            let store = EnrollmentStore::connect(&pool)
                 .await
                 .expect("connect enrollment store");
             let service = NodeEnrollmentService::new(store);
@@ -540,6 +540,9 @@ mod tests {
                 println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
                 return;
             };
+            let pool =
+                crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                    .expect("the test pool builds from a valid database url");
             let unique = crate::test_support::uuid_ish();
             let tenant_id = format!("enrollment-status-mismatch-tenant-{unique}");
             let repository_id = "repo-a".to_owned();
@@ -556,7 +559,7 @@ mod tests {
             )
             .await;
 
-            let store = EnrollmentStore::connect(&database_url)
+            let store = EnrollmentStore::connect(&pool)
                 .await
                 .expect("connect enrollment store");
             let service = NodeEnrollmentService::new(store);
@@ -594,6 +597,9 @@ mod tests {
                 println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
                 return;
             };
+            let pool =
+                crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                    .expect("the test pool builds from a valid database url");
             let unique = crate::test_support::uuid_ish();
             let tenant_id = format!("enrollment-status-replay-tenant-{unique}");
             let repository_id = "repo-a".to_owned();
@@ -610,7 +616,7 @@ mod tests {
             )
             .await;
 
-            let store = EnrollmentStore::connect(&database_url)
+            let store = EnrollmentStore::connect(&pool)
                 .await
                 .expect("connect enrollment store");
             let service = NodeEnrollmentService::new(store);
@@ -651,6 +657,9 @@ mod tests {
                 println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
                 return;
             };
+            let pool =
+                crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                    .expect("the test pool builds from a valid database url");
             let unique = crate::test_support::uuid_ish();
             let tenant_id = format!("enrollment-status-domain-tenant-{unique}");
             let repository_id = "repo-a".to_owned();
@@ -685,7 +694,7 @@ mod tests {
             foreign_domain_bytes.extend_from_slice(fingerprint.as_bytes());
             authentication.signature = signing_key.sign(&foreign_domain_bytes).to_bytes().to_vec();
 
-            let store = EnrollmentStore::connect(&database_url)
+            let store = EnrollmentStore::connect(&pool)
                 .await
                 .expect("connect enrollment store");
             let service = NodeEnrollmentService::new(store);

@@ -73,7 +73,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let enrollment_store = match EnrollmentStore::connect(config.database_url()).await {
+            let enrollment_store = match EnrollmentStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(

@@ -99,7 +99,12 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
         public_key_fingerprint: submission.public_key_fingerprint.clone(),
     };
     let now = SystemTime::now();
-    let mut enrollment = EnrollmentStore::connect(database_url)
+    let enrollment_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment = EnrollmentStore::connect(&enrollment_pool)
         .await
         .expect("the test database should accept enrollment connections");
     enrollment

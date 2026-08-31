@@ -39,7 +39,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     LedgerStore::connect(database_url)
         .await
         .map_err(|error| format!("ledger schema failed: {error}"))?;
-    EnrollmentStore::connect(database_url)
+    EnrollmentStore::connect(&pool)
         .await
         .map_err(|error| format!("enrollment schema failed: {error}"))?;
     ClaimStore::connect(&pool)

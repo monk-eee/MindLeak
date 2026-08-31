@@ -3,10 +3,10 @@
 use std::time::{Duration, SystemTime};
 
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio_postgres::{Client, NoTls};
 
 use thiserror::Error;
 
+use crate::db_pool::{PgConnection, PgPool};
 use crate::enrollment::{
     key_rotation_bytes, public_key_fingerprint, verify_activation_proof,
     verify_key_rotation_signature, ActivationProofBinding, EnrollmentState, KeyRotationStatement,
@@ -171,6 +171,8 @@ pub enum EnrollmentStoreError {
     InvalidProof { request_id: String },
     #[error("enrollment database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("enrollment could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("registering the activated signing key failed: {0}")]
     SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("enrollment request contains an unknown stored state {value}")]
@@ -185,37 +187,39 @@ pub enum EnrollmentStoreError {
 
 /// A connection to the authoritative enrollment state and audit history.
 pub struct EnrollmentStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl EnrollmentStore {
-    /// Connect and apply the idempotent enrollment schema.
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane enrollment connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be exactly
+    /// the per-store demand the pool exists to bound. Applies the idempotent
+    /// enrollment schema as a side effect of connecting.
+    pub async fn connect(pool: &PgPool) -> Result<Self, EnrollmentStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::ENROLLMENT,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::SIGNING_KEYS,
             SIGNING_KEY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::ENROLLMENT_STATUS_AUTHENTICATION_NONCES,
             STATUS_AUTHENTICATION_NONCES_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, EnrollmentStoreError> {
+        Ok(self.pool.get().await?)
     }
 }
 
