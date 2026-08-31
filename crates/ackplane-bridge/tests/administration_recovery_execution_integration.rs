@@ -357,6 +357,7 @@ async fn safety_snapshot_failure_fails_the_recovery_preview() {
             pg_dump_path: "definitely-not-a-real-pg-dump-binary".to_string(),
             pg_restore_path: "pg_restore".to_string(),
             rehearsal_database_url: None,
+            single_tenant_attested: false,
         })),
     )
     .await;
@@ -458,6 +459,7 @@ async fn distinct_enrolled_keys_preview_and_confirm_a_recovery_execution() {
         pg_dump_path: "pg_dump".to_string(),
         pg_restore_path: "pg_restore".to_string(),
         rehearsal_database_url: None,
+        single_tenant_attested: false,
     });
     let router =
         administration_router(&database_url, &tenant_id, Some(snapshot_config.clone())).await;
