@@ -173,7 +173,7 @@ async fn main() {
             return;
         }
     };
-    let readiness_store = match ReadinessStore::connect(config.database_url()).await {
+    let readiness_store = match ReadinessStore::connect(&db_pool).await {
         Ok(readiness) => Arc::new(readiness),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane readiness rollup: {error}");
