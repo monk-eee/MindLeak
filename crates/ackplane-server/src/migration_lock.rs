@@ -175,13 +175,16 @@ pub(crate) mod key {
     /// shared development database (`ackplane_test`) as well as committed
     /// source: no live discrepancy above 57.
     pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION: i64 = 58;
-    /// `migrations/0062_administration_recovery_execution_receipt.sql`
-    /// (ADR-0145 slice 4). Originally filed as 59, then 60, then 61; the
-    /// shared development database (`ackplane_test`) accepted a different
-    /// migration under each of those keys from concurrent branches before
-    /// this one applied. `migration-audit --next` re-checked live and
-    /// selected 62.
-    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT: i64 = 62;
+    /// `migrations/0063_administration_recovery_execution_receipt.sql`
+    /// (ADR-0145 slice 4). Filed as 59, 60, 61, then 62 -- each time the
+    /// shared development database (`ackplane_test`) had accepted a different
+    /// migration under that key from a concurrent branch first. Renumbered a
+    /// fifth time to 63 for a genuinely new reason: CI caught that 62's own
+    /// content had real foreign keys from `rehearsal_id`/`request_id` to
+    /// tables a real restore always empties before this row is ever inserted
+    /// (see the migration's own comment), so the content changed and needed
+    /// a fresh key rather than reusing 62 under new content.
+    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT: i64 = 63;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

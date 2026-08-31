@@ -41,7 +41,7 @@ const RECOVERY_REHEARSAL_MIGRATION: &str =
 const RECOVERY_EXECUTION_MIGRATION: &str =
     include_str!("../../migrations/0058_administration_recovery_execution.sql");
 const RECOVERY_EXECUTION_RECEIPT_MIGRATION: &str =
-    include_str!("../../migrations/0062_administration_recovery_execution_receipt.sql");
+    include_str!("../../migrations/0063_administration_recovery_execution_receipt.sql");
 
 mod export_model;
 mod export_write;

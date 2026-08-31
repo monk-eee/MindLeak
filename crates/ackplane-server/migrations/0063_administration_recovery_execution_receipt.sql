@@ -31,8 +31,17 @@ CREATE TABLE IF NOT EXISTS administration_recovery_execution_receipts (
     -- place (ADR-0119 decision 10, reused here) -- a changed attempt needs a
     -- fresh preview and confirmation, and its own request id.
     UNIQUE (request_id),
-    FOREIGN KEY (request_id) REFERENCES administration_recovery_execution_requests (request_id) ON DELETE CASCADE,
-    FOREIGN KEY (rehearsal_id) REFERENCES administration_recovery_rehearsals (rehearsal_id) ON DELETE RESTRICT,
+    -- Deliberately no FOREIGN KEY to `administration_recovery_execution_requests`
+    -- or `administration_recovery_rehearsals`: both are plain restated values
+    -- (like every other field here, decision 7's "self-contained provenance
+    -- record that never needs a join"), not enforced references. A real
+    -- `pg_restore` of the whole database necessarily reverts every table,
+    -- including these two -- and the request/rehearsal rows authorizing THIS
+    -- exact restore were, by construction, created after the artifact being
+    -- restored, so they never survive a successful restore. A hard foreign
+    -- key here would make recording a `Succeeded` receipt permanently
+    -- impossible in production, the one place this table's own INSERT runs
+    -- immediately after `pg_restore` completes.
     CHECK (octet_length(receipt_id) BETWEEN 1 AND 256),
     CHECK (octet_length(request_id) BETWEEN 1 AND 256),
     CHECK (octet_length(tenant_id) BETWEEN 1 AND 256),
