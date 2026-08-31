@@ -66,7 +66,8 @@ impl ContextPacketStore {
         let cursor_issued_at = before.map(|cursor| cursor.issued_at);
         let cursor_packet_id = before.map(|cursor| cursor.packet_id.as_str());
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT packet_id, task_id, goal_id, agent_session_id, compiler_version, \
                         issued_at, expires_at, ledger_position, projection_position, \

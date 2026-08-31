@@ -201,7 +201,7 @@ async fn main() {
             return;
         }
     };
-    let context_packet_store = match ContextPacketStore::connect(config.database_url()).await {
+    let context_packet_store = match ContextPacketStore::connect(&db_pool).await {
         Ok(context_packets) => Arc::new(context_packets),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane context packets: {error}");
