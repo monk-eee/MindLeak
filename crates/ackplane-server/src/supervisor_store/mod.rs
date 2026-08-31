@@ -5,8 +5,8 @@ pub use ackplane_protocol::supervisor::{
     SupervisorDirectiveCapability, SupervisorLifecycleReason, SupervisorOutboxDurability,
     SupervisorRegistration, SupervisorRuntime, SupervisorSession, SupervisorWorkerState,
 };
-use tokio_postgres::{Client, NoTls};
 
+use crate::db_pool::{PgConnection, PgPool};
 use crate::migration_lock;
 
 const MIGRATION: &str = include_str!("../../migrations/0024_supervisor_session_projection.sql");
@@ -36,19 +36,17 @@ use model::{
 
 /// PostgreSQL persistence for registered supervisors and their worker sessions.
 pub struct SupervisorStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl SupervisorStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane supervisor store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not
+    /// a database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, SupervisorStoreError> {
+        let mut connection = pool.get().await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::SUPERVISOR_SESSION_PROJECTION,
             MIGRATION,
         )
@@ -56,24 +54,31 @@ impl SupervisorStore {
         // ADR-0146 decision 3. Applied after 0024 because its foreign key
         // references `supervisor_registrations`, which 0024 creates.
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::SUPERVISOR_OUTBOX_POSITIONS,
             OUTBOX_POSITIONS_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, SupervisorStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Registers an immutable capability declaration. A byte-identical retry
     /// returns the original projection; changing one under the same identity
     /// is refused until a versioned update contract exists.
     pub async fn register(
-        &mut self,
+        &self,
         registration: &SupervisorRegistration,
     ) -> Result<SupervisorRegistrationOutcome, StoreError> {
         let (capabilities, payload_digest) = registration_values(registration)?;
         let now_seconds = server_now_seconds()?;
-        let transaction = self.client.transaction().await?;
+        // One connection, checked out once and held until commit (ADR-0143
+        // decision 4).
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let inserted = transaction
             .query_opt(
                 &format!(
@@ -153,7 +158,8 @@ impl SupervisorStore {
     ) -> Result<SupervisorStatus, StoreError> {
         validate_heartbeat(tenant_id, repository_id, supervisor_id, observed_at)?;
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 &format!(
                     "UPDATE supervisor_registrations \
@@ -195,7 +201,8 @@ impl SupervisorStore {
         let stored: i64 = i64::try_from(sequence)
             .map_err(|_| StoreError::OutboxSequenceOutOfRange { sequence })?;
         let row = self
-            .client
+            .connection()
+            .await?
             .query_one(
                 "INSERT INTO supervisor_outbox_positions \
                      (tenant_id, repository_id, supervisor_id, accepted_sequence) \
@@ -237,7 +244,8 @@ impl SupervisorStore {
         supervisor_id: &str,
     ) -> Result<Option<u64>, StoreError> {
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "SELECT accepted_sequence FROM supervisor_outbox_positions \
                  WHERE tenant_id = $1 AND repository_id = $2 AND supervisor_id = $3",
@@ -253,13 +261,14 @@ impl SupervisorStore {
     /// Records an immutable worker session beneath an already registered
     /// supervisor. A session cannot silently change its worker or runtime.
     pub async fn record_session(
-        &mut self,
+        &self,
         tenant_id: &str,
         repository_id: &str,
         session: &SupervisorSession,
     ) -> Result<SupervisorSessionOutcome, StoreError> {
         let payload_digest = session_digest(tenant_id, repository_id, session)?;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let supervisor_exists = transaction
             .query_opt(
                 "SELECT 1 FROM supervisor_registrations \
@@ -328,11 +337,12 @@ impl SupervisorStore {
     /// Appends an immutable lifecycle receipt and advances the checked current
     /// projection only when the receipt is newer than its current observation.
     pub async fn record_lifecycle(
-        &mut self,
+        &self,
         request: &SupervisorLifecycleReceiptRequest,
     ) -> Result<SupervisorLifecycleOutcome, StoreError> {
         let payload_digest = receipt_digest(request)?;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let session_row = transaction
             .query_opt(
                 &format!(
@@ -505,13 +515,13 @@ mod tests {
     }
 
     async fn store() -> Option<SupervisorStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(SupervisorStore::connect(&database_url).await.unwrap())
+        let pool = crate::test_support::test_pool()?;
+        Some(SupervisorStore::connect(&pool).await.unwrap())
     }
 
     #[tokio::test]
     async fn registration_retries_return_the_original_projection_and_refuse_changed_content() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -543,7 +553,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_lists_are_tenant_scoped() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -572,7 +582,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_lookup_stays_within_its_tenant_and_repository() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -607,7 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_freshness_uses_server_time_without_regressing() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -656,7 +666,7 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_receipts_replay_without_regressing_the_current_session() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -757,7 +767,7 @@ mod tests {
     /// supervisor's.
     #[tokio::test]
     async fn an_accepted_outbox_position_advances_only_upward() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -816,7 +826,7 @@ mod tests {
     /// for a different supervisor must not borrow another's evidence.
     #[tokio::test]
     async fn accepted_outbox_positions_are_scoped_per_supervisor() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };

@@ -25,7 +25,12 @@ async fn supervisor_dashboard_is_a_read_only_runtime_inspection_page() {
     let repository_id = format!("repository-dashboard-{unique}");
     let node_id = enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
     let supervisor_id = format!("supervisor-dashboard-{unique}");
-    let mut supervisors = SupervisorStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let supervisors = SupervisorStore::connect(&pool)
         .await
         .expect("connect Supervisor store for dashboard fixtures");
     let registered = supervisors
@@ -37,7 +42,7 @@ async fn supervisor_dashboard_is_a_read_only_runtime_inspection_page() {
         ))
         .await
         .expect("register supervisor for dashboard inventory");
-    let app = application(&database_url, &tenant_id).await;
+    let app = application(&pool, &database_url, &tenant_id).await;
     let response = app
         .clone()
         .oneshot(

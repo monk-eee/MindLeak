@@ -191,7 +191,7 @@ async fn main() {
             return;
         }
     };
-    let supervisor_store = match SupervisorStore::connect(config.database_url()).await {
+    let supervisor_store = match SupervisorStore::connect(&db_pool).await {
         Ok(store) => Arc::new(store),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane supervisor store: {error}");

@@ -152,9 +152,13 @@ pub async fn enroll_repository(
     node_id
 }
 
-pub async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+pub async fn application(
+    pool: &ackplane_server::db_pool::PgPool,
+    database_url: &str,
+    tenant_id: &str,
+) -> axum::Router {
     let supervisors = Arc::new(
-        SupervisorStore::connect(database_url)
+        SupervisorStore::connect(pool)
             .await
             .expect("connect Supervisor store"),
     );

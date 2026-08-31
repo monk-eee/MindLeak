@@ -27,7 +27,8 @@ impl SupervisorStore {
     ) -> Result<Vec<SupervisorStatus>, StoreError> {
         validate_scope(tenant_id, repository_id)?;
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "SELECT {REGISTRATION_COLUMNS} FROM supervisor_registrations \
@@ -49,7 +50,8 @@ impl SupervisorStore {
     ) -> Result<Vec<SupervisorSessionProjection>, StoreError> {
         validate_scope(tenant_id, repository_id)?;
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "SELECT {SESSION_COLUMNS} FROM supervisor_sessions \
@@ -75,7 +77,8 @@ impl SupervisorStore {
     ) -> Result<Option<SupervisorSessionProjection>, StoreError> {
         validate_scope(tenant_id, repository_id)?;
         model::require_identifier("session_id", session_id)?;
-        self.client
+        self.connection()
+            .await?
             .query_opt(
                 &format!(
                     "SELECT {SESSION_COLUMNS} FROM supervisor_sessions \
@@ -96,7 +99,8 @@ impl SupervisorStore {
     ) -> Result<Vec<SupervisorLifecycleReceiptRecord>, StoreError> {
         validate_scope(tenant_id, repository_id)?;
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "SELECT {RECEIPT_COLUMNS} FROM supervisor_lifecycle_receipts \

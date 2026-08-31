@@ -28,7 +28,7 @@ struct Fixture {
 }
 
 async fn fixture() -> Option<Fixture> {
-    let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+    crate::test_support::test_pool()?;
     let suffix = unique_id("directive-receipt");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
@@ -60,7 +60,7 @@ async fn fixture() -> Option<Fixture> {
         started_at: 0,
         state: SupervisorWorkerState::Started,
     };
-    let mut supervisors = SupervisorStore::connect(&database_url)
+    let supervisors = SupervisorStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("connect supervisor store");
     supervisors

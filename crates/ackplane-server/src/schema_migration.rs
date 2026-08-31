@@ -66,7 +66,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     DirectiveStore::connect(&pool)
         .await
         .map_err(|error| format!("directive schema failed: {error}"))?;
-    SupervisorStore::connect(database_url)
+    SupervisorStore::connect(&pool)
         .await
         .map_err(|error| format!("supervisor schema failed: {error}"))?;
     LiveFeedStore::connect(&pool)

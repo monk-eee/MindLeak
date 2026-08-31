@@ -91,7 +91,11 @@ pub enum ConnectionState {
 /// stream is part of the receipt contract.
 pub struct NodeSyncService {
     ledger: Arc<Mutex<LedgerStore>>,
-    supervisor: Option<Arc<Mutex<SupervisorStore>>>,
+    /// Not behind a `Mutex`, unlike `ledger` and `work`: since ADR-0143 this
+    /// store checks a connection out of the shared pool per call, so
+    /// concurrent callers no longer contend for one shared `Client` and
+    /// nothing here needs `&mut`.
+    supervisor: Option<Arc<SupervisorStore>>,
     /// Not behind a `Mutex`, unlike its neighbours: since ADR-0143 this store
     /// checks a connection out of the shared pool per call, so concurrent
     /// callers no longer contend for one shared `Client` and nothing here
@@ -124,7 +128,7 @@ impl NodeSyncService {
     ) -> Self {
         Self {
             ledger: Arc::new(Mutex::new(ledger)),
-            supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            supervisor: Some(Arc::new(supervisor)),
             directives: None,
             work: None,
             flow_control,
@@ -141,7 +145,7 @@ impl NodeSyncService {
     ) -> Self {
         Self {
             ledger: Arc::new(Mutex::new(ledger)),
-            supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            supervisor: Some(Arc::new(supervisor)),
             directives: Some(Arc::new(directives)),
             work: None,
             flow_control,
@@ -175,7 +179,7 @@ impl NodeSyncService {
     ) -> Self {
         Self {
             ledger: Arc::new(Mutex::new(ledger)),
-            supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            supervisor: Some(Arc::new(supervisor)),
             directives: Some(Arc::new(directives)),
             work: Some(Arc::new(Mutex::new(work))),
             flow_control,
@@ -226,17 +230,14 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                     // target this connection may now be
                                     // owed work for.
                                     let addressed = directive_delivery::addressed_session(&frame);
-                                    let mut responses = {
-                                        let mut store = supervisor.lock().await;
-                                        supervisor::handle_authenticated_frame(
-                                            frame,
-                                            &tenant_id,
-                                            &repository_id,
-                                            &node_id,
-                                            &mut store,
-                                        )
-                                        .await
-                                    };
+                                    let mut responses = supervisor::handle_authenticated_frame(
+                                        frame,
+                                        &tenant_id,
+                                        &repository_id,
+                                        &node_id,
+                                        supervisor,
+                                    )
+                                    .await;
                                     // Only after the session itself was
                                     // accepted: delivering against a
                                     // refused session would address a
@@ -288,12 +289,11 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                     .await;
                                     match outcome {
                                         Ok(outcome) => {
-                                            let store = supervisor.lock().await;
                                             match directive_receipt::acknowledgement(
                                                 outcome,
                                                 &tenant_id,
                                                 &repository_id,
-                                                &store,
+                                                supervisor,
                                             )
                                             .await
                                             {

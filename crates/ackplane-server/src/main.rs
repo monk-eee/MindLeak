@@ -136,7 +136,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let supervisor_store = match SupervisorStore::connect(config.database_url()).await {
+            let supervisor_store = match SupervisorStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(
