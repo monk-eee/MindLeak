@@ -41,7 +41,6 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use tokio::sync::Mutex;
 
 use payload::{
     build_payload, unix_seconds_to_system_time, ConfirmWorkCommandRequest, SubmitWorkCommandRequest,
@@ -52,14 +51,14 @@ use response::WorkCommandResponse;
 /// sub-router into the application.
 #[derive(Clone)]
 pub struct WorkCommandApiState {
-    commands: Arc<Mutex<WorkCommandService>>,
+    commands: Arc<WorkCommandService>,
     fleet: Arc<FleetStore>,
     tenant_id: Arc<str>,
 }
 
 impl WorkCommandApiState {
     pub fn new(
-        commands: Arc<Mutex<WorkCommandService>>,
+        commands: Arc<WorkCommandService>,
         fleet: Arc<FleetStore>,
         tenant_id: Arc<str>,
     ) -> Self {
@@ -188,8 +187,8 @@ async fn submit_work_command(
         idempotency_key,
         payload_digest,
     };
-    let mut commands = state.commands.lock().await;
-    let outcome = commands
+    let outcome = state
+        .commands
         .submit(authorization, new_command, SystemTime::now())
         .await
         .map_err(service_error_status)?;
@@ -204,8 +203,8 @@ async fn confirm_work_command(
     ensure_repository_visible(&state, &repository_id).await?;
     let authorization = verified_principal(state.tenant_id.as_ref(), &repository_id);
     let payload = build_payload(request.payload)?;
-    let mut commands = state.commands.lock().await;
-    let outcome = commands
+    let outcome = state
+        .commands
         .confirm(
             authorization,
             state.tenant_id.as_ref(),

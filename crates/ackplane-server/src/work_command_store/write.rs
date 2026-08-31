@@ -17,14 +17,15 @@ use super::{
 impl WorkCommandStore {
     /// Persists an immutable command request or returns its exact prior retry.
     pub(in crate::work_command_store) async fn record_request(
-        &mut self,
+        &self,
         request: &NewWorkCommand,
         now: SystemTime,
     ) -> Result<WorkCommandWriteOutcome, WorkCommandStoreError> {
         validate_request(request, now)?;
         let assigned_command_id = assigned_command_id(request);
         let digest = request_digest(request)?;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         if let Some(command) =
             existing_by_command_id(&transaction, request, &assigned_command_id).await?
@@ -88,11 +89,12 @@ impl WorkCommandStore {
 
     /// Appends one immutable command receipt or returns its exact prior retry.
     pub(in crate::work_command_store) async fn record_receipt(
-        &mut self,
+        &self,
         receipt: &NewWorkCommandReceipt,
         now: SystemTime,
     ) -> Result<WorkCommandReceiptWriteOutcome, WorkCommandStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let outcome = append_receipt_in_transaction(&transaction, receipt, now).await?;
         transaction.commit().await?;
         Ok(outcome)
@@ -108,7 +110,8 @@ impl WorkCommandStore {
         repository_id: &str,
         command_id: &str,
     ) -> Result<Option<WorkCommand>, WorkCommandStoreError> {
-        self.client
+        self.connection()
+            .await?
             .query_opt(
                 "SELECT * FROM work_commands WHERE tenant_id = $1 AND repository_id = $2 \
                  AND command_id = $3",
