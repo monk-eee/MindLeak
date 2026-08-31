@@ -16,7 +16,7 @@
   optional half of clause 4.
   **Closed for `constitution_proposals` and `industrial_design_materializations`:**
   both tables gained a nullable `display_label` column (migration
-  `0059_design_constitution_display_label.sql`), threaded through
+  `0060_design_constitution_display_label.sql`), threaded through
   `ProposeConstitutionClauseRequest`/`ConstitutionProposal` and
   `RecordMaterializationRequest`/`MaterializationRevision`, and through
   Bridge's `ProposeClauseRequest`/`ConstitutionProposalResponse` and

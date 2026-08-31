@@ -28,7 +28,7 @@ const PUBLICATION_HISTORY_MIGRATION: &str =
     include_str!("../../migrations/0026_constitution_publication_history.sql");
 const PROPOSALS_MIGRATION: &str = include_str!("../../migrations/0038_constitution_proposals.sql");
 const DISPLAY_LABEL_MIGRATION: &str =
-    include_str!("../../migrations/0059_design_constitution_display_label.sql");
+    include_str!("../../migrations/0060_design_constitution_display_label.sql");
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConstitutionStoreError {

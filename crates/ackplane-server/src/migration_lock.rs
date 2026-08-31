@@ -177,9 +177,14 @@ pub(crate) mod key {
     pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION: i64 = 58;
     /// `migrations/0059_design_constitution_display_label.sql` (ADR-0142
     /// decision 4). `migration-audit --next` selected 59 from committed
-    /// source; no live database was reachable to check for a higher
-    /// applied key.
-    pub(crate) const DESIGN_CONSTITUTION_DISPLAY_LABEL: i64 = 59;
+    /// source, but the shared development database (`ackplane_test`) had
+    /// already applied a different migration's content under key 59 by the
+    /// time tests ran here -- renumbered to 60 rather than reusing an
+    /// ambiguous key. `migration-audit.mjs` cannot see this class of
+    /// collision from committed source alone; only the live database
+    /// surfaces a same-key-different-content mismatch, and only at
+    /// connect() time.
+    pub(crate) const DESIGN_CONSTITUTION_DISPLAY_LABEL: i64 = 60;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
