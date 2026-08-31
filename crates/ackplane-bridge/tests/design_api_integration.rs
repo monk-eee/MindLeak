@@ -111,11 +111,16 @@ async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
     // `DesignStore::connect`/`MaterializationStore::connect` apply their
     // own dependency migrations (Evidence, Constitution, Work) internally,
     // so this file does not need to pre-connect those stores itself.
-    let designs = Arc::new(Mutex::new(
-        DesignStore::connect(database_url)
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let designs = Arc::new(
+        DesignStore::connect(&db_pool)
             .await
             .expect("connect Design store"),
-    ));
+    );
     let materializations = Arc::new(Mutex::new(
         MaterializationStore::connect(database_url)
             .await

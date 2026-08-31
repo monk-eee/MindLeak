@@ -7,8 +7,8 @@ impl DesignStore {
         repository_id: &str,
         design_id: &str,
     ) -> Result<Option<Design>, DesignStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT title, summary, source_version, lifecycle_state, \
                         constitution_version_id, work_task_id, evidence_id, created_at, \
@@ -49,8 +49,8 @@ impl DesignStore {
         repository_id: &str,
         design_id: &str,
     ) -> Result<Vec<DesignDecision>, DesignStoreError> {
-        let rows = self
-            .client
+        let connection = self.connection().await?;
+        let rows = connection
             .query(
                 "SELECT sequence_number, decision_kind, actor, rationale, recorded_at \
                  FROM industrial_design_decisions \
@@ -89,9 +89,10 @@ impl DesignStore {
         page_size: i64,
     ) -> Result<DesignPage, DesignStoreError> {
         let offset = (page - 1) * page_size;
+        let connection = self.connection().await?;
         let rows = match lifecycle_state {
             Some(state) => {
-                self.client
+                connection
                     .query(
                         "SELECT design_id, title, summary, source_version, lifecycle_state, \
                                 constitution_version_id, work_task_id, evidence_id, created_at, \
@@ -110,7 +111,7 @@ impl DesignStore {
                     .await?
             }
             None => {
-                self.client
+                connection
                     .query(
                         "SELECT design_id, title, summary, source_version, lifecycle_state, \
                                 constitution_version_id, work_task_id, evidence_id, created_at, \
@@ -162,13 +163,13 @@ mod tests {
 
     #[tokio::test]
     async fn listing_designs_paginates_and_orders_most_recently_updated_first() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
 
         for label in ["first", "second", "third"] {
             store
@@ -206,13 +207,13 @@ mod tests {
 
     #[tokio::test]
     async fn listing_designs_filters_by_lifecycle_state() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
-        let mut store = DesignStore::connect(&database_url).await.unwrap();
+        let store = DesignStore::connect(&pool).await.unwrap();
         let design_id = unique_id("design");
         store
             .create_design(CreateDesignRequest {
