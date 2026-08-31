@@ -34,7 +34,8 @@ impl DirectiveStore {
     ) -> Result<Vec<v1::AgentDirective>, DirectiveStoreError> {
         let limit = limit.clamp(1, MAX_DELIVERY_BATCH);
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT directive_payload FROM agent_directives d \
                  WHERE d.tenant_id = $1 AND d.repository_id = $2 \

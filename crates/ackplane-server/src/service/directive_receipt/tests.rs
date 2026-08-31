@@ -72,7 +72,7 @@ async fn fixture() -> Option<Fixture> {
         .await
         .expect("record directive target session");
 
-    let mut directives = DirectiveStore::connect(&database_url)
+    let directives = DirectiveStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("connect directive store");
     let mut directive = AgentDirective {
@@ -193,7 +193,7 @@ fn missing_directive_store_is_retryable() {
 
 #[tokio::test]
 async fn authenticated_receipts_persist_and_replay_with_a_supervisor_acknowledgement() {
-    let Some(mut fixture) = fixture().await else {
+    let Some(fixture) = fixture().await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -203,7 +203,7 @@ async fn authenticated_receipts_persist_and_replay_with_a_supervisor_acknowledge
         &fixture.tenant_id,
         &fixture.repository_id,
         &fixture.node_id,
-        &mut fixture.directives,
+        &fixture.directives,
     )
     .await
     .expect("record authenticated receipt");
@@ -235,7 +235,7 @@ async fn authenticated_receipts_persist_and_replay_with_a_supervisor_acknowledge
         &fixture.tenant_id,
         &fixture.repository_id,
         &fixture.node_id,
-        &mut fixture.directives,
+        &fixture.directives,
     )
     .await
     .expect("replay authenticated receipt");
@@ -263,7 +263,7 @@ async fn authenticated_receipts_persist_and_replay_with_a_supervisor_acknowledge
 
 #[tokio::test]
 async fn receipt_scope_mismatches_are_refused_before_the_durable_write() {
-    let Some(mut fixture) = fixture().await else {
+    let Some(fixture) = fixture().await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -283,7 +283,7 @@ async fn receipt_scope_mismatches_are_refused_before_the_durable_write() {
                     &fixture.tenant_id,
                     &fixture.repository_id,
                     &fixture.node_id,
-                    &mut fixture.directives,
+                    &fixture.directives,
                 )
                 .await
                 .expect_err("a foreign receipt must be refused before storage"),
@@ -306,7 +306,7 @@ async fn receipt_scope_mismatches_are_refused_before_the_durable_write() {
             &fixture.tenant_id,
             &fixture.repository_id,
             &fixture.node_id,
-            &mut fixture.directives,
+            &fixture.directives,
         )
         .await
         .expect("the valid receipt remains a fresh write")
@@ -317,7 +317,7 @@ async fn receipt_scope_mismatches_are_refused_before_the_durable_write() {
 
 #[tokio::test]
 async fn an_unknown_directive_receipt_does_not_disclose_ledger_scope() {
-    let Some(mut fixture) = fixture().await else {
+    let Some(fixture) = fixture().await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -329,7 +329,7 @@ async fn an_unknown_directive_receipt_does_not_disclose_ledger_scope() {
             &fixture.tenant_id,
             &fixture.repository_id,
             &fixture.node_id,
-            &mut fixture.directives,
+            &fixture.directives,
         )
         .await
         .expect_err("an unknown directive must not be acknowledged"),
