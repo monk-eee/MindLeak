@@ -315,6 +315,17 @@ invocation — each server process is stateless across invocations, so
 to see it. A session that has lost its editor connection is not thereby forced
 to skip claiming, checking overlap, or recording evidence.
 
+When a batch takes a claim (`task_claim` with `step: "claim"`), this script also
+declares `branch_committed_paths` for you — `git diff --name-only <base>...HEAD`,
+measured from the `base` the batch's own `open_session` declared, defaulting to
+`origin/main`. Lodestar answers with `branch_inherited`: the clauses governing
+work already sitting on the branch that this task's own scope does not cover, so
+they can be declared with `also_serves` *before* the work rather than discovered
+as `drift` at completion ([ADR-0147](docs/adr/0147-a-claim-reports-the-branchs-existing-governed-files.md)).
+A value you supply yourself is never overridden, including an explicit `[]`, and
+if the diff cannot be computed the call is forwarded unchanged rather than
+declaring an empty branch.
+
 ## Debugging the extension
 
 ```bash
