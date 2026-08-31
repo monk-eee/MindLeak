@@ -222,7 +222,7 @@ async fn main() {
             return;
         }
     };
-    let delegation_store = match DelegationStore::connect(config.database_url()).await {
+    let delegation_store = match DelegationStore::connect(&db_pool).await {
         Ok(delegations) => Arc::new(delegations),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane delegations: {error}");

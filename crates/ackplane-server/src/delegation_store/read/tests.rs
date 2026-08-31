@@ -46,13 +46,13 @@ fn grant_request(tenant_id: String, repository_id: String, label: &str) -> Deleg
 
 #[tokio::test]
 async fn list_pages_current_projections_in_durable_order_and_keeps_scopes_isolated() {
-    let Some(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
     let (tenant_id, repository_id) = unique_scope("primary");
     let (foreign_tenant_id, foreign_repository_id) = unique_scope("foreign");
-    let mut store = DelegationStore::connect(&database_url)
+    let store = DelegationStore::connect(&pool)
         .await
         .expect("the test database should accept delegation connections");
 

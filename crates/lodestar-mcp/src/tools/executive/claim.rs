@@ -57,6 +57,22 @@ pub(super) fn claim(engine: &Lodestar, task_id: &str, args: &Value) -> Result<Va
                 obj.insert("scope_advice".to_string(), json!(advice));
             }
         }
+        // Optional, caller-declared paths already committed on the branch
+        // since its base (ADR-0147) -- exactly what `scripts/canonical-
+        // push.mjs` already computes as `changed`, but supplied at claim time
+        // instead of only at publish. Advisory only, and reported separately
+        // from `governing`: it names what already governs something already
+        // sitting on the branch, never what the task itself declared it will
+        // touch. Absent input means no answer at all, not an empty one.
+        let branch_committed_paths = str_array(args, "branch_committed_paths");
+        if !branch_committed_paths.is_empty() {
+            let branch_inherited = engine
+                .governing_clauses_for_branch(task_id, &branch_committed_paths)
+                .map_err(|e| e.to_string())?;
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("branch_inherited".to_string(), json!(branch_inherited));
+            }
+        }
         if let Some(task) = engine
             .store()
             .get_task(task_id)

@@ -138,6 +138,18 @@ pub fn administration_routes(state: AdministrationApiState) -> Router {
             post(recovery::inspect_snapshot).get(recovery::latest_snapshot_inspection),
         )
         .route(
+            "/api/v1/administration/recovery-executions",
+            post(recovery_execution::preview_recovery_execution),
+        )
+        .route(
+            "/api/v1/administration/recovery-executions/:request_id/confirm",
+            post(recovery_execution::confirm_recovery_execution),
+        )
+        .route(
+            "/api/v1/administration/recovery-executions/:request_id",
+            get(recovery_execution::recovery_execution_status),
+        )
+        .route(
             "/api/v1/repositories/:repository_id/administration/exports",
             post(export::request_export),
         )
@@ -152,6 +164,7 @@ mod export;
 mod policy;
 mod purge;
 mod recovery;
+mod recovery_execution;
 mod snapshot;
 
 #[derive(Serialize)]
@@ -380,7 +393,11 @@ fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
         AdministrationStoreError::UnknownPolicy { .. }
         | AdministrationStoreError::UnknownRequest { .. }
         | AdministrationStoreError::UnknownPurgeRequest { .. }
-        | AdministrationStoreError::UnknownExportRequest { .. } => StatusCode::NOT_FOUND,
+        | AdministrationStoreError::UnknownExportRequest { .. }
+        | AdministrationStoreError::UnknownRecoveryExecutionRequest { .. } => StatusCode::NOT_FOUND,
+        AdministrationStoreError::UnknownRecoveryArtifact
+        | AdministrationStoreError::RecoveryArtifactManifestMismatch
+        | AdministrationStoreError::NoPassingRehearsalForArtifact => StatusCode::CONFLICT,
         error @ (AdministrationStoreError::Database(_)
         | AdministrationStoreError::UnknownOperation { .. }
         | AdministrationStoreError::UnknownOutcome { .. }
