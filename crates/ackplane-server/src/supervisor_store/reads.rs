@@ -114,4 +114,42 @@ impl SupervisorStore {
             .map(|row| receipt_record_from_row(&row))
             .collect()
     }
+
+    /// The highest supervisor-declared outbox sequence this server has durably
+    /// accepted, or `None` when it has accepted none.
+    ///
+    /// `None` and `Some(0)` stay distinct all the way to the wire (ADR-0141):
+    /// `None` means the server makes no independent statement, `Some(0)` would
+    /// mean it holds a record asserting nothing was accepted. Collapsing them
+    /// would hand `reconcile` a fabricated position.
+    ///
+    /// A supervisor that has registered but never had a sequenced frame
+    /// accepted reports `None`, not `Some(0)`, even though the server plainly
+    /// knows it exists. The server cannot distinguish "this supervisor has
+    /// sent no outbox frames yet" from "this supervisor predates ADR-0146 and
+    /// never states a sequence", and answering `0` for the second case would
+    /// tell every older supervisor on every reconnect that the server is
+    /// behind and it should resend positions it has long since had confirmed.
+    /// Silence is the honest answer to a question the server cannot yet
+    /// answer (ADR-0146 decision 5).
+    pub async fn accepted_outbox_sequence(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        supervisor_id: &str,
+    ) -> Result<Option<u64>, StoreError> {
+        let row = self
+            .connection()
+            .await?
+            .query_opt(
+                "SELECT accepted_sequence FROM supervisor_outbox_positions \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND supervisor_id = $3",
+                &[&tenant_id, &repository_id, &supervisor_id],
+            )
+            .await?;
+        Ok(row.map(|row| {
+            let accepted: i64 = row.get("accepted_sequence");
+            accepted.max(0) as u64
+        }))
+    }
 }

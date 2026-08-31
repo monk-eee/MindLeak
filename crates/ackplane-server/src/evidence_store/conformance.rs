@@ -321,31 +321,6 @@ impl EvidenceStore {
             idempotent_replay: false,
         })
     }
-
-    pub async fn find_conformance_by_idempotency(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        idempotency_key: &str,
-    ) -> Result<Option<ConformanceRecord>, ConformanceStoreError> {
-        if !is_bounded(idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES) {
-            return Err(ConformanceStoreError::InvalidIdempotencyKey);
-        }
-        self.pool
-            .get()
-            .await?
-            .query_opt(
-                "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
-                    finding_count, findings_digest, finding_codes, review_state, reported_checked_at, evaluated_by, \
-                        recorded_at, idempotency_key, reported_constitution_version \
-                 FROM conformance_records \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND idempotency_key = $3",
-                &[&tenant_id, &repository_id, &idempotency_key],
-            )
-            .await?
-            .map(|row| row_to_conformance(&row))
-            .transpose()
-    }
 }
 
 fn outcome_for_existing(
