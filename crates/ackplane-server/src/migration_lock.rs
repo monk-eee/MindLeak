@@ -175,6 +175,13 @@ pub(crate) mod key {
     /// shared development database (`ackplane_test`) as well as committed
     /// source: no live discrepancy above 57.
     pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION: i64 = 58;
+    /// `migrations/0062_administration_recovery_execution_receipt.sql`
+    /// (ADR-0145 slice 4). Originally filed as 59, then 60, then 61; the
+    /// shared development database (`ackplane_test`) accepted a different
+    /// migration under each of those keys from concurrent branches before
+    /// this one applied. `migration-audit --next` re-checked live and
+    /// selected 62.
+    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT: i64 = 62;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

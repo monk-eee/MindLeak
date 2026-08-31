@@ -802,10 +802,26 @@ part of preview construction rather than a separate caller round trip; its
 failure fails the preview outright, before any recovery-execution request row
 exists. Confirming here never runs `pg_restore`: it only records that a
 second, distinct enrolled key authorized the request (`Confirmed`/`Refused`/
-`Expired`), which is a strictly narrower outcome vocabulary than Purge's own
-receipt -- production execution itself, gated on rehearsal freshness and
-`single_tenant_attested`, is separate, later work this ADR names but does not
-implement yet.
+`Expired`). Production execution itself (ADR-0145 decisions 4-8,
+`administration/recovery_execution.rs`'s `execute_recovery_execution` route,
+backed by `AdministrationStore::execute_recovery` and
+`snapshot_provider::execute_recovery`) is a deliberately distinct, later route
+that consumes an already-confirmed authorization rather than a third signed
+step: the dual-signing-key preview/confirm pair is decision 4's complete
+authorization, so execution needs no signature of its own. It re-checks, at
+the moment it runs (not only at preview time), that the deployment is attested
+single-tenant (`single_tenant_attested`, refusing outright otherwise per
+decision 6) and that a rehearsal of the exact artifact digest passed inside
+the freshness window (`MAX_REHEARSAL_FRESHNESS`, decision 3); either refusal
+is a durable `Refused` `RecoveryExecutionReceipt`, never a bare error. Only
+then does it run `pg_restore --clean --if-exists --no-owner` for real against
+`ACKPLANE_DATABASE_URL` (unlike rehearsal's restore into a freshly created
+empty scratch database, production's target already holds live objects the
+restore must overwrite) and records `Succeeded`/`Failed` honestly (decision 8:
+a failed restore is never silently retried with checks relaxed or papered over
+by falling back to the pre-restore safety Snapshot). Idempotent throughout: a
+request that already has a receipt returns it unchanged on replay, never
+re-running `pg_restore` twice.
 
 | Route | Serves |
 |---|---|
@@ -852,7 +868,8 @@ implement yet.
 | `POST /api/v1/repositories/:repository_id/administration/exports` | ADR-0119 decision 5: requests, then synchronously executes, a bounded/redacted Export of `telemetry_events` -- refuses (`409`, no request row created) without an active tenant-scoped `Export` policy, otherwise queries at most `max_records` rows, redacts every internal identifier, and records a `succeeded`/`failed` receipt naming its schema version, record count, and exactly which fields were redacted. Idempotent like Snapshot: a replayed request returns the original receipt rather than re-running the query. |
 | `GET /api/v1/repositories/:repository_id/administration/exports/:request_id` | The receipt recorded for one prior Export request, if any, tenant- and repository-scoped like every other Snapshot/purge/export read. |
 | `POST /api/v1/administration/recovery-executions` | ADR-0145 decisions 4-5: previews a production recovery execution -- refuses (`409`, no request row created) without an active platform-scoped `RecoveryExecution` policy, an artifact whose declared digest matches its own recorded Snapshot receipt, or a named rehearsal report that actually passed for that exact digest. Triggers a fresh platform Snapshot as its own pre-restore safety point as part of preview construction; that Snapshot's failure fails this preview outright, before any recovery-execution request row exists. Always platform-scoped -- there is no `:repository_id` path segment, unlike Purge. |
-| `POST /api/v1/administration/recovery-executions/:request_id/confirm` | Authorizes (never executes) a previously previewed recovery execution: the confirming enrolled key must be distinct from the one that created the preview (ADR-0134's pattern, reused verbatim). Records `confirmed`/`refused`/`expired` only -- `pg_restore` against production is separate, later work this ADR names but does not implement yet. Tenant-scoped for disclosure even though the operation itself is platform-scoped. |
+| `POST /api/v1/administration/recovery-executions/:request_id/confirm` | Authorizes (never executes) a previously previewed recovery execution: the confirming enrolled key must be distinct from the one that created the preview (ADR-0134's pattern, reused verbatim). Records `confirmed`/`refused`/`expired` only. Tenant-scoped for disclosure even though the operation itself is platform-scoped. |
+| `POST /api/v1/administration/recovery-executions/:request_id/execute` | ADR-0145 decisions 4-8: runs (or refuses, or records a genuine failure of) a previously confirmed recovery execution -- the one route that actually mutates the authoritative database. Needs no signature of its own; the preview/confirm pair already authorized it. Re-checks single-tenant attestation and rehearsal freshness at the moment it runs and records a durable `RecoveryExecutionReceipt` (`succeeded`/`failed`/`refused`). Idempotent: replaying against an already-decided request returns the same receipt. |
 | `GET /api/v1/administration/recovery-executions/:request_id` | The recovery-execution request recorded for one prior preview, if any, under the same tenant-disclosure rule as confirm. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
