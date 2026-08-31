@@ -105,7 +105,8 @@ impl KnowledgeStore {
         }
         let reference_id = unique_evidence_reference_id();
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "INSERT INTO knowledge_evidence_references \
                      (tenant_id, repository_id, knowledge_id, reference_id, reference_kind, reference_ref, polarity, recorded_by, recorded_at) \
@@ -144,7 +145,8 @@ impl KnowledgeStore {
     ) -> Result<Vec<KnowledgeEvidenceReference>, KnowledgeStoreError> {
         let limit = bounded_evidence_reference_limit(limit);
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT reference_id, reference_kind, reference_ref, polarity, recorded_by, recorded_at \
                  FROM knowledge_evidence_references \

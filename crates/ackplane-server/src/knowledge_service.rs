@@ -155,7 +155,12 @@ fn store_error(error: KnowledgeStoreError) -> Status {
         KnowledgeStoreError::EmptyEvidenceReferenceRecordedBy => {
             Status::invalid_argument("evidence reference recorded_by must not be empty")
         }
+        // Bounded pool exhaustion is a transient, retryable fault, not a
+        // permanent one: `unavailable` is the one gRPC code that says so
+        // (ADR-0143 decision 5), mirroring `ClaimStore`'s own mapping.
+        KnowledgeStoreError::PoolExhausted(_) => Status::unavailable(error.to_string()),
         KnowledgeStoreError::Database(error) => Status::internal(error.to_string()),
+        KnowledgeStoreError::SigningKey(error) => Status::internal(error.to_string()),
     }
 }
 
@@ -711,9 +716,11 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("replay");
         register_test_key(&database_url, &identity).await;
-        let store = KnowledgeStore::connect(&database_url)
+        let store = KnowledgeStore::connect(&pool)
             .await
             .expect("the gated test database should accept a knowledge-store connection");
         let service = KnowledgeGrpcService::new(store);
@@ -749,9 +756,11 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("stale");
         register_test_key(&database_url, &identity).await;
-        let store = KnowledgeStore::connect(&database_url)
+        let store = KnowledgeStore::connect(&pool)
             .await
             .expect("the gated test database should accept a knowledge-store connection");
         let service = KnowledgeGrpcService::new(store);
@@ -800,8 +809,10 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("unsigned");
-        let store = KnowledgeStore::connect(&database_url)
+        let store = KnowledgeStore::connect(&pool)
             .await
             .expect("the gated test database should accept a knowledge-store connection");
         let service = KnowledgeGrpcService::new(store);
@@ -825,10 +836,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("source-ref-tampering");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -846,7 +859,7 @@ mod tests {
             .expect_err("tampering with a signed source reference must be refused");
         assert_eq!(refused.code(), tonic::Code::Unauthenticated);
 
-        let history = KnowledgeStore::connect(&database_url)
+        let history = KnowledgeStore::connect(&pool)
             .await
             .expect("a verifier connection should open")
             .history(&identity.tenant_id, &identity.repository_id, 10)
@@ -861,10 +874,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("reach");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -908,10 +923,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("reach-tampering");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -947,10 +964,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("invalid-reach");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -987,10 +1006,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("retirement-attribution");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -1015,7 +1036,7 @@ mod tests {
             .await
             .expect("a valid request should retire knowledge");
 
-        let history = KnowledgeStore::connect(&database_url)
+        let history = KnowledgeStore::connect(&pool)
             .await
             .expect("a verifier connection should open")
             .history(&identity.tenant_id, &identity.repository_id, 10)
@@ -1039,10 +1060,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("history");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -1101,10 +1124,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("reconfirm");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -1166,10 +1191,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("reconfirm-tampering");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -1215,10 +1242,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("reconfirm-empty-evidence");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
@@ -1250,10 +1279,12 @@ mod tests {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let identity = TestIdentity::fresh("reconfirm-retired");
         register_test_key(&database_url, &identity).await;
         let service = KnowledgeGrpcService::new(
-            KnowledgeStore::connect(&database_url)
+            KnowledgeStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept a knowledge-store connection"),
         );
