@@ -16,7 +16,6 @@ use ackplane_protocol::{
     supervisor::{directive_payload_digest, directive_requirement},
     v1::{self, agent_directive},
 };
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio_postgres::Transaction;
 
 use super::ExecutionOutcome;
@@ -40,9 +39,7 @@ fn directive_id_for(command: &WorkCommand) -> String {
 }
 
 fn rfc3339(value: SystemTime) -> Result<String, WorkCommandStoreError> {
-    OffsetDateTime::from(value)
-        .format(&Rfc3339)
-        .map_err(|_| WorkCommandStoreError::InvalidTimestamp)
+    crate::wire_format::rfc3339(value).map_err(|_| WorkCommandStoreError::InvalidTimestamp)
 }
 
 /// Builds, validates, and enqueues one directive for `command`, then records
