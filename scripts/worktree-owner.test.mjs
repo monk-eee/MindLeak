@@ -19,9 +19,11 @@ import {
   checkActiveClaimOnBranch,
   checkExistingPullRequests,
   checkWorkingTreeDirty,
+  checkWorktreeOwnership,
   dirtyWorkingTreeWarning,
   existingPullRequestWarning,
   ownershipVerdict,
+  recordWorktreeOwner,
   refusalMessage,
 } from "./worktree-owner.mjs";
 
@@ -504,4 +506,184 @@ test("an unchecked result still warns, naming the fallback", () => {
     claim: null,
   });
   assert.match(warning, /could not check Lodestar/);
+});
+
+// --- a refused adopt must not have already written (gaps.d, closed here) -----
+//
+// The adopt path decides its verdict before its gates run, and the marker used
+// to be written as a side effect of that verdict. A correctly-refused adopt
+// therefore still overwrote the marker, leaving the worktree recorded as owned
+// by the session that was just refused -- so the legitimate claim-holder's next
+// commit was refused by this same script, naming the wrong owner. That is the
+// exact collision this script exists to prevent, delivered by the script.
+
+test("computing the verdict without recording leaves the marker untouched", () => {
+  const root = mkdtempSync(join(tmpdir(), "worktree-owner-"));
+  try {
+    run(["init", "-q", "-b", "main"], root);
+    run(["config", "user.email", "probe@example.com"], root);
+    run(["config", "user.name", "Probe"], root);
+    run(["commit", "-q", "--allow-empty", "-m", "init"], root);
+    const wtPath = join(root, "wt1");
+    run(["worktree", "add", "-b", "feature/x", wtPath, "main"], root);
+    const gitDir = run(["rev-parse", "--absolute-git-dir"], wtPath).trim();
+    const markerPath = join(gitDir, MARKER_NAME);
+    writeFileSync(markerPath, "session:v1:owner\n");
+
+    const previous = process.env.LODESTAR_SESSION_ID;
+    process.env.LODESTAR_SESSION_ID = "session:v1:intruder";
+    try {
+      const verdict = checkWorktreeOwnership({
+        cwd: wtPath,
+        adopt: true,
+        record: false,
+      });
+      assert.equal(
+        verdict.action,
+        "record",
+        "an adopt still decides to record",
+      );
+      assert.equal(verdict.marker, markerPath, "the marker path is returned");
+      assert.equal(
+        readFileSync(markerPath, "utf8").trim(),
+        "session:v1:owner",
+        "record: false must not touch the marker",
+      );
+
+      // The caller performs the write once its own gates have passed.
+      recordWorktreeOwner({ marker: verdict.marker, session: verdict.session });
+      assert.equal(
+        readFileSync(markerPath, "utf8").trim(),
+        "session:v1:intruder",
+      );
+    } finally {
+      if (previous === undefined) delete process.env.LODESTAR_SESSION_ID;
+      else process.env.LODESTAR_SESSION_ID = previous;
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/// Regression, end to end: the incident itself.
+///
+/// Drives the real CLI against a real git worktree whose branch carries a
+/// live Lodestar claim held by a third session, served by a fake ledger over
+/// the same newline-delimited JSON-RPC stdio the real one speaks. The adopt
+/// must exit 4 *and* leave the marker byte-identical. Against the previous
+/// ordering this fails on the marker assertion while still exiting 4, which is
+/// precisely why a non-zero exit was not enough on its own.
+test("a refused adopt leaves the ownership marker exactly as it was", () => {
+  const root = mkdtempSync(join(tmpdir(), "worktree-owner-"));
+  try {
+    run(["init", "-q", "-b", "main"], root);
+    run(["config", "user.email", "probe@example.com"], root);
+    run(["config", "user.name", "Probe"], root);
+    run(["commit", "-q", "--allow-empty", "-m", "init"], root);
+    const wtPath = join(root, "wt1");
+    run(["worktree", "add", "-b", "feature/x", wtPath, "main"], root);
+
+    const gitDir = run(["rev-parse", "--absolute-git-dir"], wtPath).trim();
+    const markerPath = join(gitDir, MARKER_NAME);
+    writeFileSync(markerPath, "session:v1:owner\n");
+
+    // A fake Lodestar reporting one live claim on this branch, held by a
+    // session that is neither the marker's owner nor the adopter.
+    const fakeLedger = join(root, "fake-lodestar.mjs");
+    writeFileSync(
+      fakeLedger,
+      [
+        "const board = { tasks: [{ id: 'task:live', branch: 'feature/x',",
+        "  status: 'claimed', owner: 'session:v1:claimholder',",
+        "  lease_expires_at: Math.floor(Date.now() / 1000) + 3600 }] };",
+        "let raw = '';",
+        "process.stdin.on('data', (chunk) => { raw += chunk; });",
+        "process.stdin.on('end', () => {",
+        "  for (const line of raw.split(/\\r?\\n/)) {",
+        "    if (!line.trim()) continue;",
+        "    const request = JSON.parse(line);",
+        "    if (request.method !== 'tools/call') continue;",
+        "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0',",
+        "      id: request.id, result: { structuredContent: board } }) + '\\n');",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+
+    const result = spawnSync("node", [scriptPath, "--adopt-worktree"], {
+      cwd: wtPath,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        LODESTAR_SESSION_ID: "session:v1:intruder",
+        LODESTAR_MCP_BIN: fakeLedger,
+      },
+    });
+
+    assert.equal(result.status, 4, "a live foreign claim refuses the adopt");
+    assert.match(result.stderr, /claimed by another session/);
+    assert.equal(
+      readFileSync(markerPath, "utf8").trim(),
+      "session:v1:owner",
+      "a refused adopt must not have already overwritten the marker",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/// The other half: an adopt that passes its gates must still record, or the
+/// fix would have turned a real bug into a silently broken handover.
+test("an uncontested adopt still records the handover", () => {
+  const root = mkdtempSync(join(tmpdir(), "worktree-owner-"));
+  try {
+    run(["init", "-q", "-b", "main"], root);
+    run(["config", "user.email", "probe@example.com"], root);
+    run(["config", "user.name", "Probe"], root);
+    run(["commit", "-q", "--allow-empty", "-m", "init"], root);
+    const wtPath = join(root, "wt1");
+    run(["worktree", "add", "-b", "feature/x", wtPath, "main"], root);
+
+    const gitDir = run(["rev-parse", "--absolute-git-dir"], wtPath).trim();
+    const markerPath = join(gitDir, MARKER_NAME);
+    writeFileSync(markerPath, "session:v1:owner\n");
+
+    // A ledger that reports no claims at all: nothing to refuse.
+    const fakeLedger = join(root, "empty-lodestar.mjs");
+    writeFileSync(
+      fakeLedger,
+      [
+        "let raw = '';",
+        "process.stdin.on('data', (chunk) => { raw += chunk; });",
+        "process.stdin.on('end', () => {",
+        "  for (const line of raw.split(/\\r?\\n/)) {",
+        "    if (!line.trim()) continue;",
+        "    const request = JSON.parse(line);",
+        "    if (request.method !== 'tools/call') continue;",
+        "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0',",
+        "      id: request.id, result: { structuredContent: { tasks: [] } } }) + '\\n');",
+        "  }",
+        "});",
+      ].join("\n"),
+    );
+
+    const result = spawnSync("node", [scriptPath, "--adopt-worktree"], {
+      cwd: wtPath,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        LODESTAR_SESSION_ID: "session:v1:rescuer",
+        LODESTAR_MCP_BIN: fakeLedger,
+      },
+    });
+
+    assert.equal(result.status, 0, "an uncontested adopt succeeds");
+    assert.equal(
+      readFileSync(markerPath, "utf8").trim(),
+      "session:v1:rescuer",
+      "a permitted adopt must still record the handover",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -783,6 +783,16 @@ mod tests {
 
     /// Reading is not consuming (ADR-0046 clause 4). Two people looking at the
     /// inbox must see the same rows, or one of them silently loses a question.
+    ///
+    /// `waiting_seconds` is deliberately normalised before comparing. It is
+    /// derived at read time as `now - asked_at`, not stored, so two reads that
+    /// straddle a one-second boundary differ in it legitimately — comparing it
+    /// made this test fail in CI (run 33361472735) on a change that touched no
+    /// Rust, for a reason that has nothing to do with consumption. Every other
+    /// field is still compared exactly, so a read that consumed, reordered, or
+    /// altered a question still fails here. `only_waiting_seconds_moves_with_
+    /// the_clock` in `store::coordination::questions` pins the assumption that
+    /// makes this exclusion safe.
     #[test]
     fn reading_the_inbox_does_not_consume_it() {
         let engine = engine();
@@ -799,7 +809,17 @@ mod tests {
 
         let first = engine.questions_for_a_human().unwrap();
         let second = engine.questions_for_a_human().unwrap();
-        assert_eq!(first, second);
+
+        let ignoring_elapsed = |questions: &[crate::HumanQuestion]| {
+            questions
+                .iter()
+                .map(|question| crate::HumanQuestion {
+                    waiting_seconds: 0,
+                    ..question.clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ignoring_elapsed(&first), ignoring_elapsed(&second));
         assert_eq!(second.len(), 1);
     }
 
