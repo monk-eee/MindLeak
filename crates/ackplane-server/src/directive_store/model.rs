@@ -55,6 +55,8 @@ pub struct DirectiveReceiptOutcome {
 pub enum DirectiveStoreError {
     #[error("directive database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("directive store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("stored directive data cannot be decoded: {0}")]
     Decode(#[from] prost::DecodeError),
     #[error("stored supervisor capabilities are invalid: {0}")]
