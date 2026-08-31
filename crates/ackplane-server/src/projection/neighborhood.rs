@@ -16,9 +16,9 @@ impl Projector {
         max_fanout: i32,
     ) -> Result<BoundedNeighborhood, ProjectionError> {
         let freshness = self.freshness(tenant_id, repository_id).await?;
+        let connection = self.connection().await?;
 
-        let frontier_rows = self
-            .client
+        let frontier_rows = connection
             .query(
                 "WITH RECURSIVE frontier(node_id, depth) AS ( \
                      SELECT node_id, 0 \
@@ -77,8 +77,7 @@ impl Projector {
             });
         }
 
-        let node_rows = self
-            .client
+        let node_rows = connection
             .query(
                 "SELECT node_id, node_type, label FROM projected_nodes \
                  WHERE tenant_id = $1 AND repository_id = $2 AND node_id = ANY($3)",
@@ -101,8 +100,7 @@ impl Projector {
 
         // Dangling edges dropped: only edges whose endpoints are both admitted
         // are returned (ADR-0087 clause 3).
-        let edge_rows = self
-            .client
+        let edge_rows = connection
             .query(
                 "SELECT source_id, target_id, relation, base_weight, half_life_hours, updated_at \
                  FROM projected_edges \
@@ -141,9 +139,9 @@ impl Projector {
         tenant_id: &str,
         repository_id: &str,
         limit: i64,
-    ) -> Result<Vec<ProjectedNode>, tokio_postgres::Error> {
-        let rows = self
-            .client
+    ) -> Result<Vec<ProjectedNode>, ProjectionError> {
+        let connection = self.connection().await?;
+        let rows = connection
             .query(
                 "SELECT node_id, node_type, label FROM projected_nodes \
                  WHERE tenant_id = $1 AND repository_id = $2 \
@@ -175,9 +173,11 @@ mod tests {
     #[tokio::test]
     async fn bounded_neighborhood_admits_only_seeds_reachable_within_max_depth() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let projector = Projector::connect(&url).await.expect("connect projector");
-        let mut rebuilder = Projector::connect(&url).await.expect("connect rebuilder");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
+        let rebuilder = Projector::connect(&pool).await.expect("connect rebuilder");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-chain".to_string();
 
@@ -266,8 +266,10 @@ mod tests {
     #[tokio::test]
     async fn sample_nodes_bounds_the_result_to_the_requested_limit() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-sample".to_string();
 
@@ -306,8 +308,10 @@ mod tests {
     #[tokio::test]
     async fn sample_nodes_orders_deterministically_when_updated_at_ties() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-sample-order".to_string();
 
@@ -350,8 +354,10 @@ mod tests {
     #[tokio::test]
     async fn sample_nodes_is_tenant_scoped() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-sample-tenant".to_string();
 

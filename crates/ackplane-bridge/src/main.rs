@@ -166,7 +166,7 @@ async fn main() {
             return;
         }
     };
-    let projector = match Projector::connect(config.database_url()).await {
+    let projector = match Projector::connect(&db_pool).await {
         Ok(projector) => Arc::new(projector),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's graph projection: {error}");
