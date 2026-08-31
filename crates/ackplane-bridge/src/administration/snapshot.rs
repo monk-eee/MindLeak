@@ -197,6 +197,23 @@ fn snapshot_error_reason(error: &SnapshotProviderError) -> String {
         SnapshotProviderError::Encryption => {
             "the snapshot artifact could not be encrypted.".to_string()
         }
+        // ADR-0145 slice 1: rehearsal errors, not yet reachable from this
+        // route -- rehearsal has no Bridge HTTP surface in this slice -- but
+        // `SnapshotProviderError` is one enum shared with `create_platform_snapshot`,
+        // so this match must stay exhaustive regardless.
+        SnapshotProviderError::RehearsalDatabaseNotConfigured => {
+            "recovery rehearsal is not configured on this deployment.".to_string()
+        }
+        SnapshotProviderError::RehearsalDatabaseUrlInvalid(_) => {
+            "the recovery rehearsal database url could not be parsed.".to_string()
+        }
+        SnapshotProviderError::RehearsalDatabaseIsAuthoritative => {
+            "the recovery rehearsal database is misconfigured to the authoritative database."
+                .to_string()
+        }
+        SnapshotProviderError::RehearsalProvisionFailed(_) => {
+            "the recovery rehearsal scratch database could not be provisioned.".to_string()
+        }
     }
 }
 
