@@ -91,6 +91,50 @@ pub(crate) fn unique_id(prefix: &str) -> String {
     format!("{prefix}-{}-{counter}", uuid_ish())
 }
 
+/// The maintenance connection string for provisioning ephemeral scratch
+/// databases in rehearsal/recovery-execution tests, or `None` when the suite
+/// is not gated on it.
+pub(crate) fn rehearsal_test_url() -> Option<String> {
+    std::env::var("ACKPLANE_TEST_REHEARSAL_DATABASE_URL").ok()
+}
+
+/// Creates and drops an ephemeral database against `maintenance_url`, and
+/// hands `body` its own connection url -- used so rehearsal and recovery-
+/// execution integration tests never touch `ACKPLANE_TEST_DATABASE_URL`'s
+/// shared migration state: tampering a migration digest there could break
+/// every other test or fleet agent sharing that database. Shared by
+/// `snapshot_provider`'s rehearsal tests and `recovery_execution_receipt_write`'s
+/// full-orchestration restore test rather than duplicated in each.
+pub(crate) async fn with_ephemeral_database<Fut>(
+    maintenance_url: &str,
+    name_prefix: &str,
+    body: impl FnOnce(String) -> Fut,
+) where
+    Fut: std::future::Future<Output = ()>,
+{
+    use crate::snapshot_provider::{unique_suffix, with_dbname};
+
+    let name = format!("{}_{}", name_prefix, unique_suffix());
+    let (client, connection) = tokio_postgres::connect(maintenance_url, tokio_postgres::NoTls)
+        .await
+        .expect("a direct maintenance connection should succeed");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .batch_execute(&format!("CREATE DATABASE \"{name}\""))
+        .await
+        .expect("creating the ephemeral fixture database should succeed");
+
+    let url = with_dbname(maintenance_url, &name)
+        .expect("the rehearsal test url should be a postgresql:// uri");
+    body(url).await;
+
+    let _ = client
+        .batch_execute(&format!("DROP DATABASE IF EXISTS \"{name}\""))
+        .await;
+}
+
 /// Enrolls and activates one node for `tenant_id`/`repository_id`, shared by
 /// every store's tests needing an active Fleet entry (originally
 /// `fleet.rs`'s own private helper; extracted here once `readiness.rs`

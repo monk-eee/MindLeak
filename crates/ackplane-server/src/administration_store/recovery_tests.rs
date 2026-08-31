@@ -3,8 +3,8 @@ use std::time::SystemTime;
 use super::*;
 use crate::test_support::unique_id;
 
-fn database_url() -> Option<String> {
-    std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
+fn pool() -> Option<crate::db_pool::PgPool> {
+    crate::test_support::test_pool()
 }
 
 fn policy_request(adopted_by: &str, suffix: &str) -> PolicyAdoptionRequest {
@@ -23,12 +23,12 @@ fn policy_request(adopted_by: &str, suffix: &str) -> PolicyAdoptionRequest {
 
 #[tokio::test]
 async fn recording_an_inspection_requires_an_existing_snapshot_request() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-inspection-unknown-request");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 
@@ -53,12 +53,12 @@ async fn recording_an_inspection_requires_an_existing_snapshot_request() {
 
 #[tokio::test]
 async fn each_inspection_call_appends_its_own_immutable_record() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("administration-recovery-inspection");
-    let mut store = AdministrationStore::connect(&database_url)
+    let store = AdministrationStore::connect(&pool)
         .await
         .expect("the test database should accept administration store connections");
 

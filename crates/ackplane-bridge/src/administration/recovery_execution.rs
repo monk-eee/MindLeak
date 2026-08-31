@@ -4,9 +4,11 @@
 //! separator). Always platform-scoped, per decision 6 -- there is no
 //! per-repository path segment for these routes, unlike Lifecycle purge.
 //! Confirming here never runs `pg_restore`; it only records that a second,
-//! distinct enrolled key authorized the request. Production execution itself
-//! is slice 4, not implemented yet. Split from `recovery.rs` for the same
-//! module-length reason Purge/Snapshot/Export already are their own files.
+//! distinct enrolled key authorized the request. Production execution
+//! (decision 4-8, `execute_recovery_execution`) is a distinct, later route
+//! that actually consumes that authorization and runs the real restore --
+//! split into `recovery_execution_run.rs` for the same module-length reason
+//! Purge/Snapshot/Export/Recovery are already their own files.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -168,7 +170,7 @@ pub(super) async fn preview_recovery_execution(
     // captured.
     let snapshot_request = {
         use ackplane_server::administration_store::{AdministrationScope, NewSnapshotRequest};
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .request_snapshot(
                 &NewSnapshotRequest {
@@ -183,7 +185,7 @@ pub(super) async fn preview_recovery_execution(
             .map_err(administration_error_status)?
     };
     let existing_safety_receipt = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .snapshot_receipt_for_request(&snapshot_request.request.request_id)
             .await
@@ -228,7 +230,7 @@ pub(super) async fn preview_recovery_execution(
         confirmation_window,
         idempotency_key,
     };
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let outcome = administration
         .preview_recovery_execution(&preview_request, now)
         .await
@@ -283,7 +285,7 @@ pub(super) async fn confirm_recovery_execution(
     // made it, exactly like Lifecycle purge, even though the operation
     // itself is always platform-scoped (ADR-0145 decision 6).
     {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         let request = administration
             .recovery_execution_request(&request_id)
             .await
@@ -303,7 +305,7 @@ pub(super) async fn confirm_recovery_execution(
         now,
     )
     .await?;
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let confirmation = administration
         .confirm_recovery_execution(
             &request_id,
@@ -321,7 +323,7 @@ pub(super) async fn recovery_execution_status(
     State(state): State<AdministrationApiState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<RecoveryExecutionPreviewResponse>, StatusCode> {
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let request = administration
         .recovery_execution_request(&request_id)
         .await
@@ -407,7 +409,7 @@ fn recovery_confirmation_outcome_label(outcome: RecoveryConfirmationOutcome) -> 
     }
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -421,7 +423,7 @@ fn hex_decode(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
+pub(super) fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
     timestamp
         .duration_since(UNIX_EPOCH)
         .ok()

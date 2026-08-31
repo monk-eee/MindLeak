@@ -26,7 +26,6 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 fn unique_suffix() -> String {
@@ -215,15 +214,21 @@ async fn adopting_a_policy_then_requesting_an_export_redacts_internal_identifier
             .await
             .expect("the test database should accept Fleet connections"),
     );
-    let administration = AdministrationStore::connect(&database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
+    let administration = AdministrationStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
+    )
+    .await
+    .expect("the test database should accept Administration store connections");
     let dir = std::env::temp_dir().join(format!("ackplane-export-integration-{suffix}"));
     let _ = std::fs::remove_dir_all(&dir);
     let state = AdministrationApiState::new(
         fleet,
         Arc::from(tenant_id.clone()),
-        Arc::new(Mutex::new(administration)),
+        Arc::new(administration),
         None,
         Some(Arc::new(ExportProviderConfig {
             database_url: database_url.clone(),
@@ -338,9 +343,15 @@ async fn adopting_a_policy_then_requesting_an_export_redacts_internal_identifier
 
     // A different tenant must not read this receipt back merely by knowing
     // (or guessing) the request id.
-    let foreign_administration = AdministrationStore::connect(&database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
+    let foreign_administration = AdministrationStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
+    )
+    .await
+    .expect("the test database should accept Administration store connections");
     let foreign_router = administration_routes(AdministrationApiState::new(
         Arc::new(
             FleetStore::connect(&database_url)
@@ -348,7 +359,7 @@ async fn adopting_a_policy_then_requesting_an_export_redacts_internal_identifier
                 .expect("the test database should accept Fleet connections"),
         ),
         Arc::from(format!("foreign-{tenant_id}")),
-        Arc::new(Mutex::new(foreign_administration)),
+        Arc::new(foreign_administration),
         None,
         None,
     ));

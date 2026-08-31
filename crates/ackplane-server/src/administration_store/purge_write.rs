@@ -28,14 +28,15 @@ impl AdministrationStore {
     /// authorizes this tenant/repository, or returns an identical prior
     /// preview's exact record.
     pub async fn preview_purge(
-        &mut self,
+        &self,
         request: &PurgePreviewRequest,
         now: SystemTime,
     ) -> Result<PurgeRequestOutcome, AdministrationStoreError> {
         validate_preview_request(request)?;
         let assigned_id = assigned_request_id(request);
         let digest = preview_request_digest(request)?;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         if let Some(existing) = existing_request_by_id(&transaction, &assigned_id).await? {
             let outcome = replay_or_conflict(existing, &digest)?;
@@ -135,14 +136,15 @@ impl AdministrationStore {
     /// signing-key principal and must differ from the key that created the
     /// preview; caller-provided labels never authorize a purge.
     pub async fn confirm_purge(
-        &mut self,
+        &self,
         request_id: &str,
         confirming_signing_key_id: &str,
         confirming_node_id: &str,
         confirming_public_key_fingerprint: &str,
         now: SystemTime,
     ) -> Result<PurgeReceipt, AdministrationStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let request = existing_request_by_id_for_update(&transaction, request_id)
             .await?
             .ok_or_else(|| AdministrationStoreError::UnknownPurgeRequest {
@@ -280,11 +282,11 @@ impl AdministrationStore {
     }
 
     pub async fn purge_request(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<PurgeRequest>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_purge_requests WHERE request_id = $1",
                 &[&request_id],
@@ -294,11 +296,11 @@ impl AdministrationStore {
     }
 
     pub async fn purge_receipt_for_request(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<PurgeReceipt>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_purge_receipts WHERE request_id = $1",
                 &[&request_id],

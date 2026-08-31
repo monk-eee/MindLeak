@@ -219,6 +219,8 @@ pub struct SnapshotReceipt {
 pub enum AdministrationStoreError {
     #[error("administration store database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("administration store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("{field} must be a bounded non-empty identifier")]
     InvalidIdentifier { field: &'static str },
     #[error("data classification must be between 1 and {MAX_CLASSIFICATION_BYTES} bytes")]
@@ -283,6 +285,8 @@ pub enum AdministrationStoreError {
     RecoveryArtifactManifestMismatch,
     #[error("the named rehearsal report does not exist, did not pass, or covers a different artifact digest")]
     NoPassingRehearsalForArtifact,
+    #[error("recovery execution requires a Confirmed authorization; the request has none, or its confirmation was Refused or Expired")]
+    RecoveryExecutionNotConfirmed,
 }
 
 fn is_identifier(value: &str) -> bool {

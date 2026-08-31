@@ -15,7 +15,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::Stdio,
-    time::Instant,
+    time::{Duration, Instant, SystemTime},
 };
 
 use chacha20poly1305::{
@@ -37,6 +37,14 @@ const KEY_BYTES: usize = 32;
 /// `XChaCha20Poly1305`'s extended nonce length -- the prefix
 /// `create_platform_snapshot` writes ahead of the ciphertext.
 const NONCE_BYTES: usize = 24;
+
+/// ADR-0145 decision 3: how long a passing rehearsal of the exact artifact
+/// digest stays trustworthy evidence for production execution. Chosen the
+/// same order of magnitude as `MAX_CONFIRMATION_WINDOW`
+/// (`purge_model.rs`) -- a rehearsal older than this proves nothing about
+/// compatibility with whatever migrations landed since, so execution refuses
+/// rather than trusting stale evidence.
+pub const MAX_REHEARSAL_FRESHNESS: Duration = Duration::from_secs(24 * 3600);
 
 /// Where a platform Snapshot is written and what encrypts it. Resolved once
 /// from environment at Bridge/service startup, mirroring
@@ -180,6 +188,20 @@ pub struct RecoveryRehearsalReport {
     /// table, and the table-count reconciliation above would not catch it).
     pub restored_row_count: Option<i64>,
     pub passed: bool,
+    pub reason: String,
+}
+
+/// ADR-0145 decision 7: the outcome of one production recovery-execution
+/// restore -- real `pg_restore` against `config.database_url`, never a
+/// scratch target. Unlike [`RecoveryRehearsalReport`], there is no migration
+/// re-run or table reconciliation here: the freshness gate that admits a
+/// caller to this function already proved schema compatibility via a recent
+/// passing rehearsal of the identical artifact digest, and re-deriving that
+/// proof here would duplicate rather than reuse it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryExecutionRestoreReport {
+    pub restore_duration_ms: i64,
+    pub succeeded: bool,
     pub reason: String,
 }
 
@@ -511,6 +533,123 @@ pub async fn rehearse_recovery(
     result
 }
 
+/// ADR-0145 decision 4-7: runs the real, destructive restore against
+/// `config.database_url` -- the authoritative production database, never a
+/// scratch target. Callers must already have satisfied every gate this
+/// function does not itself re-check: a `Confirmed` authorization (ADR-0134's
+/// dual-signing-key pattern), a fresh passing rehearsal of this exact digest
+/// (decision 3), and `single_tenant_attested` (decision 6, checked first here
+/// as the one gate this function is positioned to enforce directly, since
+/// the config it already holds is the config a rehearsal-freshness check has
+/// no other reason to see).
+///
+/// Returns `Ok(report)` even when `pg_restore` itself fails -- a failed
+/// restore is durable evidence the caller must record as a `Failed` receipt,
+/// never a silent success or a raw error indistinguishable from a
+/// pre-flight refusal (ADR-0119 decision 10: no silent fallback, no retry
+/// with checks relaxed). `Err` is reserved for what happens *before* any
+/// destructive attempt: an unattested deployment, or the artifact itself
+/// could not be read, decrypted, or written to a temp file.
+pub async fn execute_recovery(
+    config: &SnapshotProviderConfig,
+    artifact_path: &str,
+    expected_digest: &[u8],
+) -> Result<RecoveryExecutionRestoreReport, SnapshotProviderError> {
+    config.ensure_recovery_execution_permitted()?;
+
+    let plaintext = match decrypt_sealed_artifact(config, artifact_path, expected_digest).await? {
+        DecryptedArtifact::DigestMismatch => {
+            return Ok(RecoveryExecutionRestoreReport {
+                restore_duration_ms: 0,
+                succeeded: false,
+                reason: "The artifact's digest no longer matches its recorded manifest digest."
+                    .to_string(),
+            })
+        }
+        DecryptedArtifact::TooShort => {
+            return Ok(RecoveryExecutionRestoreReport {
+                restore_duration_ms: 0,
+                succeeded: false,
+                reason: "The artifact is too short to contain a nonce and any ciphertext."
+                    .to_string(),
+            })
+        }
+        DecryptedArtifact::DecryptionFailed => {
+            return Ok(RecoveryExecutionRestoreReport {
+                restore_duration_ms: 0,
+                succeeded: false,
+                reason:
+                    "The artifact could not be decrypted with this installation's snapshot key."
+                        .to_string(),
+            })
+        }
+        DecryptedArtifact::Ready(plaintext) => plaintext,
+    };
+
+    let temp_path = std::env::temp_dir().join(format!(
+        "ackplane-recovery-execution-{}-{}.pgdump",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::write(&temp_path, &plaintext).await?;
+
+    let restore_started = Instant::now();
+    let output = Command::new(&config.pg_restore_path)
+        // Restoring in place, over an already-migrated authoritative
+        // database: existing objects must be dropped before being recreated,
+        // unlike rehearsal's restore into a freshly created, empty scratch
+        // database.
+        .arg("--clean")
+        .arg("--if-exists")
+        .arg("--no-owner")
+        .arg("-d")
+        .arg(&config.database_url)
+        .arg(&temp_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await;
+    let _ = fs::remove_file(&temp_path).await;
+    let output = output.map_err(|source| SnapshotProviderError::RestoreSpawn {
+        path: config.pg_restore_path.clone(),
+        source,
+    })?;
+    let restore_duration_ms =
+        i64::try_from(restore_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+
+    if output.status.success() {
+        Ok(RecoveryExecutionRestoreReport {
+            restore_duration_ms,
+            succeeded: true,
+            reason: format!("pg_restore completed against the authoritative database in {restore_duration_ms}ms."),
+        })
+    } else {
+        Ok(RecoveryExecutionRestoreReport {
+            restore_duration_ms,
+            succeeded: false,
+            reason: format!(
+                "pg_restore against the authoritative database failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        })
+    }
+}
+
+/// ADR-0145 decision 3's freshness gate: a rehearsal proves nothing about
+/// compatibility with whatever migrations landed since it ran, so a rehearsal
+/// older than [`MAX_REHEARSAL_FRESHNESS`] must not admit production execution
+/// -- however recently it passed relative to *some* earlier schema.
+pub fn rehearsal_is_fresh(rehearsal_occurred_at: SystemTime, now: SystemTime) -> bool {
+    match now.duration_since(rehearsal_occurred_at) {
+        Ok(age) => age <= MAX_REHEARSAL_FRESHNESS,
+        // A rehearsal timestamped in the future relative to `now` is not
+        // trustworthy evidence either -- refuse rather than treat clock skew
+        // as infinite freshness.
+        Err(_) => false,
+    }
+}
+
 /// Provisions the scratch database, runs the rehearsal against it, and drops
 /// it again -- cleanup happens even when the rehearsal itself failed, since a
 /// failed rehearsal that also leaks a scratch database compounds the problem
@@ -779,7 +918,7 @@ fn split_authority_and_dbname(url: &str) -> Option<(&str, &str)> {
 /// Rebuilds `url` with its `dbname` path segment replaced by `new_dbname`,
 /// preserving the authority and any query string. `None` under the same
 /// conditions as [`split_authority_and_dbname`].
-fn with_dbname(url: &str, new_dbname: &str) -> Option<String> {
+pub(crate) fn with_dbname(url: &str, new_dbname: &str) -> Option<String> {
     let (base, query) = match url.split_once('?') {
         Some((base, query)) => (base, Some(query)),
         None => (url, None),
@@ -795,7 +934,7 @@ fn with_dbname(url: &str, new_dbname: &str) -> Option<String> {
     Some(result)
 }
 
-fn unique_suffix() -> String {
+pub(crate) fn unique_suffix() -> String {
     let mut bytes = [0_u8; 8];
     let _ = getrandom::getrandom(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -874,6 +1013,7 @@ fn filesystem_safe_id(id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{rehearsal_test_url, with_ephemeral_database};
 
     fn temp_dir(prefix: &str) -> PathBuf {
         std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()))
@@ -1174,43 +1314,6 @@ mod tests {
         ));
     }
 
-    fn rehearsal_test_url() -> Option<String> {
-        std::env::var("ACKPLANE_TEST_REHEARSAL_DATABASE_URL").ok()
-    }
-
-    /// Creates and drops an ephemeral database against `maintenance_url`, and
-    /// returns its own connection url -- used so rehearsal integration tests
-    /// never touch `ACKPLANE_TEST_DATABASE_URL`'s shared migration state:
-    /// tampering a migration digest there could break every other test or
-    /// fleet agent sharing that database.
-    async fn with_ephemeral_database<Fut>(
-        maintenance_url: &str,
-        name_prefix: &str,
-        body: impl FnOnce(String) -> Fut,
-    ) where
-        Fut: std::future::Future<Output = ()>,
-    {
-        let name = format!("{}_{}", name_prefix, unique_suffix());
-        let (client, connection) = tokio_postgres::connect(maintenance_url, NoTls)
-            .await
-            .expect("a direct maintenance connection should succeed");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        client
-            .batch_execute(&format!("CREATE DATABASE \"{name}\""))
-            .await
-            .expect("creating the ephemeral fixture database should succeed");
-
-        let url = with_dbname(maintenance_url, &name)
-            .expect("the rehearsal test url should be a postgresql:// uri");
-        body(url).await;
-
-        let _ = client
-            .batch_execute(&format!("DROP DATABASE IF EXISTS \"{name}\""))
-            .await;
-    }
-
     #[tokio::test]
     async fn a_freshly_migrated_source_rehearses_and_passes() {
         let Some(rehearsal_url) = rehearsal_test_url() else {
@@ -1358,6 +1461,143 @@ mod tests {
                     report.reason
                 );
                 assert!(!report.passed);
+
+                let _ = fs::remove_dir_all(&dir).await;
+            },
+        )
+        .await;
+    }
+
+    #[test]
+    fn rehearsal_is_fresh_accepts_within_the_window_and_refuses_past_it() {
+        let now = SystemTime::now();
+        assert!(rehearsal_is_fresh(now, now));
+        assert!(rehearsal_is_fresh(now - Duration::from_secs(3600), now));
+        assert!(rehearsal_is_fresh(now - MAX_REHEARSAL_FRESHNESS, now));
+        assert!(!rehearsal_is_fresh(
+            now - MAX_REHEARSAL_FRESHNESS - Duration::from_secs(1),
+            now
+        ));
+    }
+
+    /// Regression: a rehearsal timestamped in the future (clock skew, or a
+    /// corrupted record) must not read as infinitely fresh.
+    #[test]
+    fn rehearsal_is_fresh_refuses_a_rehearsal_timestamped_in_the_future() {
+        let now = SystemTime::now();
+        assert!(!rehearsal_is_fresh(now + Duration::from_secs(3600), now));
+    }
+
+    #[tokio::test]
+    async fn execute_recovery_refuses_outright_when_not_single_tenant_attested() {
+        let dir = temp_dir("ackplane-execute-recovery-unattested-test");
+        let config = base_rehearsal_config(&dir, None);
+        assert!(!config.single_tenant_attested);
+        let error = execute_recovery(&config, "/does/not/matter", &[0_u8; 32])
+            .await
+            .expect_err("execution must refuse outright on an unattested deployment");
+        assert!(matches!(
+            error,
+            SnapshotProviderError::MultiTenantRecoveryUnavailable
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_recovery_reports_a_digest_mismatch_without_attempting_pg_restore() {
+        let dir = temp_dir("ackplane-execute-recovery-digest-mismatch-test");
+        fs::create_dir_all(&dir)
+            .await
+            .expect("creating the fixture directory should succeed");
+        let artifact_path = dir.join("artifact.pgdump.enc");
+        fs::write(&artifact_path, b"not a real sealed artifact")
+            .await
+            .expect("writing the fixture artifact should succeed");
+        let mut config = base_rehearsal_config(&dir, None);
+        config.single_tenant_attested = true;
+        // A real, readable file whose content does not hash to the expected
+        // digest -- the digest check must fail (and be reported, not raised
+        // as an error) before anything tries to decrypt or restore it.
+        let report = execute_recovery(&config, &artifact_path.to_string_lossy(), &[0_u8; 32])
+            .await
+            .expect("a digest mismatch is a reported failure, not an error");
+        assert!(!report.succeeded, "reason was: {}", report.reason);
+        assert_eq!(report.restore_duration_ms, 0);
+        let _ = fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn a_real_restore_against_an_ephemeral_target_succeeds() {
+        let Some(rehearsal_url) = rehearsal_test_url() else {
+            eprintln!("skipping: ACKPLANE_TEST_REHEARSAL_DATABASE_URL is not set");
+            return;
+        };
+        if Command::new("pg_dump")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .is_err()
+            || Command::new("pg_restore")
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await
+                .is_err()
+        {
+            eprintln!("skipping: pg_dump/pg_restore is not available on PATH");
+            return;
+        }
+
+        let rehearsal_url_for_source = rehearsal_url.clone();
+        with_ephemeral_database(
+            &rehearsal_url,
+            "ackplane_execute_recovery_source",
+            |source_url| async move {
+                crate::ledger::LedgerStore::connect(&source_url)
+                    .await
+                    .expect("migrating the ephemeral source database should succeed");
+
+                let dir = temp_dir("ackplane-execute-recovery-success-test");
+                let _ = fs::remove_dir_all(&dir).await;
+                let mut config =
+                    base_rehearsal_config(&dir, Some(rehearsal_url_for_source.clone()));
+                config.database_url = source_url;
+
+                let artifact = create_platform_snapshot(&config, "execute-recovery-success-test")
+                    .await
+                    .expect("a real pg_dump against the source database should succeed");
+
+                // A second, independently migrated ephemeral database stands
+                // in for "production" -- already-current schema and already
+                // holding objects, exactly what `--clean --if-exists` must
+                // tolerate that a fresh, empty scratch database (rehearsal's
+                // own target) never exercises.
+                with_ephemeral_database(
+                    &rehearsal_url_for_source,
+                    "ackplane_execute_recovery_target",
+                    |target_url| async move {
+                        crate::ledger::LedgerStore::connect(&target_url)
+                            .await
+                            .expect("migrating the ephemeral target database should succeed");
+
+                        let mut execution_config = config;
+                        execution_config.database_url = target_url;
+                        execution_config.single_tenant_attested = true;
+
+                        let report = execute_recovery(
+                            &execution_config,
+                            &artifact.artifact_path,
+                            &artifact.manifest_digest,
+                        )
+                        .await
+                        .expect("a genuine artifact must not error");
+                        assert!(report.succeeded, "reason was: {}", report.reason);
+                        assert!(report.restore_duration_ms >= 0);
+                    },
+                )
+                .await;
 
                 let _ = fs::remove_dir_all(&dir).await;
             },

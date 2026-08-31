@@ -16,11 +16,13 @@
 //! twice over: the safety Snapshot it requires is triggered by the caller
 //! before this store ever sees the preview, and confirming here never runs
 //! `pg_restore` -- it only records that a second, distinct enrolled key
-//! authorized the request, which slice 4's own execution step later consumes.
+//! authorized the request. Decision 7's own execution step
+//! (`recovery_execution_receipt_write`) is the one exception left: it is
+//! this store's only call into `snapshot_provider::execute_recovery`, the
+//! sole place a `pg_restore` runs against the real, authoritative database.
 #![allow(dead_code)]
 
-use tokio_postgres::{Client, NoTls};
-
+use crate::db_pool::{PgConnection, PgPool};
 use crate::migration_lock;
 
 const MIGRATION: &str = include_str!("../../migrations/0041_administration.sql");
@@ -38,6 +40,8 @@ const RECOVERY_REHEARSAL_MIGRATION: &str =
     include_str!("../../migrations/0057_administration_recovery_rehearsal.sql");
 const RECOVERY_EXECUTION_MIGRATION: &str =
     include_str!("../../migrations/0058_administration_recovery_execution.sql");
+const RECOVERY_EXECUTION_RECEIPT_MIGRATION: &str =
+    include_str!("../../migrations/0063_administration_recovery_execution_receipt.sql");
 
 mod export_model;
 mod export_write;
@@ -45,6 +49,8 @@ mod model;
 mod purge_model;
 mod purge_write;
 mod recovery_execution_model;
+mod recovery_execution_receipt_model;
+mod recovery_execution_receipt_write;
 mod recovery_execution_write;
 mod recovery_model;
 mod recovery_write;
@@ -67,6 +73,7 @@ pub use recovery_execution_model::{
     NewRecoveryConfirmation, RecoveryConfirmation, RecoveryConfirmationOutcome,
     RecoveryExecutionPreviewRequest, RecoveryExecutionRequest, RecoveryExecutionRequestOutcome,
 };
+pub use recovery_execution_receipt_model::{RecoveryExecutionOutcome, RecoveryExecutionReceipt};
 pub use recovery_model::{NewRecoveryInspection, NewRecoveryRehearsal};
 pub use recovery_write::{RecoveryInspection, RecoveryRehearsal};
 
@@ -74,68 +81,85 @@ pub use recovery_write::{RecoveryInspection, RecoveryRehearsal};
 /// requests/receipts, Lifecycle-purge previews/receipts, Recovery inspection
 /// reports, and Export requests/receipts.
 pub struct AdministrationStore {
-    pub(crate) client: Client,
+    pool: PgPool,
 }
 
 impl AdministrationStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane Administration store connection closed with an error");
-            }
-        });
-        migration_lock::migrate_locked(&mut client, migration_lock::key::ADMINISTRATION, MIGRATION)
-            .await?;
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not
+    /// a database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, AdministrationStoreError> {
+        let mut connection = pool.get().await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
+            migration_lock::key::ADMINISTRATION,
+            MIGRATION,
+        )
+        .await?;
+        migration_lock::migrate_locked(
+            &mut connection,
             migration_lock::key::ADMINISTRATION_PURGE,
             PURGE_MIGRATION,
         )
         .await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::ADMINISTRATION_RECOVERY_INSPECTION,
             RECOVERY_INSPECTION_MIGRATION,
         )
         .await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::ADMINISTRATION_EXPORT,
             EXPORT_MIGRATION,
         )
         .await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::ADMINISTRATION_PURGE_CONFIRMING_LABEL,
             PURGE_CONFIRMING_LABEL_MIGRATION,
         )
         .await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::ADMINISTRATION_PURGE_CONFIRMATION_AUTHENTICATION,
             PURGE_CONFIRMATION_AUTHENTICATION_MIGRATION,
         )
         .await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::ADMINISTRATION_PURGE_CONFIRMATION_FINGERPRINT,
             PURGE_CONFIRMATION_FINGERPRINT_MIGRATION,
         )
         .await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::ADMINISTRATION_RECOVERY_REHEARSAL,
             RECOVERY_REHEARSAL_MIGRATION,
         )
         .await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::ADMINISTRATION_RECOVERY_EXECUTION,
             RECOVERY_EXECUTION_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        migration_lock::migrate_locked(
+            &mut connection,
+            migration_lock::key::ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT,
+            RECOVERY_EXECUTION_RECEIPT_MIGRATION,
+        )
+        .await?;
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the
+    /// life of that transaction, which is the one case where holding a
+    /// connection across `.await` points is correct rather than accidental.
+    pub(crate) async fn connection(&self) -> Result<PgConnection, AdministrationStoreError> {
+        Ok(self.pool.get().await?)
     }
 }
 
