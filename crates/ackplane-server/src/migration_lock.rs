@@ -184,7 +184,24 @@ pub(crate) mod key {
     /// collision from committed source alone; only the live database
     /// surfaces a same-key-different-content mismatch, and only at
     /// connect() time.
-    pub(crate) const DESIGN_CONSTITUTION_DISPLAY_LABEL: i64 = 60;
+    ///
+    /// `migrations/0060_constitution_proposals_display_label.sql`, applied by
+    /// `ConstitutionStore::connect()` only. Originally bundled with the
+    /// materialization table's ALTER under this one key; split so this
+    /// store's connect() never touches a table only `MaterializationStore`
+    /// creates (see key 61's doc comment).
+    pub(crate) const CONSTITUTION_PROPOSALS_DISPLAY_LABEL: i64 = 60;
+    /// `migrations/0061_design_materialization_display_label.sql`, applied by
+    /// `MaterializationStore::connect()` only. On a genuinely fresh database
+    /// (unlike the long-lived shared dev container, which already had this
+    /// table from unrelated prior activity), `ConstitutionStore::connect()`
+    /// can run before `MaterializationStore::connect()` ever creates
+    /// `industrial_design_materializations` (migration 0032) -- bundling
+    /// both ALTERs under one key made `ConstitutionStore` fail with
+    /// "relation industrial_design_materializations does not exist" in CI's
+    /// clean-container run. Each store now only ever migrates tables it
+    /// already owns or transitively depends on.
+    pub(crate) const DESIGN_MATERIALIZATION_DISPLAY_LABEL: i64 = 61;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

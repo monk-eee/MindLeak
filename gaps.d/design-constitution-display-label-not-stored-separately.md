@@ -15,8 +15,12 @@
   is intact either way -- this narrows only the secondary, explicitly
   optional half of clause 4.
   **Closed for `constitution_proposals` and `industrial_design_materializations`:**
-  both tables gained a nullable `display_label` column (migration
-  `0060_design_constitution_display_label.sql`), threaded through
+  both tables gained a nullable `display_label` column, each via its own
+  migration (`0060_constitution_proposals_display_label.sql`,
+  `0061_design_materialization_display_label.sql` -- split from one shared
+  migration key after CI exposed that bundling both ALTERs under one key
+  made `ConstitutionStore::connect()` touch a table it does not own before
+  it necessarily exists), threaded through
   `ProposeConstitutionClauseRequest`/`ConstitutionProposal` and
   `RecordMaterializationRequest`/`MaterializationRevision`, and through
   Bridge's `ProposeClauseRequest`/`ConstitutionProposalResponse` and

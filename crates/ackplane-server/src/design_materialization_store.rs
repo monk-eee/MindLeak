@@ -34,7 +34,7 @@ const CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION: &str =
     include_str!("../migrations/0026_constitution_publication_history.sql");
 const WORK_DEPENDENCY_MIGRATION: &str = include_str!("../migrations/0028_work.sql");
 const DISPLAY_LABEL_MIGRATION: &str =
-    include_str!("../migrations/0060_design_constitution_display_label.sql");
+    include_str!("../migrations/0061_design_materialization_display_label.sql");
 
 const MAX_ACTOR_BYTES: usize = 256;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
@@ -194,7 +194,7 @@ impl MaterializationStore {
         .await?;
         crate::migration_lock::migrate_locked(
             &mut client,
-            crate::migration_lock::key::DESIGN_CONSTITUTION_DISPLAY_LABEL,
+            crate::migration_lock::key::DESIGN_MATERIALIZATION_DISPLAY_LABEL,
             DISPLAY_LABEL_MIGRATION,
         )
         .await?;
