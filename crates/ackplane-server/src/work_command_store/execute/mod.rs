@@ -75,13 +75,14 @@ impl WorkCommandStore {
     /// replays its exact prior confirmation. Idempotent on the command id:
     /// a lost response is safe to retry without re-applying the effect.
     pub(super) async fn execute_confirmed(
-        &mut self,
+        &self,
         command: &WorkCommand,
         payload: &WorkCommandPayload,
         now: SystemTime,
     ) -> Result<WorkCommandReceiptWriteOutcome, WorkCommandStoreError> {
         let receipt_id = format!("{}:confirm", command.command_id);
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         if let Some(existing) = existing_confirm_receipt(
             &transaction,
             &command.tenant_id,
