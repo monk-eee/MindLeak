@@ -16,7 +16,10 @@
 //! twice over: the safety Snapshot it requires is triggered by the caller
 //! before this store ever sees the preview, and confirming here never runs
 //! `pg_restore` -- it only records that a second, distinct enrolled key
-//! authorized the request, which slice 4's own execution step later consumes.
+//! authorized the request. Decision 7's own execution step
+//! (`recovery_execution_receipt_write`) is the one exception left: it is
+//! this store's only call into `snapshot_provider::execute_recovery`, the
+//! sole place a `pg_restore` runs against the real, authoritative database.
 #![allow(dead_code)]
 
 use crate::db_pool::{PgConnection, PgPool};
@@ -37,6 +40,8 @@ const RECOVERY_REHEARSAL_MIGRATION: &str =
     include_str!("../../migrations/0057_administration_recovery_rehearsal.sql");
 const RECOVERY_EXECUTION_MIGRATION: &str =
     include_str!("../../migrations/0058_administration_recovery_execution.sql");
+const RECOVERY_EXECUTION_RECEIPT_MIGRATION: &str =
+    include_str!("../../migrations/0063_administration_recovery_execution_receipt.sql");
 
 mod export_model;
 mod export_write;
@@ -44,6 +49,8 @@ mod model;
 mod purge_model;
 mod purge_write;
 mod recovery_execution_model;
+mod recovery_execution_receipt_model;
+mod recovery_execution_receipt_write;
 mod recovery_execution_write;
 mod recovery_model;
 mod recovery_write;
@@ -66,6 +73,7 @@ pub use recovery_execution_model::{
     NewRecoveryConfirmation, RecoveryConfirmation, RecoveryConfirmationOutcome,
     RecoveryExecutionPreviewRequest, RecoveryExecutionRequest, RecoveryExecutionRequestOutcome,
 };
+pub use recovery_execution_receipt_model::{RecoveryExecutionOutcome, RecoveryExecutionReceipt};
 pub use recovery_model::{NewRecoveryInspection, NewRecoveryRehearsal};
 pub use recovery_write::{RecoveryInspection, RecoveryRehearsal};
 
@@ -134,6 +142,12 @@ impl AdministrationStore {
             &mut connection,
             migration_lock::key::ADMINISTRATION_RECOVERY_EXECUTION,
             RECOVERY_EXECUTION_MIGRATION,
+        )
+        .await?;
+        migration_lock::migrate_locked(
+            &mut connection,
+            migration_lock::key::ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT,
+            RECOVERY_EXECUTION_RECEIPT_MIGRATION,
         )
         .await?;
         Ok(Self { pool: pool.clone() })

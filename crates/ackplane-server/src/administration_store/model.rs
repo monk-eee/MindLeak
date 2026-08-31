@@ -285,6 +285,8 @@ pub enum AdministrationStoreError {
     RecoveryArtifactManifestMismatch,
     #[error("the named rehearsal report does not exist, did not pass, or covers a different artifact digest")]
     NoPassingRehearsalForArtifact,
+    #[error("recovery execution requires a Confirmed authorization; the request has none, or its confirmation was Refused or Expired")]
+    RecoveryExecutionNotConfirmed,
 }
 
 fn is_identifier(value: &str) -> bool {
