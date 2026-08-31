@@ -110,6 +110,8 @@ pub struct DelegationUseReceiptPage {
 pub enum DelegationUseError {
     #[error("delegation use database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("delegation use could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("delegation use references an unknown delegation")]
     NotFound,
     #[error("{field} must be a bounded non-empty identifier")]
