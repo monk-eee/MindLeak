@@ -40,10 +40,10 @@ const MAX_PAGE_SIZE: i64 = 100;
 
 #[derive(Clone)]
 pub struct DesignApiState {
-    // `Mutex`-wrapped, not a plain `Arc`, because `create_design`,
-    // `record_decision`, and `record_materialization` all take `&mut self` --
-    // the same reason Bridge's `ClaimStore` handle is a `Mutex` (ADR-0111).
-    designs: Arc<Mutex<DesignStore>>,
+    designs: Arc<DesignStore>,
+    // `Mutex`-wrapped, not a plain `Arc`, because `record_materialization`
+    // takes `&mut self` -- the same reason Bridge's `ClaimStore` handle used
+    // to be a `Mutex` before ADR-0143 retired it there (ADR-0111).
     materializations: Arc<Mutex<MaterializationStore>>,
     fleet: Arc<FleetStore>,
     tenant_id: Arc<str>,
@@ -51,7 +51,7 @@ pub struct DesignApiState {
 
 impl DesignApiState {
     pub fn new(
-        designs: Arc<Mutex<DesignStore>>,
+        designs: Arc<DesignStore>,
         materializations: Arc<Mutex<MaterializationStore>>,
         fleet: Arc<FleetStore>,
         tenant_id: Arc<str>,
@@ -271,8 +271,6 @@ async fn design_list(
     };
     let result = state
         .designs
-        .lock()
-        .await
         .list_designs(
             state.tenant_id.as_ref(),
             &repository_id,
@@ -319,8 +317,6 @@ async fn propose_design(
     let _ = request.proposed_by;
     state
         .designs
-        .lock()
-        .await
         .create_design(CreateDesignRequest {
             tenant_id: state.tenant_id.to_string(),
             repository_id,
@@ -388,16 +384,12 @@ async fn design_detail(
     ensure_repository_visible(&state, &repository_id).await?;
     let design = state
         .designs
-        .lock()
-        .await
         .get_design(state.tenant_id.as_ref(), &repository_id, &design_id)
         .await
         .map_err(design_store_error)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let decisions = state
         .designs
-        .lock()
-        .await
         .list_decisions(state.tenant_id.as_ref(), &repository_id, &design_id)
         .await
         .map_err(design_store_error)?
@@ -454,8 +446,6 @@ async fn record_design_decision(
         parse_lifecycle_state(&request.expected_lifecycle_state).ok_or(StatusCode::BAD_REQUEST)?;
     state
         .designs
-        .lock()
-        .await
         .record_decision(RecordDecisionRequest {
             tenant_id: state.tenant_id.to_string(),
             repository_id,

@@ -371,7 +371,12 @@ mod tests {
             .await
             .expect("recording the fixture publication should succeed");
 
-        let mut design_store = DesignStore::connect(database_url).await.unwrap();
+        let design_store = DesignStore::connect(
+            &crate::db_pool::build_pool(database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test database url should build a pool"),
+        )
+        .await
+        .unwrap();
         design_store
             .create_design(CreateDesignRequest {
                 tenant_id: tenant_id.clone(),
