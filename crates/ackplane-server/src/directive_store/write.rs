@@ -17,11 +17,15 @@ use super::{
 impl DirectiveStore {
     /// Records one immutable directive and assigns its per-target sequence.
     pub async fn enqueue(
-        &mut self,
+        &self,
         directive: v1::AgentDirective,
     ) -> Result<DirectiveWriteOutcome, DirectiveStoreError> {
         let now = normalize_timestamp(SystemTime::now());
-        let transaction = self.client.transaction().await?;
+        // One connection, checked out once and held until commit (ADR-0143
+        // decision 1): a transaction is the one case where holding a pooled
+        // connection across `.await` points is correct.
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let outcome = enqueue_in_transaction(&transaction, directive, now).await?;
         transaction.commit().await?;
         Ok(outcome)
@@ -29,10 +33,11 @@ impl DirectiveStore {
 
     /// Appends one receipt only when it binds to an existing directive exactly.
     pub async fn record_receipt(
-        &mut self,
+        &self,
         receipt: v1::DirectiveReceipt,
     ) -> Result<DirectiveReceiptOutcome, DirectiveStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let row = transaction
             .query_opt(
                 "SELECT directive_payload, request_digest, recorded_at, created_at \

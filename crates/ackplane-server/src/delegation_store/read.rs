@@ -13,7 +13,8 @@ impl DelegationStore {
         repository_id: &str,
         delegation_id: &str,
     ) -> Result<Option<DelegationProjection>, DelegationStoreError> {
-        self.client
+        self.connection()
+            .await?
             .query_opt(
                 &format!(
                     "SELECT {PROJECTION_COLUMNS} FROM delegation_projections \
@@ -50,7 +51,8 @@ impl DelegationStore {
             .map(|cursor| cursor.delegation_id.as_str())
             .unwrap_or_default();
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "SELECT {PROJECTION_COLUMNS} FROM delegation_projections \
@@ -97,7 +99,8 @@ impl DelegationStore {
         delegation_id: &str,
     ) -> Result<Vec<DelegationEvent>, DelegationStoreError> {
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "SELECT {EVENT_COLUMNS} FROM delegation_events \

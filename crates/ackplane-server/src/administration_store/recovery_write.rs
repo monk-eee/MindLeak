@@ -123,4 +123,24 @@ impl AdministrationStore {
             .await?;
         row.as_ref().map(from_rehearsal_row).transpose()
     }
+
+    /// One rehearsal report by its own id, so a recovery-execution preview
+    /// (`recovery_execution_write::preview_recovery_execution`) can validate
+    /// that the caller's *named* rehearsal both passed and covers the exact
+    /// artifact digest being restored -- not merely that *some* passing
+    /// rehearsal of that digest exists, which `latest_passing_recovery_rehearsal`
+    /// alone would not distinguish from a caller naming an unrelated report.
+    pub async fn recovery_rehearsal(
+        &mut self,
+        rehearsal_id: &str,
+    ) -> Result<Option<RecoveryRehearsal>, AdministrationStoreError> {
+        let row = self
+            .client
+            .query_opt(
+                "SELECT * FROM administration_recovery_rehearsals WHERE rehearsal_id = $1",
+                &[&rehearsal_id],
+            )
+            .await?;
+        row.as_ref().map(from_rehearsal_row).transpose()
+    }
 }

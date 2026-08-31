@@ -5,6 +5,10 @@
 //! `ACKPLANE_DATABASE_URL`. Tenant-scoped the same way `platform_snapshot_receipt`
 //! is: an inspection is only run or read for a request this exact principal
 //! made.
+//!
+//! ADR-0145's production recovery-execution preview/confirmation lives in
+//! `recovery_execution.rs`, split out for the same module-length reason
+//! Purge/Snapshot/Export already are.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
