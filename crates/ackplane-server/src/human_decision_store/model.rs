@@ -209,6 +209,8 @@ pub struct HumanDecisionOutcome {
 pub enum HumanDecisionStoreError {
     #[error("human decision database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("human decision store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("human decision identity entropy failed: {0}")]
     Entropy(#[from] getrandom::Error),
     #[error("{field} must be a bounded non-empty identifier")]
