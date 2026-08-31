@@ -294,6 +294,14 @@ pub(super) fn evidence_store_error(error: EvidenceStoreError) -> StatusCode {
         | EvidenceStoreError::InvalidIdempotencyKey
         | EvidenceStoreError::IdempotencyConflict
         | EvidenceStoreError::UnknownStoredKind(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        EvidenceStoreError::PoolExhausted(error) => {
+            tracing::error!(%error, "Bridge Evidence store connection pool exhausted");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        EvidenceStoreError::SigningKey(error) => {
+            tracing::error!(%error, "Bridge Evidence signing key resolution failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 }
 
@@ -321,6 +329,10 @@ pub(super) fn conformance_store_error(error: ConformanceStoreError) -> StatusCod
         | ConformanceStoreError::InconsistentReviewState
         | ConformanceStoreError::InvalidStoredFindingCount(_) => StatusCode::INTERNAL_SERVER_ERROR,
         ConformanceStoreError::UnknownStoredFindingCode(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        ConformanceStoreError::PoolExhausted(error) => {
+            tracing::error!(%error, "Bridge conformance store connection pool exhausted");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
     }
 }
 

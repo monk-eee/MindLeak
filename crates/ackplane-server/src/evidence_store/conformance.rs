@@ -107,6 +107,8 @@ impl ConformanceReviewState {
 pub enum ConformanceStoreError {
     #[error("conformance database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("conformance store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("task_id must be between 1 and {MAX_TASK_ID_BYTES} bytes")]
     InvalidTaskId,
     #[error("evidence_id must be between 1 and {MAX_EVIDENCE_ID_BYTES} bytes")]
@@ -225,8 +227,8 @@ impl EvidenceStore {
             return outcome_for_existing(existing, &request);
         }
         validate_request(&request)?;
-        let evidence_task = self
-            .client
+        let connection = self.connection().await?;
+        let evidence_task = connection
             .query_opt(
                 "SELECT task_id, recorded_by FROM evidence_records \
                  WHERE tenant_id = $1 AND repository_id = $2 AND evidence_id = $3",
@@ -254,8 +256,7 @@ impl EvidenceStore {
             .iter()
             .map(|code| code.as_i16())
             .collect::<Vec<_>>();
-        let row = self
-            .client
+        let row = connection
             .query_opt(
                 "INSERT INTO conformance_records (
                      tenant_id, repository_id, conformance_id, task_id, evidence_id,
@@ -325,7 +326,8 @@ impl EvidenceStore {
         if !is_bounded(idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES) {
             return Err(ConformanceStoreError::InvalidIdempotencyKey);
         }
-        self.client
+        self.connection()
+            .await?
             .query_opt(
                 "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
                     finding_count, findings_digest, finding_codes, review_state, reported_checked_at, evaluated_by, \
@@ -463,8 +465,8 @@ mod tests {
     }
 
     async fn store() -> Option<EvidenceStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(EvidenceStore::connect(&database_url).await.unwrap())
+        let pool = crate::test_support::test_pool()?;
+        Some(EvidenceStore::connect(&pool).await.unwrap())
     }
 
     fn evidence_request(
