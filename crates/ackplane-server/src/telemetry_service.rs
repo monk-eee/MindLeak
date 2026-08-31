@@ -136,11 +136,9 @@ fn parse_occurred_at(value: &str) -> Result<SystemTime, Status> {
 }
 
 fn rfc3339(timestamp: SystemTime) -> Result<String, Status> {
-    OffsetDateTime::from(timestamp)
-        .format(&Rfc3339)
-        .map_err(|error| {
-            Status::internal(format!("could not format a telemetry timestamp: {error}"))
-        })
+    crate::wire_format::rfc3339(timestamp).map_err(|error| {
+        Status::internal(format!("could not format a telemetry timestamp: {error}"))
+    })
 }
 
 fn bounded_bucket_seconds(requested: u32) -> u32 {
