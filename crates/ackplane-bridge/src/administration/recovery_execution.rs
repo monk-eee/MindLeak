@@ -5,8 +5,10 @@
 //! per-repository path segment for these routes, unlike Lifecycle purge.
 //! Confirming here never runs `pg_restore`; it only records that a second,
 //! distinct enrolled key authorized the request. Production execution
-//! (decision 4-8, `execute_recovery_execution`) is the distinct, later route
-//! that actually consumes that authorization and runs the real restore.
+//! (decision 4-8, `execute_recovery_execution`) is a distinct, later route
+//! that actually consumes that authorization and runs the real restore --
+//! split into `recovery_execution_run.rs` for the same module-length reason
+//! Purge/Snapshot/Export/Recovery are already their own files.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,8 +17,8 @@ use ackplane_protocol::{
     v1,
 };
 use ackplane_server::administration_store::{
-    RecoveryConfirmation, RecoveryConfirmationOutcome, RecoveryExecutionOutcome,
-    RecoveryExecutionPreviewRequest, RecoveryExecutionReceipt, RecoveryExecutionRequest,
+    RecoveryConfirmation, RecoveryConfirmationOutcome, RecoveryExecutionPreviewRequest,
+    RecoveryExecutionRequest,
 };
 use ackplane_server::claim_signature::{self, ClaimAuthRefusal};
 use ackplane_server::signing_keys::{EnvelopeBinding, KeyResolution};
@@ -317,84 +319,6 @@ pub(super) async fn confirm_recovery_execution(
     Ok(Json(confirmation.into()))
 }
 
-#[derive(Serialize)]
-pub(super) struct RecoveryExecutionReceiptResponse {
-    receipt_id: String,
-    outcome: &'static str,
-    reason: String,
-    old_manifest_digest_hex: String,
-    new_manifest_digest_hex: String,
-    rehearsal_id: String,
-    previewing_node_id: String,
-    previewing_public_key_fingerprint: String,
-    confirming_node_id: String,
-    confirming_public_key_fingerprint: String,
-    occurred_at_seconds: Option<u64>,
-}
-
-impl From<RecoveryExecutionReceipt> for RecoveryExecutionReceiptResponse {
-    fn from(receipt: RecoveryExecutionReceipt) -> Self {
-        Self {
-            receipt_id: receipt.receipt_id,
-            outcome: recovery_execution_outcome_label(receipt.outcome),
-            reason: receipt.reason,
-            old_manifest_digest_hex: hex_encode(&receipt.old_manifest_digest),
-            new_manifest_digest_hex: hex_encode(&receipt.new_manifest_digest),
-            rehearsal_id: receipt.rehearsal_id,
-            previewing_node_id: receipt.previewing_node_id,
-            previewing_public_key_fingerprint: receipt.previewing_public_key_fingerprint,
-            confirming_node_id: receipt.confirming_node_id,
-            confirming_public_key_fingerprint: receipt.confirming_public_key_fingerprint,
-            occurred_at_seconds: unix_seconds(receipt.occurred_at),
-        }
-    }
-}
-
-/// Runs (or refuses, or records a genuine `pg_restore` failure for) a
-/// previously previewed *and confirmed* recovery execution -- the one route
-/// that actually mutates the authoritative database (ADR-0145 decision 4-8).
-/// Deliberately a distinct step from `confirm_recovery_execution`, not fused
-/// into it: the dual-signing-key preview/confirm pair is the request's full
-/// authorization (decision 4), so this route needs no signature of its own --
-/// it only consumes an authorization that already exists, re-checking
-/// single-tenant attestation and rehearsal freshness at the moment it runs
-/// (decision 3, decision 6). Idempotent: replays of an already-executed
-/// request return the same durable receipt without ever running `pg_restore`
-/// twice.
-pub(super) async fn execute_recovery_execution(
-    State(state): State<AdministrationApiState>,
-    Path(request_id): Path<String>,
-) -> Result<Json<RecoveryExecutionReceiptResponse>, StatusCode> {
-    let Some(snapshot_config) = state.snapshot.clone() else {
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    };
-    let now = SystemTime::now();
-    // Disclosure stays tenant-bounded, exactly like preview/confirm/status,
-    // even though the operation itself is always platform-scoped.
-    let administration = &state.administration;
-    let request = administration
-        .recovery_execution_request(&request_id)
-        .await
-        .map_err(administration_error_status)?
-        .ok_or(StatusCode::NOT_FOUND)?;
-    if request.tenant_id != state.tenant_id.as_ref() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    let receipt = administration
-        .execute_recovery(&request_id, &snapshot_config, now)
-        .await
-        .map_err(administration_error_status)?;
-    Ok(Json(receipt.into()))
-}
-
-fn recovery_execution_outcome_label(outcome: RecoveryExecutionOutcome) -> &'static str {
-    match outcome {
-        RecoveryExecutionOutcome::Succeeded => "succeeded",
-        RecoveryExecutionOutcome::Failed => "failed",
-        RecoveryExecutionOutcome::Refused => "refused",
-    }
-}
-
 pub(super) async fn recovery_execution_status(
     State(state): State<AdministrationApiState>,
     Path(request_id): Path<String>,
@@ -485,7 +409,7 @@ fn recovery_confirmation_outcome_label(outcome: RecoveryConfirmationOutcome) -> 
     }
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(super) fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -499,7 +423,7 @@ fn hex_decode(value: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
+pub(super) fn unix_seconds(timestamp: SystemTime) -> Option<u64> {
     timestamp
         .duration_since(UNIX_EPOCH)
         .ok()

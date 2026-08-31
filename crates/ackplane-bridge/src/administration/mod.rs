@@ -146,7 +146,7 @@ pub fn administration_routes(state: AdministrationApiState) -> Router {
         )
         .route(
             "/api/v1/administration/recovery-executions/:request_id/execute",
-            post(recovery_execution::execute_recovery_execution),
+            post(recovery_execution_run::execute_recovery_execution),
         )
         .route(
             "/api/v1/administration/recovery-executions/:request_id",
@@ -168,6 +168,7 @@ mod policy;
 mod purge;
 mod recovery;
 mod recovery_execution;
+mod recovery_execution_run;
 mod snapshot;
 
 #[derive(Serialize)]
