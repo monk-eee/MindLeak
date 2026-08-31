@@ -18,7 +18,7 @@ impl Projector {
     /// [`a_rebuild_reproduces_the_same_projection_from_the_same_ledger`]
     /// proves), so a clean retry from scratch is safe.
     pub async fn rebuild(
-        &mut self,
+        &self,
         tenant_id: &str,
         repository_id: &str,
     ) -> Result<ProjectionSummary, ProjectionError> {
@@ -37,11 +37,12 @@ impl Projector {
     }
 
     async fn rebuild_once(
-        &mut self,
+        &self,
         tenant_id: &str,
         repository_id: &str,
     ) -> Result<ProjectionSummary, ProjectionError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         transaction
             .execute(
@@ -156,9 +157,9 @@ impl Projector {
     /// projected but has at least one structural fact is included too. A
     /// repository with zero structural-fact records never appears here —
     /// there is nothing for `rebuild` to give it.
-    async fn stale_projections(&self) -> Result<Vec<StaleProjection>, tokio_postgres::Error> {
-        let rows = self
-            .client
+    async fn stale_projections(&self) -> Result<Vec<StaleProjection>, ProjectionError> {
+        let connection = self.connection().await?;
+        let rows = connection
             .query(
                 "SELECT lr.tenant_id, lr.repository_id \
                  FROM ledger_records lr \
@@ -185,7 +186,7 @@ impl Projector {
     /// next tick — a projection worker's job is to catch a stream back up,
     /// not to guarantee every tick succeeds. Returns how many repositories
     /// were actually rebuilt.
-    pub async fn rebuild_stale(&mut self) -> Result<usize, ProjectionError> {
+    pub async fn rebuild_stale(&self) -> Result<usize, ProjectionError> {
         let stale = self.stale_projections().await?;
         let mut rebuilt = 0;
         for repository in &stale {
@@ -223,9 +224,9 @@ impl Projector {
         &self,
         tenant_id: &str,
         repository_id: &str,
-    ) -> Result<Option<ProjectionFreshness>, tokio_postgres::Error> {
-        let row = self
-            .client
+    ) -> Result<Option<ProjectionFreshness>, ProjectionError> {
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT stream_position, projected_at FROM projection_state \
                  WHERE tenant_id = $1 AND repository_id = $2",
@@ -245,7 +246,7 @@ impl Projector {
 /// gRPC server; a tick's database error is logged and the loop keeps polling
 /// rather than exiting, since a missed tick is simply caught up by the next
 /// one, not a fatal condition for the worker.
-pub async fn run_projection_worker(mut projector: Projector, interval: std::time::Duration) {
+pub async fn run_projection_worker(projector: Projector, interval: std::time::Duration) {
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
@@ -265,8 +266,10 @@ mod tests {
     #[tokio::test]
     async fn a_rebuild_reproduces_the_same_projection_from_the_same_ledger() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
@@ -353,11 +356,14 @@ mod tests {
     #[tokio::test]
     async fn concurrent_rebuilds_of_unrelated_tenants_all_succeed() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let tasks = (0..12).map(|i| {
             let url = url.clone();
+            let pool = pool.clone();
             tokio::spawn(async move {
                 let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-                let mut projector = Projector::connect(&url).await.expect("connect projector");
+                let projector = Projector::connect(&pool).await.expect("connect projector");
                 let tenant = format!("t-{}-{}", i, uuid_ish());
                 let repo = "repo-a".to_string();
 
@@ -399,7 +405,9 @@ mod tests {
     #[tokio::test]
     async fn an_unprojected_repository_reports_no_freshness() {
         let url = require_test_database!();
-        let projector = Projector::connect(&url).await.expect("connect");
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let projector = Projector::connect(&pool).await.expect("connect");
         let tenant = format!("t-{}", uuid_ish());
 
         let freshness = projector
@@ -413,8 +421,10 @@ mod tests {
     async fn stale_projections_finds_a_repository_ahead_of_its_checkpoint_and_rebuild_stale_catches_it_up(
     ) {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-stale".to_string();
 
@@ -466,8 +476,10 @@ mod tests {
     #[tokio::test]
     async fn a_repository_already_caught_up_is_not_reported_stale_or_redundantly_rebuilt() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-caught-up".to_string();
 
@@ -515,7 +527,9 @@ mod tests {
     #[tokio::test]
     async fn a_repository_with_zero_structural_facts_is_never_marked_projected() {
         let url = require_test_database!();
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-never-published-a-structural-fact".to_string();
 

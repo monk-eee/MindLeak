@@ -45,7 +45,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     ClaimStore::connect(&pool)
         .await
         .map_err(|error| format!("claim schema failed: {error}"))?;
-    Projector::connect(database_url)
+    Projector::connect(&pool)
         .await
         .map_err(|error| format!("projection schema failed: {error}"))?;
     KnowledgeStore::connect(&pool)

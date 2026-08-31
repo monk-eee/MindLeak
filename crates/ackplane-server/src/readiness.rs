@@ -375,9 +375,7 @@ mod tests {
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
         append_structural_fact(&database_url, &tenant_id, &repository_id, 1, "n1").await;
 
-        let mut projector = Projector::connect(&database_url)
-            .await
-            .expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         projector
             .rebuild(&tenant_id, &repository_id)
             .await
@@ -427,9 +425,7 @@ mod tests {
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
         append_structural_fact(&database_url, &tenant_id, &repository_id, 1, "n1").await;
 
-        let mut projector = Projector::connect(&database_url)
-            .await
-            .expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         projector
             .rebuild(&tenant_id, &repository_id)
             .await
@@ -474,9 +470,7 @@ mod tests {
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
         append_structural_fact(&database_url, &tenant_id, &repository_id, 1, "n1").await;
 
-        let mut projector = Projector::connect(&database_url)
-            .await
-            .expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         projector
             .rebuild(&tenant_id, &repository_id)
             .await
