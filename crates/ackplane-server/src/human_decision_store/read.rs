@@ -33,7 +33,8 @@ impl HumanDecisionStore {
         repository_id: &str,
         decision_id: &str,
     ) -> Result<Option<HumanDecisionProjection>, HumanDecisionStoreError> {
-        self.client
+        self.connection()
+            .await?
             .query_opt(
                 &format!(
                     "SELECT {PROJECTION_COLUMNS} FROM human_decision_projections \
@@ -73,7 +74,8 @@ impl HumanDecisionStore {
             .unwrap_or_default();
         let status_filter = status.map(HumanDecisionStatus::as_i16);
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &format!(
                     "SELECT {PROJECTION_COLUMNS} FROM human_decision_projections \
