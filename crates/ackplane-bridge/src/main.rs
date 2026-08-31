@@ -177,7 +177,7 @@ async fn main() {
             return;
         }
     };
-    let telemetry_store = match TelemetryStore::connect(config.database_url()).await {
+    let telemetry_store = match TelemetryStore::connect(&db_pool).await {
         Ok(telemetry) => Arc::new(telemetry),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane telemetry domain: {error}");

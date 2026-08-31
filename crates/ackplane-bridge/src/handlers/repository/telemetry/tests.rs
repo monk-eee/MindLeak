@@ -152,7 +152,7 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
                 .expect("connect Readiness store"),
         ),
         telemetry: Arc::new(
-            TelemetryStore::connect(database_url)
+            TelemetryStore::connect(&db_pool)
                 .await
                 .expect("connect Telemetry store"),
         ),
@@ -202,7 +202,12 @@ async fn telemetry_route_preserves_bounded_server_buckets_recent_events_and_tena
     let tenant_id = format!("tenant-{unique}");
     let repository_id = format!("repository-{unique}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
-    let telemetry = TelemetryStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let telemetry = TelemetryStore::connect(&pool)
         .await
         .expect("connect Telemetry store for fixtures");
     let first_bucket = UNIX_EPOCH + Duration::from_secs(1_700_000_100);

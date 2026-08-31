@@ -57,7 +57,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     ConstitutionStore::connect(&pool)
         .await
         .map_err(|error| format!("constitution schema failed: {error}"))?;
-    TelemetryStore::connect(database_url)
+    TelemetryStore::connect(&pool)
         .await
         .map_err(|error| format!("telemetry schema failed: {error}"))?;
     DelegationStore::connect(&pool)

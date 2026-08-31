@@ -127,7 +127,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let telemetry_store = match TelemetryStore::connect(config.database_url()).await {
+            let telemetry_store = match TelemetryStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(

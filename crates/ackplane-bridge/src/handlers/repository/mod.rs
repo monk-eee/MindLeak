@@ -309,7 +309,7 @@ pub(super) mod tests {
                     .expect("connect Readiness store"),
             ),
             telemetry: Arc::new(
-                TelemetryStore::connect(database_url)
+                TelemetryStore::connect(&db_pool)
                     .await
                     .expect("connect Telemetry store"),
             ),
