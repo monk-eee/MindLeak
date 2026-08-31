@@ -187,7 +187,7 @@ async fn main() {
             return;
         }
     };
-    let evidence_store = match BridgeEvidenceStore::connect(config.database_url()).await {
+    let evidence_store = match BridgeEvidenceStore::connect(&db_pool).await {
         Ok(evidence) => Arc::new(evidence),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane evidence domain: {error}");
