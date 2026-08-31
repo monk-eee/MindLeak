@@ -690,6 +690,25 @@ uses, and `docker-compose.yml`'s `bridge` service brings it up alongside
 `ackplane` so a developer gets both from one `docker compose up`. Bridge never
 gRPC-connects to `ackplane`; every store is a direct Postgres connection to the
 same database `ackplane` migrates, so `bridge` only depends on `migrate`
+
+`crates/ackplane-server/src/db_pool.rs` is the one bounded connection pool a
+process opens (ADR-0143). Historically every store held its own dedicated
+`tokio_postgres::Client` for its whole lifetime, which is small and
+deterministic per running service but unbounded under test, where each
+DB-gated test builds its own stores and each store opened another raw
+connection — enough to exhaust Postgres's ceiling and fail as several
+unrelated subsystems at once, because only the panic body ever mentions
+connections. `build_pool` caps a process at `ACKPLANE_DB_POOL_MAX_SIZE`
+connections and bounds the wait for one at `ACKPLANE_DB_POOL_TIMEOUT_MS`, so
+exhaustion is a typed refusal rather than a hang; both settings refuse a
+malformed value instead of silently substituting the default, since the
+setting only exists for deployments the default is already wrong for. Stores
+are migrated onto it one at a time and each is complete in its own commit
+(decision 6) — `LiveFeedStore` is the first — so there is no half-migrated
+store and no interim shim. A store that holds a transaction checks its
+connection out once and keeps it for the whole transaction (decision 4),
+which is what keeps the lock-contention tests proving what they already
+prove.
 completing, not on `ackplane` itself running. `BridgeConfig::resolve` refuses
 any non-loopback listen address until a production authentication verifier
 exists (ADR-0094), so the process always binds `127.0.0.1` inside its
@@ -767,7 +786,42 @@ state needing the same custody controls as a full-database backup.
 Administration policy adoption (`administration/policy.rs`) and the platform
 Snapshot request/receipt flow (`administration/snapshot.rs`) are their own
 files for the same module-length reason Purge/Recovery/Export already are.
-ADR-0111's claim recovery is unchanged.
+ADR-0111's claim recovery is unchanged. ADR-0145 decisions 4-5 add a fifth
+privileged class inside `administration/recovery.rs`: production
+recovery-execution preview/confirmation, requiring its own adopted
+`RecoveryExecution` policy and always platform-scoped (never per-tenant or
+per-repository, per decision 6) -- there is no `:repository_id` path segment
+for these routes, unlike Purge. It reuses ADR-0134's dual-signing-key
+Lifecycle-purge pattern verbatim (`RecoveryExecutionOperation`, a distinct
+domain separator so a purge-confirming key's signature can never verify for a
+recovery-execution operation or the reverse). The preview's explicit impact
+plan (decision 5) names the artifact and its digest, the passing rehearsal
+report relied on, and triggers a fresh platform Snapshot as its own "one
+before" safety point -- an ordinary Snapshot request/receipt, just captured as
+part of preview construction rather than a separate caller round trip; its
+failure fails the preview outright, before any recovery-execution request row
+exists. Confirming here never runs `pg_restore`: it only records that a
+second, distinct enrolled key authorized the request (`Confirmed`/`Refused`/
+`Expired`). Production execution itself (ADR-0145 decisions 4-8,
+`administration/recovery_execution.rs`'s `execute_recovery_execution` route,
+backed by `AdministrationStore::execute_recovery` and
+`snapshot_provider::execute_recovery`) is a deliberately distinct, later route
+that consumes an already-confirmed authorization rather than a third signed
+step: the dual-signing-key preview/confirm pair is decision 4's complete
+authorization, so execution needs no signature of its own. It re-checks, at
+the moment it runs (not only at preview time), that the deployment is attested
+single-tenant (`single_tenant_attested`, refusing outright otherwise per
+decision 6) and that a rehearsal of the exact artifact digest passed inside
+the freshness window (`MAX_REHEARSAL_FRESHNESS`, decision 3); either refusal
+is a durable `Refused` `RecoveryExecutionReceipt`, never a bare error. Only
+then does it run `pg_restore --clean --if-exists --no-owner` for real against
+`ACKPLANE_DATABASE_URL` (unlike rehearsal's restore into a freshly created
+empty scratch database, production's target already holds live objects the
+restore must overwrite) and records `Succeeded`/`Failed` honestly (decision 8:
+a failed restore is never silently retried with checks relaxed or papered over
+by falling back to the pre-restore safety Snapshot). Idempotent throughout: a
+request that already has a receipt returns it unchanged on replay, never
+re-running `pg_restore` twice.
 
 | Route | Serves |
 |---|---|
@@ -813,6 +867,10 @@ ADR-0111's claim recovery is unchanged.
 | `GET /api/v1/administration/snapshots/:request_id/inspect` | The most recently recorded inspection report for a Snapshot request, if any, tenant-scoped like every other Snapshot/purge read. |
 | `POST /api/v1/repositories/:repository_id/administration/exports` | ADR-0119 decision 5: requests, then synchronously executes, a bounded/redacted Export of `telemetry_events` -- refuses (`409`, no request row created) without an active tenant-scoped `Export` policy, otherwise queries at most `max_records` rows, redacts every internal identifier, and records a `succeeded`/`failed` receipt naming its schema version, record count, and exactly which fields were redacted. Idempotent like Snapshot: a replayed request returns the original receipt rather than re-running the query. |
 | `GET /api/v1/repositories/:repository_id/administration/exports/:request_id` | The receipt recorded for one prior Export request, if any, tenant- and repository-scoped like every other Snapshot/purge/export read. |
+| `POST /api/v1/administration/recovery-executions` | ADR-0145 decisions 4-5: previews a production recovery execution -- refuses (`409`, no request row created) without an active platform-scoped `RecoveryExecution` policy, an artifact whose declared digest matches its own recorded Snapshot receipt, or a named rehearsal report that actually passed for that exact digest. Triggers a fresh platform Snapshot as its own pre-restore safety point as part of preview construction; that Snapshot's failure fails this preview outright, before any recovery-execution request row exists. Always platform-scoped -- there is no `:repository_id` path segment, unlike Purge. |
+| `POST /api/v1/administration/recovery-executions/:request_id/confirm` | Authorizes (never executes) a previously previewed recovery execution: the confirming enrolled key must be distinct from the one that created the preview (ADR-0134's pattern, reused verbatim). Records `confirmed`/`refused`/`expired` only. Tenant-scoped for disclosure even though the operation itself is platform-scoped. |
+| `POST /api/v1/administration/recovery-executions/:request_id/execute` | ADR-0145 decisions 4-8: runs (or refuses, or records a genuine failure of) a previously confirmed recovery execution -- the one route that actually mutates the authoritative database. Needs no signature of its own; the preview/confirm pair already authorized it. Re-checks single-tenant attestation and rehearsal freshness at the moment it runs and records a durable `RecoveryExecutionReceipt` (`succeeded`/`failed`/`refused`). Idempotent: replaying against an already-decided request returns the same receipt. |
+| `GET /api/v1/administration/recovery-executions/:request_id` | The recovery-execution request recorded for one prior preview, if any, under the same tenant-disclosure rule as confirm. |
 | `GET /static/shared/chrome.css` / `GET /static/shared/chrome.js` | The one shared brand-mark and grouped-nav asset every static page loads (ADR-0124), served by `shared_assets.rs` with the correct `Content-Type`. `chrome.js`'s `NAV_ITEMS` is the single declared list of every ADR-0105 decision 5 capability; `chrome.css` styles it through six neutral `--chrome-*` custom properties that each page bridges onto its own palette. A page's entire brand/nav footprint is two mount points (`[data-bridge-brand]`, `[data-bridge-nav]`) plus these two tags — never its own copy of the nav's markup, CSS, or disclosure script. |
 
 Neither Ackplane nor Bridge speak MCP today — the former is gRPC-only, the
@@ -823,35 +881,43 @@ second, Postgres-side reimplementation of `mindleak-core`/`lodestar-core`'s
 business rules -- every handler translates to an Ackplane RPC that already
 exists and is already authorized, deciding nothing about enrolment or
 signatures itself. Its tool surface today is `open_session`,
-`check_enrollment_status`, and `active_claims`. `open_session` implements
-ADR-0137 clause 2: identity is the session, not the process, sharing the same
-`mindleak-session` crate `mindleak-mcp`/`lodestar-mcp` already use, so it
-mints the same `session:v1:<hex>` form and accepts the same declared
-working-context fields; it consults no Ackplane endpoint, since opening a
-session grants no arbiter-side authority by itself. `check_enrollment_status`
-translates `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122).
-`active_claims` translates `ClaimDelegationService.ListActiveClaims`
+`check_enrollment_status`, `active_claims`, and `task_query`. `open_session`
+implements ADR-0137 clause 2: identity is the session, not the process,
+sharing the same `mindleak-session` crate `mindleak-mcp`/`lodestar-mcp`
+already use, so it mints the same `session:v1:<hex>` form and accepts the
+same declared working-context fields; it consults no Ackplane endpoint,
+since opening a session grants no arbiter-side authority by itself.
+`check_enrollment_status` translates `NodeEnrollmentService.CheckEnrollmentStatus`
+(ADR-0122). `active_claims` translates `ClaimDelegationService.ListActiveClaims`
 (ADR-0096, ADR-0139 clause 1's read half) -- read-only and unsigned, since it
-asks only what the arbiter already states about its own arbitration. It holds
-itself to a local-loopback Ackplane endpoint (ADR-0136 clause 4): neither
-today's enrolled-node possession proof nor Bridge's loopback developer token
-fits an arbitrary MCP client, so `endpoint::resolve_endpoint` refuses a
-non-loopback target rather than send that proof somewhere no decision has
-authorized yet. ADR-0137 resolved the authenticated-principal question by
-reusing the enrolled node's own Ed25519 key rather than minting a new
-principal type: when an operator declares that node's identity via the same
-`MINDLEAK_ACKPLANE_*` variables `ackplane-supervisor` and `lodestar-mcp`'s
-federated claim path already read (`ackplane_client::node_identity`),
-`node_trust::establish` completes the same `NodeSync` connection-challenge
-handshake `ackplane-supervisor` performs at startup, and this front door
-refuses to serve if that proof fails -- a declared-but-unconfigured process
-is unaffected (today's status quo), a named, deliberate limitation rather
-than a silent one pending a later slice. A `task_query`-named tool reading
-Industrial Work's broader projection (list/detail/history/waits/checkpoints/
-overlap/stalled, ADR-0139 clause 2) and a `pgvector`-backed recall store
+asks only what the arbiter already states about its own arbitration.
+`task_query` translates the new `WorkQueryService` (ADR-0139 clause 2): its
+`view` argument selects `list` (paged/filterable, ADR-0112 discipline),
+`detail` (task, acceptance, event history, and waits), or `doctor` (Board
+Doctor findings -- missing publication, impossible state/lease combinations,
+unresolved waits, and declared scope overlap), each a direct translation of
+`WorkStore`'s existing read methods, exactly as Bridge's own Work read
+surface already exposes them over HTTP. Every `list` answer carries ADR-0120
+decision 6's publication state (`current`/`claims_only`/`not_published`
+today; `lagging`/`unavailable` are not yet computed by either read surface).
+It holds itself to a local-loopback Ackplane endpoint (ADR-0136 clause 4):
+neither today's enrolled-node possession proof nor Bridge's loopback
+developer token fits an arbitrary MCP client, so `endpoint::resolve_endpoint`
+refuses a non-loopback target rather than send that proof somewhere no
+decision has authorized yet. ADR-0137 resolved the authenticated-principal
+question by reusing the enrolled node's own Ed25519 key rather than minting a
+new principal type: when an operator declares that node's identity via the
+same `MINDLEAK_ACKPLANE_*` variables `ackplane-supervisor` and
+`lodestar-mcp`'s federated claim path already read
+(`ackplane_client::node_identity`), `node_trust::establish` completes the same
+`NodeSync` connection-challenge handshake `ackplane-supervisor` performs at
+startup, and this front door refuses to serve if that proof fails -- a
+declared-but-unconfigured process is unaffected (today's status quo), a
+named, deliberate limitation rather than a silent one pending a later slice.
+A `pgvector`-backed recall store
 scoped to `projected_nodes` rather than the curated `knowledge` domain
-(ADR-0140) both remain open before this front door is usable end-to-end
-beyond claim arbitration and enrolment status.
+(ADR-0140) remains open before this front door is usable end-to-end beyond
+claim arbitration, enrolment status, and Work reads.
 
 ### `editors/vscode` (extension)
 

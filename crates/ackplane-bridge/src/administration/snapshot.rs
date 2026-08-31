@@ -81,7 +81,7 @@ pub(super) async fn request_platform_snapshot(
     };
 
     let outcome = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .request_snapshot(&new_request, now)
             .await
@@ -91,7 +91,7 @@ pub(super) async fn request_platform_snapshot(
     // A replay of a request that already has a receipt must return that
     // receipt again, not run `pg_dump` a second time for the same identity.
     let existing_receipt = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         administration
             .snapshot_receipt_for_request(&outcome.request.request_id)
             .await
@@ -114,7 +114,7 @@ pub(super) async fn request_platform_snapshot(
     }))
 }
 
-async fn execute_and_record_snapshot(
+pub(super) async fn execute_and_record_snapshot(
     state: &AdministrationApiState,
     snapshot_config: &SnapshotProviderConfig,
     request_id: &str,
@@ -149,7 +149,7 @@ async fn execute_and_record_snapshot(
             }
         };
 
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     administration
         .record_snapshot_receipt(&new_receipt, now)
         .await
@@ -160,7 +160,7 @@ pub(super) async fn platform_snapshot_receipt(
     State(state): State<AdministrationApiState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<SnapshotReceiptResponse>, StatusCode> {
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     // The request itself names its `requested_by` principal; a receipt is
     // only disclosed to the tenant token that made the request, not to any
     // caller who can guess or enumerate a request id.
@@ -196,6 +196,33 @@ fn snapshot_error_reason(error: &SnapshotProviderError) -> String {
         }
         SnapshotProviderError::Encryption => {
             "the snapshot artifact could not be encrypted.".to_string()
+        }
+        // ADR-0145 slice 1: rehearsal errors, not yet reachable from this
+        // route -- rehearsal has no Bridge HTTP surface in this slice -- but
+        // `SnapshotProviderError` is one enum shared with `create_platform_snapshot`,
+        // so this match must stay exhaustive regardless.
+        SnapshotProviderError::RehearsalDatabaseNotConfigured => {
+            "recovery rehearsal is not configured on this deployment.".to_string()
+        }
+        SnapshotProviderError::RehearsalDatabaseUrlInvalid(_) => {
+            "the recovery rehearsal database url could not be parsed.".to_string()
+        }
+        SnapshotProviderError::RehearsalDatabaseIsAuthoritative => {
+            "the recovery rehearsal database is misconfigured to the authoritative database."
+                .to_string()
+        }
+        SnapshotProviderError::RehearsalProvisionFailed(_) => {
+            "the recovery rehearsal scratch database could not be provisioned.".to_string()
+        }
+        // ADR-0145 slice 3: also not reachable from this route -- recovery
+        // execution has no Bridge surface until slice 4 -- but unlike the
+        // rehearsal arms above, this one names the operator action, because a
+        // refusal an operator can resolve is worth nothing if the message does
+        // not say how.
+        SnapshotProviderError::MultiTenantRecoveryUnavailable => {
+            "recovery execution is refused: this deployment is not attested single-tenant. \
+             Set ACKPLANE_SINGLE_TENANT_ATTESTED=true only if it hosts exactly one tenant."
+                .to_string()
         }
     }
 }

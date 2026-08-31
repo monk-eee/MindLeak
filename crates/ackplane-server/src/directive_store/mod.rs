@@ -1,8 +1,7 @@
 //! Durable ADR-0107 directive and receipt records, and the undelivered-directive
 //! read that live NodeSync delivery draws from (ADR-0116 slice 3).
 
-use tokio_postgres::{Client, NoTls};
-
+use crate::db_pool::{PgConnection, PgPool};
 use crate::migration_lock;
 
 const MIGRATION: &str = include_str!("../../migrations/0030_directives.sql");
@@ -22,26 +21,33 @@ pub(crate) use write::enqueue_in_transaction;
 
 /// PostgreSQL persistence for immutable typed directives and their receipts.
 pub struct DirectiveStore {
-    pub(crate) client: Client,
+    pool: PgPool,
 }
 
 impl DirectiveStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane directive store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be exactly
+    /// the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, DirectiveStoreError> {
+        let mut connection = pool.get().await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::SUPERVISOR_SESSION_PROJECTION,
             SUPERVISOR_MIGRATION,
         )
         .await?;
-        migration_lock::migrate_locked(&mut client, migration_lock::key::DIRECTIVES, MIGRATION)
+        migration_lock::migrate_locked(&mut connection, migration_lock::key::DIRECTIVES, MIGRATION)
             .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the life
+    /// of that transaction, which is the one case where holding a connection
+    /// across `.await` points is correct rather than accidental.
+    pub(crate) async fn connection(&self) -> Result<PgConnection, DirectiveStoreError> {
+        Ok(self.pool.get().await?)
     }
 }
 

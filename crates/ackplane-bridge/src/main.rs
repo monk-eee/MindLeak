@@ -65,7 +65,7 @@ struct AppState {
     // so the same Mutex-per-mutable-store pattern claims/ClaimStore already
     // uses applies here too.
     constitution: Arc<Mutex<ConstitutionStore>>,
-    claims: Arc<Mutex<ClaimStore>>,
+    claims: Arc<ClaimStore>,
     projector: Arc<Projector>,
     readiness: Arc<ReadinessStore>,
     telemetry: Arc<TelemetryStore>,
@@ -118,6 +118,19 @@ async fn main() {
             return;
         }
     };
+    // One pool for this process (ADR-0143 decision 1); every migrated store
+    // takes a clone of this handle. Stores still on `connect(database_url)`
+    // keep their own connection until their turn in the migration sequence.
+    let db_pool = match ackplane_server::db_pool::build_pool(
+        config.database_url(),
+        ackplane_server::db_pool::SERVICE_POOL_MAX_SIZE,
+    ) {
+        Ok(pool) => pool,
+        Err(error) => {
+            eprintln!("ackplane-bridge: could not build the Ackplane database pool: {error}");
+            return;
+        }
+    };
     let fleet_store = match FleetStore::connect(config.database_url()).await {
         Ok(fleet) => Arc::new(fleet),
         Err(error) => {
@@ -125,7 +138,7 @@ async fn main() {
             return;
         }
     };
-    let knowledge_store = match KnowledgeStore::connect(config.database_url()).await {
+    let knowledge_store = match KnowledgeStore::connect(&db_pool).await {
         Ok(knowledge) => Arc::new(knowledge),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane knowledge domain: {error}");
@@ -141,21 +154,26 @@ async fn main() {
             return;
         }
     };
-    let claim_store = match ClaimStore::connect(config.database_url()).await {
-        Ok(claims) => Arc::new(Mutex::new(claims)),
+    let claim_store = match ClaimStore::connect(&db_pool).await {
+        // No `Mutex`: ADR-0111 wrapped this one because `ClaimStore`'s
+        // mutating methods took `&mut self`, and ADR-0143 retired that
+        // reason. The CAS row lock in the database is what serialises a
+        // claim, so a process-wide lock only removed the concurrency the
+        // pool exists to allow.
+        Ok(claims) => Arc::new(claims),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane claim delegation: {error}");
             return;
         }
     };
-    let projector = match Projector::connect(config.database_url()).await {
+    let projector = match Projector::connect(&db_pool).await {
         Ok(projector) => Arc::new(projector),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's graph projection: {error}");
             return;
         }
     };
-    let readiness_store = match ReadinessStore::connect(config.database_url()).await {
+    let readiness_store = match ReadinessStore::connect(&db_pool).await {
         Ok(readiness) => Arc::new(readiness),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane readiness rollup: {error}");
@@ -190,21 +208,21 @@ async fn main() {
             return;
         }
     };
-    let live_feed_store = match LiveFeedStore::connect(config.database_url()).await {
+    let live_feed_store = match LiveFeedStore::connect(&db_pool).await {
         Ok(live_feed) => Arc::new(live_feed),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane live feed: {error}");
             return;
         }
     };
-    let human_decision_store = match HumanDecisionStore::connect(config.database_url()).await {
+    let human_decision_store = match HumanDecisionStore::connect(&db_pool).await {
         Ok(decisions) => Arc::new(decisions),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane human decisions: {error}");
             return;
         }
     };
-    let delegation_store = match DelegationStore::connect(config.database_url()).await {
+    let delegation_store = match DelegationStore::connect(&db_pool).await {
         Ok(delegations) => Arc::new(delegations),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane delegations: {error}");
@@ -218,8 +236,8 @@ async fn main() {
             return;
         }
     };
-    let work_command_service = match WorkCommandService::connect(config.database_url()).await {
-        Ok(commands) => Arc::new(Mutex::new(commands)),
+    let work_command_service = match WorkCommandService::connect(&db_pool).await {
+        Ok(commands) => Arc::new(commands),
         Err(error) => {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane's Work command domain: {error}"
@@ -227,8 +245,8 @@ async fn main() {
             return;
         }
     };
-    let design_store = match DesignStore::connect(config.database_url()).await {
-        Ok(design) => Arc::new(Mutex::new(design)),
+    let design_store = match DesignStore::connect(&db_pool).await {
+        Ok(design) => Arc::new(design),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's Design domain: {error}");
             return;
@@ -245,8 +263,8 @@ async fn main() {
             return;
         }
     };
-    let administration_store = match AdministrationStore::connect(config.database_url()).await {
-        Ok(administration) => Arc::new(Mutex::new(administration)),
+    let administration_store = match AdministrationStore::connect(&db_pool).await {
+        Ok(administration) => Arc::new(administration),
         Err(error) => {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane's Administration domain: {error}"

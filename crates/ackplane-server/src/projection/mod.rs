@@ -29,7 +29,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio_postgres::{Client, NoTls};
+
+use crate::db_pool::{PgConnection, PgPool};
 
 const MIGRATION: &str = include_str!("../../migrations/0002_projection.sql");
 const EMBEDDINGS_MIGRATION: &str =
@@ -137,6 +138,8 @@ pub enum ProjectionError {
     },
     #[error("projection database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("projection store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
 }
 
 /// Whether a SQLSTATE is PostgreSQL's own deadlock detection (40P01) — the
@@ -148,38 +151,45 @@ fn is_deadlock(code: &tokio_postgres::error::SqlState) -> bool {
 
 /// A connection to Ackplane's projection tables (ADR-0087).
 pub struct Projector {
-    client: Client,
+    pool: PgPool,
 }
 
 impl Projector {
-    /// Connect and apply the projection schema. Every statement in the
-    /// migration is idempotent, matching [`crate::ledger::LedgerStore::connect`].
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound. Every statement
+    /// in the migration is idempotent, matching
+    /// [`crate::ledger::LedgerStore::connect`].
     ///
     /// Also applies `0055_projected_node_embeddings.sql` (ADR-0140 decision 1):
     /// a `pgvector` embeddings table scoped to this same projection, applied
     /// here because it extends `projected_nodes` rather than owning a separate
     /// connection lifecycle. Population and ranking are separate, later
     /// slices; this only ensures the table exists.
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane projection connection closed with an error");
-            }
-        });
+    pub async fn connect(pool: &PgPool) -> Result<Self, ProjectionError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::PROJECTION,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::PROJECTED_NODE_EMBEDDINGS,
             EMBEDDINGS_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the
+    /// life of that transaction, which is the one case where holding a
+    /// connection across `.await` points is correct rather than accidental.
+    async fn connection(&self) -> Result<PgConnection, ProjectionError> {
+        Ok(self.pool.get().await?)
     }
 }
 
@@ -281,10 +291,12 @@ mod tests {
     #[tokio::test]
     async fn connecting_the_projector_twice_applies_the_embeddings_schema_idempotently() {
         let url = require_test_database!();
-        Projector::connect(&url)
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        Projector::connect(&pool)
             .await
             .expect("first connect applies both migrations");
-        Projector::connect(&url)
+        Projector::connect(&pool)
             .await
             .expect("second connect must not fail re-applying idempotent DDL");
     }
@@ -295,10 +307,12 @@ mod tests {
     #[tokio::test]
     async fn an_embedding_can_reference_an_existing_projected_node() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = crate::ledger::LedgerStore::connect(&url)
             .await
             .expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", crate::test_support::uuid_ish());
         let repo = "repo-a".to_string();
 
@@ -327,8 +341,11 @@ mod tests {
             .expect("rebuild projects the node");
 
         let embedding = pgvector::Vector::from(vec![0.1_f32; 768]);
-        projector
-            .client
+        let connection = projector
+            .connection()
+            .await
+            .expect("checkout connection for sabotage insert");
+        connection
             .execute(
                 "INSERT INTO projected_node_embeddings \
                  (tenant_id, repository_id, node_id, model, embedding) \
@@ -344,8 +361,7 @@ mod tests {
             .await
             .expect("embedding for an existing projected node is accepted");
 
-        let row = projector
-            .client
+        let row = connection
             .query_one(
                 "SELECT embedding FROM projected_node_embeddings \
                  WHERE tenant_id = $1 AND repository_id = $2 AND node_id = $3 AND model = $4",
@@ -367,16 +383,21 @@ mod tests {
     #[tokio::test]
     async fn an_embedding_cannot_outlive_or_precede_its_projected_node() {
         let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let mut ledger = crate::ledger::LedgerStore::connect(&url)
             .await
             .expect("connect ledger");
-        let mut projector = Projector::connect(&url).await.expect("connect projector");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", crate::test_support::uuid_ish());
         let repo = "repo-a".to_string();
         let embedding = pgvector::Vector::from(vec![0.2_f32; 768]);
+        let connection = projector
+            .connection()
+            .await
+            .expect("checkout connection for sabotage inserts");
 
-        let never_projected = projector
-            .client
+        let never_projected = connection
             .execute(
                 "INSERT INTO projected_node_embeddings \
                  (tenant_id, repository_id, node_id, model, embedding) \
@@ -420,8 +441,7 @@ mod tests {
             .rebuild(&tenant, &repo)
             .await
             .expect("rebuild projects the node");
-        projector
-            .client
+        connection
             .execute(
                 "INSERT INTO projected_node_embeddings \
                  (tenant_id, repository_id, node_id, model, embedding) \
@@ -442,8 +462,7 @@ mod tests {
         // the projection: `rebuild_once` deletes every `projected_nodes` row
         // for this tenant/repository before replaying, and this ledger has
         // nothing left to replay for it once cleared.
-        projector
-            .client
+        connection
             .execute(
                 "DELETE FROM ledger_records WHERE tenant_id = $1 AND repository_id = $2",
                 &[&tenant, &repo],
@@ -455,8 +474,7 @@ mod tests {
             .await
             .expect("rebuild with nothing left to replay removes the node");
 
-        let remaining = projector
-            .client
+        let remaining = connection
             .query_opt(
                 "SELECT 1 FROM projected_node_embeddings \
                  WHERE tenant_id = $1 AND repository_id = $2 AND node_id = $3",

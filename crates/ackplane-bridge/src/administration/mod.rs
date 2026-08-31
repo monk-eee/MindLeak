@@ -41,7 +41,6 @@ use axum::{
     Json, Router,
 };
 use serde::Serialize;
-use tokio::sync::Mutex;
 
 const ADMINISTRATION_PAGE: &str = include_str!("../../static/administration.html");
 
@@ -51,10 +50,10 @@ const ADMINISTRATION_PAGE: &str = include_str!("../../static/administration.html
 pub struct AdministrationApiState {
     pub fleet: Arc<FleetStore>,
     pub tenant_id: Arc<str>,
-    pub administration: Arc<Mutex<AdministrationStore>>,
+    pub administration: Arc<AdministrationStore>,
     /// Enrolled-key verification and nonce consumption for destructive Lifecycle
     /// purge transitions. Absent test states fail closed for signed mutations.
-    pub claims: Option<Arc<Mutex<ClaimStore>>>,
+    pub claims: Option<Arc<ClaimStore>>,
     /// `None` when `ACKPLANE_SNAPSHOT_DIR` is not configured -- Snapshot then
     /// reports `unavailable` rather than attempting to run `pg_dump` against
     /// a location nobody chose.
@@ -68,7 +67,7 @@ impl AdministrationApiState {
     pub fn new(
         fleet: Arc<FleetStore>,
         tenant_id: Arc<str>,
-        administration: Arc<Mutex<AdministrationStore>>,
+        administration: Arc<AdministrationStore>,
         snapshot: Option<Arc<SnapshotProviderConfig>>,
         export: Option<Arc<ExportProviderConfig>>,
     ) -> Self {
@@ -85,8 +84,8 @@ impl AdministrationApiState {
     pub fn with_claims(
         fleet: Arc<FleetStore>,
         tenant_id: Arc<str>,
-        administration: Arc<Mutex<AdministrationStore>>,
-        claims: Arc<Mutex<ClaimStore>>,
+        administration: Arc<AdministrationStore>,
+        claims: Arc<ClaimStore>,
         snapshot: Option<Arc<SnapshotProviderConfig>>,
         export: Option<Arc<ExportProviderConfig>>,
     ) -> Self {
@@ -138,6 +137,22 @@ pub fn administration_routes(state: AdministrationApiState) -> Router {
             post(recovery::inspect_snapshot).get(recovery::latest_snapshot_inspection),
         )
         .route(
+            "/api/v1/administration/recovery-executions",
+            post(recovery_execution::preview_recovery_execution),
+        )
+        .route(
+            "/api/v1/administration/recovery-executions/:request_id/confirm",
+            post(recovery_execution::confirm_recovery_execution),
+        )
+        .route(
+            "/api/v1/administration/recovery-executions/:request_id/execute",
+            post(recovery_execution_run::execute_recovery_execution),
+        )
+        .route(
+            "/api/v1/administration/recovery-executions/:request_id",
+            get(recovery_execution::recovery_execution_status),
+        )
+        .route(
             "/api/v1/repositories/:repository_id/administration/exports",
             post(export::request_export),
         )
@@ -152,6 +167,8 @@ mod export;
 mod policy;
 mod purge;
 mod recovery;
+mod recovery_execution;
+mod recovery_execution_run;
 mod snapshot;
 
 #[derive(Serialize)]
@@ -227,7 +244,7 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
             reason: "ACKPLANE_SNAPSHOT_DIR is not configured for this deployment.".to_string(),
         },
         Some(_) => {
-            let mut administration = state.administration.lock().await;
+            let administration = &state.administration;
             let active = administration
                 .active_policy(
                     AdministrationOperation::Snapshot,
@@ -258,7 +275,7 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
         }
     };
     let lifecycle_purge = {
-        let mut administration = state.administration.lock().await;
+        let administration = &state.administration;
         let active = administration
             .active_policy(
                 AdministrationOperation::LifecyclePurge,
@@ -294,7 +311,7 @@ async fn capabilities(state: &AdministrationApiState) -> Vec<AdministrationCapab
             reason: "ACKPLANE_EXPORT_DIR is not configured for this deployment.".to_string(),
         },
         Some(_) => {
-            let mut administration = state.administration.lock().await;
+            let administration = &state.administration;
             let active = administration
                 .active_policy(
                     AdministrationOperation::Export,
@@ -380,13 +397,22 @@ fn administration_error_status(error: AdministrationStoreError) -> StatusCode {
         AdministrationStoreError::UnknownPolicy { .. }
         | AdministrationStoreError::UnknownRequest { .. }
         | AdministrationStoreError::UnknownPurgeRequest { .. }
-        | AdministrationStoreError::UnknownExportRequest { .. } => StatusCode::NOT_FOUND,
+        | AdministrationStoreError::UnknownExportRequest { .. }
+        | AdministrationStoreError::UnknownRecoveryExecutionRequest { .. } => StatusCode::NOT_FOUND,
+        AdministrationStoreError::UnknownRecoveryArtifact
+        | AdministrationStoreError::RecoveryArtifactManifestMismatch
+        | AdministrationStoreError::RecoveryExecutionNotConfirmed
+        | AdministrationStoreError::NoPassingRehearsalForArtifact => StatusCode::CONFLICT,
         error @ (AdministrationStoreError::Database(_)
         | AdministrationStoreError::UnknownOperation { .. }
         | AdministrationStoreError::UnknownOutcome { .. }
         | AdministrationStoreError::UnknownDataCategory { .. }) => {
             tracing::error!(%error, "Bridge Administration store error");
             StatusCode::INTERNAL_SERVER_ERROR
+        }
+        error @ AdministrationStoreError::PoolExhausted(_) => {
+            tracing::error!(%error, "Bridge Administration store connection pool exhausted");
+            StatusCode::SERVICE_UNAVAILABLE
         }
     }
 }

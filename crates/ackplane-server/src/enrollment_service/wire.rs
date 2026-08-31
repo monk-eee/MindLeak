@@ -212,8 +212,7 @@ pub(super) fn status_to_wire(status: EnrollmentStatus) -> v1::EnrollmentRequestS
 }
 
 pub(super) fn rfc3339(timestamp: SystemTime) -> Result<String, String> {
-    OffsetDateTime::from(timestamp)
-        .format(&Rfc3339)
+    crate::wire_format::rfc3339(timestamp)
         .map_err(|error| format!("could not format timestamp: {error}"))
 }
 

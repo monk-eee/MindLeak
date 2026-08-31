@@ -9,7 +9,10 @@ use std::{sync::Arc, time::SystemTime};
 
 use ackplane_server::{
     fleet::FleetStore,
-    work_command_store::AUTHORIZATION_UNAVAILABLE_REASON as COMMAND_AUTHORIZATION_UNAVAILABLE_REASON,
+    work_command_store::{
+        WorkCommandAuthorization, WorkCommandKind,
+        AUTHORIZATION_UNAVAILABLE_REASON as COMMAND_AUTHORIZATION_UNAVAILABLE_REASON,
+    },
     work_command_vocabulary::WORK_COMMAND_OPERATIONS,
     work_store::{
         ClaimsOnlyWork, WorkDoctorFinding, WorkPublication, WorkStore, WorkStoreError, WorkTask,
@@ -189,16 +192,78 @@ struct WorkCommandCapability {
     reason: &'static str,
 }
 
-fn command_capabilities() -> Vec<WorkCommandCapability> {
+/// What the Work command routes will actually do with each operation, read off
+/// the same authority they use.
+///
+/// This list used to report `authorization_unavailable` for all ten operations
+/// unconditionally, and that was true when written. ADR-0142 then gave the
+/// Bridge's hardened loopback profile a real verified principal, so the routes
+/// began executing commands while the page rendering this list still showed
+/// them all disabled — one authority described two ways, and the more alarming
+/// description was the wrong one.
+///
+/// So it is derived rather than restated: `verified_principal` grants the
+/// authority, and this reports what that grant contains. An operation the
+/// principal does not allow still reports unavailable, with the same reason as
+/// before, which keeps the honest answer available rather than replacing one
+/// blanket claim with the opposite one.
+///
+/// `policy_available: false` is reported deliberately. ADR-0142 clause 5 says
+/// Work commands gain no `AdministrationPolicy`-style layer, so `CreateWork`'s
+/// ADR-0125 decision 8 exception — a verified policy classifying it as routine
+/// — has nothing to consult. Saying so is not a caveat; it is the difference
+/// between "this will execute" and "this will execute without a policy having
+/// approved it", which a reader deciding whether to click needs.
+fn command_capabilities(authorization: &WorkCommandAuthorization) -> Vec<WorkCommandCapability> {
+    // Exhaustive rather than a catch-all: a new authorization variant must be
+    // considered here, not silently reported as one of the existing answers.
+    let (allowed, unavailable_reason): (&[WorkCommandKind], &'static str) = match authorization {
+        WorkCommandAuthorization::Verified(principal) => (
+            &principal.allowed_commands,
+            COMMAND_AUTHORIZATION_UNAVAILABLE_REASON,
+        ),
+        WorkCommandAuthorization::LoopbackDevelopment => {
+            (&[], COMMAND_AUTHORIZATION_UNAVAILABLE_REASON)
+        }
+        WorkCommandAuthorization::MissingPrincipal => (&[], COMMAND_MISSING_PRINCIPAL_REASON),
+    };
     WORK_COMMAND_OPERATIONS
         .into_iter()
-        .map(|operation| WorkCommandCapability {
-            operation,
-            state: "authorization_unavailable",
-            reason: COMMAND_AUTHORIZATION_UNAVAILABLE_REASON,
+        .map(|operation| {
+            let permitted = allowed
+                .iter()
+                .any(|kind| kind.operation_name() == operation);
+            WorkCommandCapability {
+                operation,
+                state: if permitted {
+                    "available_without_policy"
+                } else {
+                    "authorization_unavailable"
+                },
+                reason: if permitted {
+                    COMMAND_AVAILABLE_WITHOUT_POLICY_REASON
+                } else {
+                    unavailable_reason
+                },
+            }
         })
         .collect()
 }
+
+/// Why an operation the loopback principal allows is still not simply
+/// "available": it executes, and no policy layer reviewed it (ADR-0142
+/// clause 5).
+const COMMAND_AVAILABLE_WITHOUT_POLICY_REASON: &str =
+    "The hardened loopback profile is a verified principal for this \
+     single-tenant deployment, so this command executes. No policy layer is \
+     adopted, so nothing classifies it as routine or requiring review.";
+
+/// A request that reaches the command service with no principal at all is
+/// refused rather than reported unavailable, so it gets its own reason instead
+/// of borrowing the unavailable one.
+const COMMAND_MISSING_PRINCIPAL_REASON: &str =
+    "No verified principal accompanied this request, so the command service \
+     refuses it without revealing whether the Work task exists.";
 
 #[derive(Serialize)]
 struct ClaimsOnlyWorkResponse {
@@ -295,7 +360,10 @@ async fn work_list(
         page,
         page_size,
         publication: WorkPublicationResponse::from(publication),
-        commands: command_capabilities(),
+        commands: command_capabilities(&crate::work_command_api::verified_principal(
+            state.tenant_id.as_ref(),
+            &repository_id,
+        )),
     }))
 }
 

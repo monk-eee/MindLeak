@@ -219,6 +219,8 @@ pub struct SnapshotReceipt {
 pub enum AdministrationStoreError {
     #[error("administration store database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("administration store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("{field} must be a bounded non-empty identifier")]
     InvalidIdentifier { field: &'static str },
     #[error("data classification must be between 1 and {MAX_CLASSIFICATION_BYTES} bytes")]
@@ -271,10 +273,20 @@ pub enum AdministrationStoreError {
     UnknownExportRequest { request_id: String },
     #[error("a legacy unsigned purge preview cannot be confirmed; create a new signed preview")]
     LegacyPurgeRequestUnauthenticated,
-    #[error("the confirming signing key must differ from the key that created the purge preview")]
+    #[error("the confirming signing key must differ from the key that created the preview")]
     SelfConfirmationRefused,
-    #[error("a purge receipt must name both confirmation signing key and node, or neither")]
+    #[error("a receipt must name both confirmation signing key and node, or neither")]
     IncompleteConfirmationPrincipal,
+    #[error("unknown recovery execution request: {request_id}")]
+    UnknownRecoveryExecutionRequest { request_id: String },
+    #[error("the named artifact has no succeeded Snapshot receipt to restore")]
+    UnknownRecoveryArtifact,
+    #[error("the declared manifest digest does not match the artifact's own recorded receipt")]
+    RecoveryArtifactManifestMismatch,
+    #[error("the named rehearsal report does not exist, did not pass, or covers a different artifact digest")]
+    NoPassingRehearsalForArtifact,
+    #[error("recovery execution requires a Confirmed authorization; the request has none, or its confirmation was Refused or Expired")]
+    RecoveryExecutionNotConfirmed,
 }
 
 fn is_identifier(value: &str) -> bool {

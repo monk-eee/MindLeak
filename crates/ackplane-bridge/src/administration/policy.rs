@@ -68,7 +68,7 @@ pub(super) async fn adopt_administration_policy(
         expires_at: now + std::time::Duration::from_secs(request.lifetime_seconds),
     };
 
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let outcome = administration
         .adopt_policy(&policy_request)
         .await

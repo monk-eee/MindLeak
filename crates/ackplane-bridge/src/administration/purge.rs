@@ -101,7 +101,7 @@ pub(super) async fn preview_lifecycle_purge(
         confirmation_window,
         idempotency_key,
     };
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let outcome = administration
         .preview_purge(&preview_request, now)
         .await
@@ -184,7 +184,7 @@ pub(super) async fn confirm_lifecycle_purge(
 ) -> Result<Json<PurgeReceiptResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
     let now = SystemTime::now();
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     let request = administration
         .purge_request(&request_id)
         .await
@@ -193,7 +193,10 @@ pub(super) async fn confirm_lifecycle_purge(
     if request.tenant_id != state.tenant_id.as_ref() || request.repository_id != repository_id {
         return Err(StatusCode::NOT_FOUND);
     }
-    drop(administration);
+    // No lock to release here any more (ADR-0143): `administration` is a
+    // plain `Arc`, not a `MutexGuard`, so authenticating the purge operation
+    // below never blocks a concurrent request the way holding a lock across
+    // it once did.
     let principal = authenticate_purge_operation(
         &state,
         &repository_id,
@@ -204,7 +207,6 @@ pub(super) async fn confirm_lifecycle_purge(
         now,
     )
     .await?;
-    let mut administration = state.administration.lock().await;
     let receipt = administration
         .confirm_purge(
             &request_id,
@@ -223,7 +225,7 @@ pub(super) async fn lifecycle_purge_status(
     Path((repository_id, request_id)): Path<(String, String)>,
 ) -> Result<Json<PurgeReceiptResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
-    let mut administration = state.administration.lock().await;
+    let administration = &state.administration;
     // Receipt visibility stays tenant/repository-scoped. The requester identity
     // is an enrolled key rather than the loopback tenant profile.
     let request = administration
@@ -268,7 +270,6 @@ async fn authenticate_purge_operation(
         operation,
         &authentication,
     );
-    let mut claims = claims.lock().await;
     let resolution = claims
         .resolve_signing_key(&binding)
         .await

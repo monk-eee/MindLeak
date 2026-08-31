@@ -28,6 +28,7 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "process", "io-util", "fs"] }
 tokio-postgres = { workspace = true }
+deadpool-postgres = { workspace = true }
 chacha20poly1305 = { workspace = true }
 tokio-stream = "0.1"
 tonic = { workspace = true }

@@ -43,7 +43,7 @@ pub(super) async fn record_authenticated_receipt(
     tenant_id: &str,
     repository_id: &str,
     node_id: &str,
-    directives: &mut DirectiveStore,
+    directives: &DirectiveStore,
 ) -> Result<AcceptedReceipt, IngressError> {
     let Some(v1::node_frame::Frame::DirectiveReceipt(receipt)) = frame.frame else {
         return Err(IngressError::Malformed("expected a directive receipt"));

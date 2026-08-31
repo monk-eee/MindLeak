@@ -34,6 +34,7 @@ pub mod constitution_signature;
 pub mod constitution_store;
 pub mod context_packet_compiler;
 pub mod context_packet_store;
+pub mod db_pool;
 pub mod delegation_store;
 pub mod design_materialization_store;
 pub mod design_store;
@@ -57,6 +58,7 @@ pub mod live_feed_store;
 mod migration_lock;
 pub mod projection;
 pub mod readiness;
+pub mod schema_migration;
 pub mod service;
 pub mod signing_keys;
 pub mod snapshot_provider;
@@ -67,8 +69,10 @@ pub mod telemetry_signature;
 pub mod telemetry_store;
 #[cfg(test)]
 mod test_support;
+mod wire_format;
 pub mod work_command_store;
 pub mod work_command_vocabulary;
+pub mod work_query_service;
 pub mod work_store;
 
 use thiserror::Error;

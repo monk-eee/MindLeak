@@ -4,7 +4,6 @@ use std::{sync::Arc, time::Duration, time::SystemTime};
 
 use ackplane_protocol::claim_auth::ClaimOperation;
 use ackplane_protocol::v1;
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 use crate::claim_signature::{self, ClaimAuthRefusal};
@@ -13,13 +12,16 @@ use crate::claim_store::{
 };
 
 pub struct ClaimDelegationService {
-    store: Arc<Mutex<ClaimStore>>,
+    /// No `Mutex`: every `ClaimStore` method takes `&self` since ADR-0143, and
+    /// a process-wide lock would serialise concurrent claims that the
+    /// database's own CAS row lock already arbitrates correctly.
+    store: Arc<ClaimStore>,
 }
 
 impl ClaimDelegationService {
     pub fn new(store: ClaimStore) -> Self {
         Self {
-            store: Arc::new(Mutex::new(store)),
+            store: Arc::new(store),
         }
     }
 
@@ -51,8 +53,6 @@ impl ClaimDelegationService {
         };
         let resolution = self
             .store
-            .lock()
-            .await
             .resolve_signing_key(&binding)
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
@@ -79,8 +79,6 @@ impl ClaimDelegationService {
         // never be able to burn a legitimate nonce out from under its owner.
         let fresh = self
             .store
-            .lock()
-            .await
             .consume_claim_nonce(
                 &authentication.signing_key_id,
                 &authentication.nonce,
@@ -122,8 +120,6 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
         let request = request_from_wire(wire).map_err(Status::invalid_argument)?;
         let result = self
             .store
-            .lock()
-            .await
             .delegate(&request, std::time::SystemTime::now())
             .await
             .map_err(map_store_error)?;
@@ -154,8 +150,6 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
         .await?;
         let released = self
             .store
-            .lock()
-            .await
             .release(
                 &tenant_id,
                 &repository_id,
@@ -201,8 +195,6 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
         }
         let result = self
             .store
-            .lock()
-            .await
             .renew(
                 &tenant_id,
                 &repository_id,
@@ -256,8 +248,6 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
         }
         let result = self
             .store
-            .lock()
-            .await
             .recover(
                 &ClaimRecoverRequest {
                     tenant_id,
@@ -291,8 +281,6 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
         let claims = self
             .store
-            .lock()
-            .await
             .list_active(&tenant_id, &repository_id, std::time::SystemTime::now())
             .await
             .map_err(map_store_error)?;
@@ -363,8 +351,7 @@ fn active_claim_to_wire(
 }
 
 fn rfc3339(timestamp: std::time::SystemTime) -> Result<String, String> {
-    time::OffsetDateTime::from(timestamp)
-        .format(&time::format_description::well_known::Rfc3339)
+    crate::wire_format::rfc3339(timestamp)
         .map_err(|error| format!("could not format claim lease timestamp: {error}"))
 }
 
@@ -373,9 +360,13 @@ fn map_store_error(error: ClaimStoreError) -> Status {
         ClaimStoreError::InvalidLease | ClaimStoreError::MissingReason => {
             Status::invalid_argument(error.to_string())
         }
-        ClaimStoreError::Database(_) | ClaimStoreError::InvalidLapseCount => {
-            Status::internal(error.to_string())
-        }
+        // Exhaustion is the caller's to retry, not a bad request and not a
+        // permanent fault: `unavailable` is the one gRPC code that says so
+        // (ADR-0143 decision 5).
+        ClaimStoreError::PoolExhausted(_) => Status::unavailable(error.to_string()),
+        ClaimStoreError::Database(_)
+        | ClaimStoreError::SigningKey(_)
+        | ClaimStoreError::InvalidLapseCount => Status::internal(error.to_string()),
     }
 }
 
@@ -522,7 +513,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("replay");
         register_test_key(&database_url, &identity).await;
-        let store = ClaimStore::connect(&database_url)
+        let store = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a claim-store connection");
         let service = ClaimDelegationService::new(store);
@@ -561,7 +552,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("stale");
         register_test_key(&database_url, &identity).await;
-        let store = ClaimStore::connect(&database_url)
+        let store = ClaimStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a claim-store connection");
         let service = ClaimDelegationService::new(store);

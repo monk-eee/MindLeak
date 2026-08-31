@@ -363,6 +363,67 @@ mod tests {
         assert_eq!(thread[1].body, "use sqlite");
     }
 
+    /// Regression: `waiting_seconds` tracks the caller's `now`, and is the only
+    /// field that does.
+    ///
+    /// THE BUG THIS PREVENTS. `HumanQuestion` derives `PartialEq`, and
+    /// `waiting_seconds` is computed here as `now - asked_at` rather than
+    /// stored. A test that reads the inbox twice and compares the whole value
+    /// therefore compares a clock: two reads that straddle a one-second
+    /// boundary are unequal even though nothing was consumed, reordered, or
+    /// altered. That is exactly how
+    /// `facade::executive::tests::reading_the_inbox_does_not_consume_it` failed
+    /// in CI (run 33361472735) on a pull request that changed no Rust at all,
+    /// and it would recur at random on any branch.
+    ///
+    /// Pinning it here is what makes excluding the field from that comparison
+    /// correct rather than merely convenient: if `waiting_seconds` ever stops
+    /// tracking `now`, or another field quietly becomes time-derived, this
+    /// fails and the exclusion is revisited.
+    #[test]
+    fn only_waiting_seconds_moves_with_the_clock() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert!(s
+            .ask_question(&t.id, "alice", "which registry?", None, NOW)
+            .unwrap());
+
+        let at_ask = s.questions_for_a_human(NOW).unwrap();
+        let a_minute_later = s.questions_for_a_human(NOW + 60).unwrap();
+        assert_eq!(at_ask.len(), 1);
+        assert_eq!(a_minute_later.len(), 1);
+
+        assert_eq!(at_ask[0].waiting_seconds, 0);
+        assert_eq!(a_minute_later[0].waiting_seconds, 60);
+
+        // Everything else is stored, not derived, so it must be identical.
+        let normalised = HumanQuestion {
+            waiting_seconds: at_ask[0].waiting_seconds,
+            ..a_minute_later[0].clone()
+        };
+        assert_eq!(
+            at_ask[0], normalised,
+            "waiting_seconds must be the only field that moves with the clock"
+        );
+    }
+
+    /// A clock that has run backwards must not report a negative wait.
+    #[test]
+    fn a_wait_measured_before_it_was_asked_reports_zero_not_a_negative() {
+        let s = store();
+        let g = goal(&s);
+        let t = s.create_task(&g.id, "task", "", None, NOW).unwrap();
+        assert!(s.claim_task(&t.id, "alice", 60, NOW).unwrap());
+        assert!(s
+            .ask_question(&t.id, "alice", "which registry?", None, NOW)
+            .unwrap());
+
+        let backwards = s.questions_for_a_human(NOW - 5).unwrap();
+        assert_eq!(backwards[0].waiting_seconds, 0);
+    }
+
     // ADR-0046: a question may be addressed at a peer agent instead of a human,
     // and the peer discovers it by asking rather than by being pushed at. The
     // parking transition is deliberately identical to the human case: the owner

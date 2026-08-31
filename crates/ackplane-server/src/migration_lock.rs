@@ -166,6 +166,25 @@ pub(crate) mod key {
     /// database was reachable to check for a higher applied key, so this is
     /// the next free key on `main` rather than a verified-against-live one.
     pub(crate) const SUPERVISOR_OUTBOX_POSITIONS: i64 = 56;
+    /// `migrations/0057_administration_recovery_rehearsal.sql` (ADR-0145
+    /// slice 1). `migration-audit --next` selected 57 from committed source;
+    /// no live database was reachable to check for a higher applied key.
+    pub(crate) const ADMINISTRATION_RECOVERY_REHEARSAL: i64 = 57;
+    /// `migrations/0058_administration_recovery_execution.sql` (ADR-0145
+    /// slice 2). `migration-audit --next` selected 58, checked against the
+    /// shared development database (`ackplane_test`) as well as committed
+    /// source: no live discrepancy above 57.
+    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION: i64 = 58;
+    /// `migrations/0063_administration_recovery_execution_receipt.sql`
+    /// (ADR-0145 slice 4). Filed as 59, 60, 61, then 62 -- each time the
+    /// shared development database (`ackplane_test`) had accepted a different
+    /// migration under that key from a concurrent branch first. Renumbered a
+    /// fifth time to 63 for a genuinely new reason: CI caught that 62's own
+    /// content had real foreign keys from `rehearsal_id`/`request_id` to
+    /// tables a real restore always empties before this row is ever inserted
+    /// (see the migration's own comment), so the content changed and needed
+    /// a fresh key rather than reusing 62 under new content.
+    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT: i64 = 63;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

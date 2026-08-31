@@ -41,7 +41,6 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use tokio::sync::Mutex;
 
 use payload::{
     build_payload, unix_seconds_to_system_time, ConfirmWorkCommandRequest, SubmitWorkCommandRequest,
@@ -52,14 +51,14 @@ use response::WorkCommandResponse;
 /// sub-router into the application.
 #[derive(Clone)]
 pub struct WorkCommandApiState {
-    commands: Arc<Mutex<WorkCommandService>>,
+    commands: Arc<WorkCommandService>,
     fleet: Arc<FleetStore>,
     tenant_id: Arc<str>,
 }
 
 impl WorkCommandApiState {
     pub fn new(
-        commands: Arc<Mutex<WorkCommandService>>,
+        commands: Arc<WorkCommandService>,
         fleet: Arc<FleetStore>,
         tenant_id: Arc<str>,
     ) -> Self {
@@ -118,13 +117,18 @@ fn service_error_status(error: WorkCommandServiceError) -> StatusCode {
 /// (clause 5: Work commands do not gain an `AdministrationPolicy`-style
 /// policy layer, and a Bridge-originated request is a direct verified human
 /// request, never a delegation).
-fn verified_principal(
-    state: &WorkCommandApiState,
-    repository_id: &str,
-) -> WorkCommandAuthorization {
+///
+/// `pub(crate)` so the read surface can report what this grants rather than
+/// keeping a second, hand-written answer beside it. The Work page previously
+/// listed every command as `authorization_unavailable` while these routes
+/// executed them — two descriptions of one authority, and the more alarming
+/// one was the wrong one. Deriving the list from this function means the two
+/// cannot drift again: a change to what the principal allows changes what the
+/// page reports, in the same edit.
+pub(crate) fn verified_principal(tenant_id: &str, repository_id: &str) -> WorkCommandAuthorization {
     WorkCommandAuthorization::Verified(VerifiedWorkCommandPrincipal {
-        principal_id: state.tenant_id.to_string(),
-        tenant_id: state.tenant_id.to_string(),
+        principal_id: tenant_id.to_string(),
+        tenant_id: tenant_id.to_string(),
         repository_ids: vec![repository_id.to_owned()],
         allowed_commands: WorkCommandKind::ALL.to_vec(),
         policy_refs: Vec::new(),
@@ -138,7 +142,7 @@ async fn submit_work_command(
     Json(request): Json<SubmitWorkCommandRequest>,
 ) -> Result<Json<WorkCommandResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
-    let authorization = verified_principal(&state, &repository_id);
+    let authorization = verified_principal(state.tenant_id.as_ref(), &repository_id);
     let SubmitWorkCommandRequest {
         issuing_principal_id,
         idempotency_key,
@@ -183,8 +187,8 @@ async fn submit_work_command(
         idempotency_key,
         payload_digest,
     };
-    let mut commands = state.commands.lock().await;
-    let outcome = commands
+    let outcome = state
+        .commands
         .submit(authorization, new_command, SystemTime::now())
         .await
         .map_err(service_error_status)?;
@@ -197,10 +201,10 @@ async fn confirm_work_command(
     Json(request): Json<ConfirmWorkCommandRequest>,
 ) -> Result<Json<WorkCommandResponse>, StatusCode> {
     ensure_repository_visible(&state, &repository_id).await?;
-    let authorization = verified_principal(&state, &repository_id);
+    let authorization = verified_principal(state.tenant_id.as_ref(), &repository_id);
     let payload = build_payload(request.payload)?;
-    let mut commands = state.commands.lock().await;
-    let outcome = commands
+    let outcome = state
+        .commands
         .confirm(
             authorization,
             state.tenant_id.as_ref(),

@@ -12,7 +12,6 @@ use ackplane_protocol::supervisor::{
 };
 use ackplane_protocol::v1::{self, AgentDirective};
 use prost::Message;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use super::model::{WorkCommandKind, WorkCommandOutcome};
 use super::payload::{
@@ -271,9 +270,7 @@ async fn fetch_command_directive_id(
 }
 
 fn rfc3339(value: SystemTime) -> String {
-    OffsetDateTime::from(value)
-        .format(&Rfc3339)
-        .expect("test timestamps are representable as RFC3339")
+    crate::wire_format::rfc3339(value).expect("test timestamps are representable as RFC3339")
 }
 
 fn applied_receipt(directive: &AgentDirective, occurred_at: SystemTime) -> v1::DirectiveReceipt {
@@ -307,7 +304,7 @@ async fn confirming_pause_issues_a_matching_directive_without_moving_the_task() 
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -385,7 +382,7 @@ async fn confirming_pause_against_a_supervisor_missing_the_capability_is_refused
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -429,7 +426,7 @@ async fn confirming_pause_against_an_unknown_supervisor_session_is_refused() {
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -472,7 +469,7 @@ async fn an_expired_supervisor_directed_command_never_issues_a_directive() {
     command.expires_at = now + Duration::from_secs(1);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -518,7 +515,7 @@ async fn the_supervisors_applied_receipt_pauses_the_task_and_is_idempotent() {
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -559,7 +556,7 @@ async fn the_supervisors_applied_receipt_pauses_the_task_and_is_idempotent() {
     )
     .await;
 
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command store should connect");
     let receipt_time = now + Duration::from_secs(30);
@@ -622,7 +619,7 @@ async fn an_applied_drain_receipt_cannot_reopen_a_terminal_task() {
         let (command, payload) = drain_command(&fixture, now);
         let authorization = authorization_for(&fixture, vec![WorkCommandKind::Drain]);
 
-        let mut service = WorkCommandService::connect(&database_url)
+        let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the command service should connect");
         let submitted = service
@@ -699,7 +696,7 @@ async fn an_applied_drain_receipt_cannot_reopen_a_terminal_task() {
 
         let receipt_time = now + Duration::from_secs(30);
         let receipt = applied_receipt(&directive, receipt_time);
-        let mut store = WorkCommandStore::connect(&database_url)
+        let store = WorkCommandStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the command store should connect");
         let applied = store
@@ -746,7 +743,7 @@ async fn a_refused_supervisor_receipt_leaves_the_task_state_unchanged() {
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -787,7 +784,7 @@ async fn a_refused_supervisor_receipt_leaves_the_task_state_unchanged() {
     )
     .await;
 
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command store should connect");
     let receipt_time = now + Duration::from_secs(30);
@@ -829,7 +826,7 @@ async fn an_accepted_directive_receipt_never_appends_a_work_command_receipt() {
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -870,7 +867,7 @@ async fn an_accepted_directive_receipt_never_appends_a_work_command_receipt() {
     )
     .await;
 
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command store should connect");
     let receipt_time = now + Duration::from_secs(5);
@@ -895,7 +892,7 @@ async fn resume_targets_the_named_supervisor_session_independent_of_the_current_
     let (command, payload) = resume_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Resume]);
 
-    let mut service = WorkCommandService::connect(&database_url)
+    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -925,12 +922,12 @@ async fn resume_targets_the_named_supervisor_session_independent_of_the_current_
 
 #[tokio::test]
 async fn a_directive_never_issued_through_this_store_is_not_traceable_to_any_command() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     let suffix = unique_id("work-command-directive-untracked");
-    let mut store = WorkCommandStore::connect(&database_url)
+    let store = WorkCommandStore::connect(&pool)
         .await
         .expect("the command store should connect");
     let now = SystemTime::now();

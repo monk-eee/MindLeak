@@ -93,7 +93,8 @@ impl KnowledgeStore {
         let new_knowledge_id = unique_knowledge_id();
         let supersession_id = unique_supersession_id();
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "WITH superseded AS ( \
                     UPDATE knowledge \
@@ -174,7 +175,8 @@ impl KnowledgeStore {
         repository_id: &str,
     ) -> Result<KnowledgeStoreError, KnowledgeStoreError> {
         let current = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "SELECT lifecycle_state, retired_at FROM knowledge \
                  WHERE tenant_id = $1 AND repository_id = $2 AND knowledge_id = $3",

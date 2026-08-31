@@ -6,11 +6,39 @@ use std::time::SystemTime;
 use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
+use crate::db_pool::{build_pool, PgPool, TEST_POOL_MAX_SIZE};
 use crate::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use crate::enrollment_store::{
     ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
     EnrollmentSubmission,
 };
+
+/// A bounded pool for one database-gated test, or `None` when the suite is not
+/// gated on.
+///
+/// Built per test rather than once per binary, which is a deliberate departure
+/// from ADR-0143 decision 7's "one pool per test binary". `#[tokio::test]`
+/// gives every test its own runtime, and a `tokio_postgres` connection is
+/// driven by a task spawned on the runtime that opened it. A pool shared across
+/// runtimes therefore hands the second test a connection whose driver died with
+/// the first test's runtime -- measured here as
+/// `Database(Error { kind: Closed })` raised from whatever query happened to
+/// run next, naming nothing to do with pooling. Decision 7's intent still
+/// holds: demand is bounded per test and connections go back to the pool
+/// between calls instead of one being held for the whole test.
+pub(crate) fn test_pool() -> Option<PgPool> {
+    let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+    Some(
+        build_pool(&database_url, TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from a valid database url"),
+    )
+}
+
+/// The same pool for a test that has already checked the gate itself, and so
+/// still needs the url for a store that has not moved to the pool yet.
+pub(crate) fn gated_test_pool() -> PgPool {
+    test_pool().expect("ACKPLANE_TEST_DATABASE_URL was checked by the caller")
+}
 
 /// A cheap, dependency-free way to keep each test run's tenant id unique
 /// without adding a `uuid` crate for two words of randomness. Packs a
@@ -61,6 +89,50 @@ pub(crate) fn unique_id(prefix: &str) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{}-{counter}", uuid_ish())
+}
+
+/// The maintenance connection string for provisioning ephemeral scratch
+/// databases in rehearsal/recovery-execution tests, or `None` when the suite
+/// is not gated on it.
+pub(crate) fn rehearsal_test_url() -> Option<String> {
+    std::env::var("ACKPLANE_TEST_REHEARSAL_DATABASE_URL").ok()
+}
+
+/// Creates and drops an ephemeral database against `maintenance_url`, and
+/// hands `body` its own connection url -- used so rehearsal and recovery-
+/// execution integration tests never touch `ACKPLANE_TEST_DATABASE_URL`'s
+/// shared migration state: tampering a migration digest there could break
+/// every other test or fleet agent sharing that database. Shared by
+/// `snapshot_provider`'s rehearsal tests and `recovery_execution_receipt_write`'s
+/// full-orchestration restore test rather than duplicated in each.
+pub(crate) async fn with_ephemeral_database<Fut>(
+    maintenance_url: &str,
+    name_prefix: &str,
+    body: impl FnOnce(String) -> Fut,
+) where
+    Fut: std::future::Future<Output = ()>,
+{
+    use crate::snapshot_provider::{unique_suffix, with_dbname};
+
+    let name = format!("{}_{}", name_prefix, unique_suffix());
+    let (client, connection) = tokio_postgres::connect(maintenance_url, tokio_postgres::NoTls)
+        .await
+        .expect("a direct maintenance connection should succeed");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .batch_execute(&format!("CREATE DATABASE \"{name}\""))
+        .await
+        .expect("creating the ephemeral fixture database should succeed");
+
+    let url = with_dbname(maintenance_url, &name)
+        .expect("the rehearsal test url should be a postgresql:// uri");
+    body(url).await;
+
+    let _ = client
+        .batch_execute(&format!("DROP DATABASE IF EXISTS \"{name}\""))
+        .await;
 }
 
 /// Enrolls and activates one node for `tenant_id`/`repository_id`, shared by
