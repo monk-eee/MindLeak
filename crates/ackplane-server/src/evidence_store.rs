@@ -6,7 +6,7 @@
 
 use std::time::SystemTime;
 
-use tokio_postgres::{Client, NoTls};
+use crate::db_pool::{PgConnection, PgPool};
 
 mod conformance;
 mod detail;
@@ -70,6 +70,8 @@ impl EvidenceKind {
 pub enum EvidenceStoreError {
     #[error("evidence database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("evidence store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("task_id must be between 1 and {MAX_TASK_ID_BYTES} bytes")]
     InvalidTaskId,
     #[error("source_ref must be between 1 and {MAX_SOURCE_REF_BYTES} bytes")]
@@ -90,6 +92,8 @@ pub enum EvidenceStoreError {
     InvalidIdempotencyKey,
     #[error("idempotency_key was already used for a different evidence record")]
     IdempotencyConflict,
+    #[error("evidence signing key error: {0}")]
+    SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("stored evidence kind {0} is outside the EvidenceKind contract")]
     UnknownStoredKind(i16),
 }
@@ -133,43 +137,49 @@ pub struct RecordEvidenceOutcome {
 }
 
 pub struct EvidenceStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl EvidenceStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane evidence store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not
+    /// a database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, EvidenceStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::EVIDENCE,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::EVIDENCE_CONFORMANCE,
             CONFORMANCE_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::EVIDENCE_REVIEW_FILTER,
             REVIEW_FILTER_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
     }
 
+    async fn connection(&self) -> Result<PgConnection, EvidenceStoreError> {
+        Ok(self.pool.get().await?)
+    }
+
+    /// Returns `EvidenceStoreError` rather than `SigningKeyError` because
+    /// obtaining the connection is now a way this can fail, and that is the
+    /// store's concern -- `signing_keys` never sees a pool.
     pub async fn resolve_signing_key(
         &self,
         binding: &crate::signing_keys::EnvelopeBinding<'_>,
-    ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
-        crate::signing_keys::resolve(&self.client, binding).await
+    ) -> Result<crate::signing_keys::KeyResolution, EvidenceStoreError> {
+        let connection = self.connection().await?;
+        Ok(crate::signing_keys::resolve(&connection, binding).await?)
     }
 
     pub async fn consume_evidence_nonce(
@@ -179,7 +189,8 @@ impl EvidenceStore {
         now: SystemTime,
     ) -> Result<bool, EvidenceStoreError> {
         let inserted = self
-            .client
+            .connection()
+            .await?
             .execute(
                 "INSERT INTO evidence_authentication_nonces (signing_key_id, nonce, consumed_at) \
                  VALUES ($1, $2, $3) ON CONFLICT (signing_key_id, nonce) DO NOTHING",
@@ -212,7 +223,8 @@ impl EvidenceStore {
         validate_request(&request)?;
         let evidence_id = unique_evidence_id();
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "INSERT INTO evidence_records (
                      tenant_id, repository_id, evidence_id, task_id, evidence_kind,
@@ -279,7 +291,8 @@ impl EvidenceStore {
         if !is_bounded(idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES) {
             return Err(EvidenceStoreError::InvalidIdempotencyKey);
         }
-        self.client
+        self.connection()
+            .await?
             .query_opt(
                 "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                         source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
@@ -304,7 +317,8 @@ impl EvidenceStore {
             return Err(EvidenceStoreError::InvalidTaskId);
         }
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                     source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \
@@ -440,8 +454,8 @@ mod tests {
     }
 
     async fn store() -> Option<EvidenceStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(EvidenceStore::connect(&database_url).await.unwrap())
+        let pool = crate::test_support::test_pool()?;
+        Some(EvidenceStore::connect(&pool).await.unwrap())
     }
 
     fn request(tenant_id: String, repository_id: String, task_id: &str) -> RecordEvidenceRequest {

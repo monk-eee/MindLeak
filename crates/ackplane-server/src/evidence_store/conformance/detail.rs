@@ -17,7 +17,9 @@ impl EvidenceStore {
         if !is_bounded(conformance_id, MAX_EVIDENCE_ID_BYTES) {
             return Err(ConformanceStoreError::InvalidEvidenceId);
         }
-        self.client
+        self.pool
+            .get()
+            .await?
             .query_opt(
                 "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
                         finding_count, findings_digest, finding_codes, review_state, reported_checked_at, \

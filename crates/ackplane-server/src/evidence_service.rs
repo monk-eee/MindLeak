@@ -10,7 +10,6 @@ use std::time::SystemTime;
 use ackplane_protocol::evidence_auth::EvidenceOperation;
 use ackplane_protocol::v1;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 use crate::evidence_signature::{self, EvidenceAuthRefusal};
@@ -25,13 +24,13 @@ const DEFAULT_EVIDENCE_LIMIT: u32 = 20;
 const MAX_EVIDENCE_LIMIT: u32 = 100;
 
 pub struct EvidenceGrpcService {
-    store: Arc<Mutex<EvidenceStore>>,
+    store: Arc<EvidenceStore>,
 }
 
 impl EvidenceGrpcService {
     pub fn new(store: EvidenceStore) -> Self {
         Self {
-            store: Arc::new(Mutex::new(store)),
+            store: Arc::new(store),
         }
     }
 
@@ -54,13 +53,11 @@ impl EvidenceGrpcService {
             producer_id: &authentication.node_id,
             accepted_at: SystemTime::now(),
         };
-        let resolution = {
-            let store = self.store.lock().await;
-            store
-                .resolve_signing_key(&binding)
-                .await
-                .map_err(|error| Status::internal(error.to_string()))?
-        };
+        let resolution = self
+            .store
+            .resolve_signing_key(&binding)
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
         evidence_signature::verify(
             tenant_id,
             repository_id,
@@ -84,17 +81,15 @@ impl EvidenceGrpcService {
         &self,
         authentication: &v1::EvidenceAuthentication,
     ) -> Result<(), Status> {
-        let fresh = {
-            let store = self.store.lock().await;
-            store
-                .consume_evidence_nonce(
-                    &authentication.signing_key_id,
-                    &authentication.nonce,
-                    SystemTime::now(),
-                )
-                .await
-                .map_err(|error| Status::internal(error.to_string()))?
-        };
+        let fresh = self
+            .store
+            .consume_evidence_nonce(
+                &authentication.signing_key_id,
+                &authentication.nonce,
+                SystemTime::now(),
+            )
+            .await
+            .map_err(|error| Status::internal(error.to_string()))?;
         if !fresh {
             return Err(Status::unauthenticated(
                 EvidenceAuthRefusal::Replayed.diagnostic(),
@@ -156,6 +151,10 @@ fn store_error(error: EvidenceStoreError) -> Status {
             Status::internal(format!("stored evidence kind {kind} is invalid"))
         }
         EvidenceStoreError::Database(error) => Status::internal(error.to_string()),
+        // A bounded pool timeout is a condition the caller can retry, not an
+        // internal fault (ADR-0143 decision 5, mirroring ClaimStore's mapping).
+        EvidenceStoreError::PoolExhausted(error) => Status::unavailable(error.to_string()),
+        EvidenceStoreError::SigningKey(error) => Status::internal(error.to_string()),
     }
 }
 
@@ -282,8 +281,6 @@ impl v1::evidence_service_server::EvidenceService for EvidenceGrpcService {
         if !evidence_request.idempotency_key.is_empty() {
             if let Some(existing) = self
                 .store
-                .lock()
-                .await
                 .find_evidence_by_idempotency(
                     &evidence_request.tenant_id,
                     &evidence_request.repository_id,
@@ -303,8 +300,6 @@ impl v1::evidence_service_server::EvidenceService for EvidenceGrpcService {
         self.consume_nonce(authentication).await?;
         let outcome = self
             .store
-            .lock()
-            .await
             .record(evidence_request)
             .await
             .map_err(store_error)?;
@@ -346,8 +341,6 @@ impl v1::evidence_service_server::EvidenceService for EvidenceGrpcService {
         });
         let page = self
             .store
-            .lock()
-            .await
             .list_page(
                 &request.tenant_id,
                 &request.repository_id,
@@ -540,7 +533,7 @@ mod tests {
         let identity = TestIdentity::fresh("conformance-pending");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -585,7 +578,7 @@ mod tests {
         let identity = TestIdentity::fresh("conformance-tamper");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -632,7 +625,7 @@ mod tests {
         register_test_key(&database_url, &producer).await;
         register_test_key(&database_url, &other_node).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -673,7 +666,7 @@ mod tests {
         let identity = TestIdentity::fresh("conformance-retry");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -732,7 +725,7 @@ mod tests {
         let identity = TestIdentity::fresh("conformance-nanoseconds");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -970,7 +963,7 @@ mod tests {
         let identity = TestIdentity::fresh("record-list");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -1003,7 +996,7 @@ mod tests {
         let identity = TestIdentity::fresh("evidence-pagination");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -1049,7 +1042,7 @@ mod tests {
         let identity = TestIdentity::fresh("evidence-retry");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -1099,7 +1092,7 @@ mod tests {
         let identity = TestIdentity::fresh("tampered-task");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -1129,7 +1122,7 @@ mod tests {
         let identity = TestIdentity::fresh("untyped-reference");
         register_test_key(&database_url, &identity).await;
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&database_url)
+            EvidenceStore::connect(&crate::test_support::gated_test_pool())
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );

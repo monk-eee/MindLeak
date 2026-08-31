@@ -51,7 +51,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     KnowledgeStore::connect(database_url)
         .await
         .map_err(|error| format!("knowledge schema failed: {error}"))?;
-    EvidenceStore::connect(database_url)
+    EvidenceStore::connect(&pool)
         .await
         .map_err(|error| format!("evidence schema failed: {error}"))?;
     ConstitutionStore::connect(&pool)

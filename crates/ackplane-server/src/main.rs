@@ -109,7 +109,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let evidence_store = match EvidenceStore::connect(config.database_url()).await {
+            let evidence_store = match EvidenceStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(

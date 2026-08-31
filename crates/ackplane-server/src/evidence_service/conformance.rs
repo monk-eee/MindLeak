@@ -71,6 +71,9 @@ pub(super) fn conformance_store_error(error: ConformanceStoreError) -> Status {
             Status::internal(format!("stored conformance finding code {code} is invalid"))
         }
         ConformanceStoreError::Database(error) => Status::internal(error.to_string()),
+        // A bounded pool timeout is a condition the caller can retry, not an
+        // internal fault (ADR-0143 decision 5, mirroring ClaimStore's mapping).
+        ConformanceStoreError::PoolExhausted(error) => Status::unavailable(error.to_string()),
     }
 }
 
@@ -202,8 +205,6 @@ impl EvidenceGrpcService {
         };
         if let Some(existing) = self
             .store
-            .lock()
-            .await
             .find_conformance_by_idempotency(
                 &conformance_request.tenant_id,
                 &conformance_request.repository_id,
@@ -234,8 +235,6 @@ impl EvidenceGrpcService {
         self.consume_nonce(authentication).await?;
         let outcome = self
             .store
-            .lock()
-            .await
             .record_conformance(conformance_request)
             .await
             .map_err(conformance_store_error)?;
@@ -278,8 +277,6 @@ impl EvidenceGrpcService {
         });
         let page = self
             .store
-            .lock()
-            .await
             .list_conformance_page(
                 &request.tenant_id,
                 &request.repository_id,
