@@ -178,6 +178,8 @@ pub struct DelegationOutcome {
 pub enum DelegationStoreError {
     #[error("delegation database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("delegation could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("delegation identity entropy failed: {0}")]
     Entropy(#[from] getrandom::Error),
     #[error("{field} must be a bounded non-empty identifier")]

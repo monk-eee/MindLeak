@@ -8,7 +8,8 @@
 use std::time::SystemTime;
 
 use getrandom::getrandom;
-use tokio_postgres::{Client, NoTls};
+
+use crate::db_pool::{PgConnection, PgPool};
 
 const MIGRATION: &str = include_str!("../migrations/0022_human_delegation.sql");
 const EVENT_PAYLOAD_MIGRATION: &str =
@@ -53,7 +54,7 @@ use replay::{
 
 /// Authoritative persistence for the ADR-0115 delegation namespace.
 pub struct DelegationStore {
-    client: Client,
+    pool: PgPool,
 }
 
 /// A durable boundary for one tenant/repository delegation projection page.
@@ -71,38 +72,40 @@ pub struct DelegationListPage {
 }
 
 impl DelegationStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane delegation store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be exactly
+    /// the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, DelegationStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::HUMAN_DELEGATION,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::HUMAN_DELEGATION_EVENT_PAYLOADS,
             EVENT_PAYLOAD_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::DELEGATION_USE_RECEIPTS,
             USE_RECEIPT_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    pub(super) async fn connection(&self) -> Result<PgConnection, DelegationStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Records a human-approved bounded grant after the caller has already
     /// verified its issuer principal and policy basis.
     pub async fn grant(
-        &mut self,
+        &self,
         mut request: DelegationGrantRequest,
     ) -> Result<DelegationOutcome, DelegationStoreError> {
         request.effective_at = normalize_timestamp(request.effective_at);
@@ -114,7 +117,12 @@ impl DelegationStore {
         let source_protocol_version = i16::try_from(request.source_protocol_version)
             .map_err(|_| DelegationStoreError::InvalidProtocolVersion)?;
 
-        let transaction = self.client.transaction().await?;
+        // One connection, held until commit (ADR-0143 decision 4). `lock_stream`
+        // takes a session-scoped `FOR UPDATE` on the event stream, so returning
+        // the connection between statements would drop the lock this append
+        // depends on.
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let current_position =
             lock_stream(&transaction, &request.tenant_id, &request.repository_id).await?;
         if let Some(outcome) = idempotent_outcome(
@@ -229,12 +237,13 @@ impl DelegationStore {
 
     /// Records a revocation event under a caller-verified revoker identity.
     pub async fn revoke(
-        &mut self,
+        &self,
         request: DelegationRevocationRequest,
     ) -> Result<DelegationOutcome, DelegationStoreError> {
         validate_revocation(&request)?;
         let payload_digest = revocation_payload_digest(&request);
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let current_position =
             lock_stream(&transaction, &request.tenant_id, &request.repository_id).await?;
         if let Some(outcome) = idempotent_outcome(
@@ -400,13 +409,9 @@ mod tests {
         }
     }
 
-    fn database_url() -> Option<String> {
-        std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
-    }
-
     #[tokio::test]
     async fn grant_rejects_invalid_actions_without_reserving_the_idempotency_key() {
-        let Some(database_url) = database_url() else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -419,7 +424,7 @@ mod tests {
         duplicate
             .allowed_actions
             .push(DelegatedAction::RetrieveContext);
-        let mut store = DelegationStore::connect(&database_url)
+        let store = DelegationStore::connect(&pool)
             .await
             .expect("the test database should accept delegation connections");
         assert!(matches!(
@@ -469,13 +474,13 @@ mod tests {
 
     #[tokio::test]
     async fn grant_retry_revoke_and_tenant_reads_share_one_checked_projection() {
-        let Some(database_url) = database_url() else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let (tenant_id, repository_id) = unique_scope();
         let request = grant_request(tenant_id.clone(), repository_id.clone(), "delegation:grant");
-        let mut store = DelegationStore::connect(&database_url)
+        let store = DelegationStore::connect(&pool)
             .await
             .expect("the test database should accept delegation connections");
         let granted = store
