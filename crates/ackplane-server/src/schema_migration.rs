@@ -48,7 +48,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     Projector::connect(database_url)
         .await
         .map_err(|error| format!("projection schema failed: {error}"))?;
-    KnowledgeStore::connect(database_url)
+    KnowledgeStore::connect(&pool)
         .await
         .map_err(|error| format!("knowledge schema failed: {error}"))?;
     EvidenceStore::connect(&pool)
@@ -60,10 +60,10 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     TelemetryStore::connect(database_url)
         .await
         .map_err(|error| format!("telemetry schema failed: {error}"))?;
-    DelegationStore::connect(database_url)
+    DelegationStore::connect(&pool)
         .await
         .map_err(|error| format!("delegation schema failed: {error}"))?;
-    DirectiveStore::connect(database_url)
+    DirectiveStore::connect(&pool)
         .await
         .map_err(|error| format!("directive schema failed: {error}"))?;
     SupervisorStore::connect(database_url)

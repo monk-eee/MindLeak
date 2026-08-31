@@ -8,8 +8,8 @@
 use std::time::SystemTime;
 
 use thiserror::Error;
-use tokio_postgres::Client;
 
+use crate::db_pool::{PgConnection, PgPool};
 use crate::fleet::{classify_freshness, projected_stream_head_join, RepositoryFreshness};
 use crate::signing_keys::{self, EnvelopeBinding, KeyResolution, SigningKeyError};
 
@@ -62,6 +62,8 @@ pub struct ReadinessPage {
 pub enum ReadinessError {
     #[error("readiness database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("readiness store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error(transparent)]
     SigningKey(#[from] SigningKeyError),
 }
@@ -81,51 +83,52 @@ fn resolution_needs_attention(resolution: &KeyResolution) -> bool {
 
 /// Read-only access to a tenant's per-repository readiness.
 pub struct ReadinessStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl ReadinessStore {
-    /// Connect and apply the same migrations the stores this rollup reads
-    /// from already apply -- this store creates no schema of its own.
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) =
-            tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane readiness connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not
+    /// a database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound. Connect and
+    /// apply the same migrations the stores this rollup reads from already
+    /// apply -- this store creates no schema of its own.
+    pub async fn connect(pool: &PgPool) -> Result<Self, ReadinessError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::ENROLLMENT,
             ENROLLMENT_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::PROJECTION,
             PROJECTION_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::LEDGER,
             LEDGER_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CLAIM_DELEGATION,
             CLAIM_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::SIGNING_KEYS,
             SIGNING_KEYS_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, ReadinessError> {
+        Ok(self.pool.get().await?)
     }
 
     /// One page of readiness, one row per enrolled repository, ordered by
@@ -138,8 +141,8 @@ impl ReadinessStore {
         now: SystemTime,
     ) -> Result<ReadinessPage, ReadinessError> {
         let offset = (page - 1) * page_size;
-        let repo_rows = self
-            .client
+        let connection = self.connection().await?;
+        let repo_rows = connection
             .query(
                 &format!(
                     "SELECT request.repository_id, count(*)::BIGINT, \
@@ -173,7 +176,7 @@ impl ReadinessStore {
         let claim_rows = if repository_ids.is_empty() {
             Vec::new()
         } else {
-            self.client
+            connection
                 .query(
                     "SELECT repository_id, COUNT(*)::BIGINT, MIN(lease_expires_at) \
                      FROM delegated_claims \
@@ -204,7 +207,7 @@ impl ReadinessStore {
                 .copied()
                 .unwrap_or((0, None));
 
-            let keys = signing_keys::for_repository(&self.client, tenant_id, &repository_id)
+            let keys = signing_keys::for_repository(&connection, tenant_id, &repository_id)
                 .await
                 .map_err(ReadinessError::SigningKey)?;
             let mut signing_keys_resolved = 0_i64;
@@ -333,11 +336,13 @@ mod tests {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let unique_id = uuid_ish();
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let readiness = ReadinessStore::connect(&database_url)
+        let readiness = ReadinessStore::connect(&pool)
             .await
             .expect("connect readiness store");
         let page = readiness
@@ -363,6 +368,8 @@ mod tests {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let unique_id = uuid_ish();
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
@@ -376,7 +383,7 @@ mod tests {
             .await
             .expect("rebuild projection");
 
-        let readiness = ReadinessStore::connect(&database_url)
+        let readiness = ReadinessStore::connect(&pool)
             .await
             .expect("connect readiness store");
         let page = readiness
@@ -393,13 +400,13 @@ mod tests {
     /// last structural fact.
     ///
     /// Readiness classified freshness by comparing the projection checkpoint
-    /// against `stream_heads.position` — the head of *every* record in the
+    /// against `stream_heads.position` â€” the head of *every* record in the
     /// stream. A projection only consumes structural facts and checkpoints at
     /// the last one it projected, and the worker's own staleness query filters
     /// to the same payload type, so it saw nothing to rebuild. The gap could
     /// never close and nothing ever cleared the warning. Evidence, knowledge,
     /// claim, directive, and delegation records all land in this same ledger,
-    /// so this was the normal operating case, not an edge case — a permanent
+    /// so this was the normal operating case, not an edge case â€” a permanent
     /// false amber that teaches operators to ignore the readiness signal.
     ///
     /// The fix compares the checkpoint against the head of the stream the
@@ -413,6 +420,8 @@ mod tests {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let unique_id = uuid_ish();
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
@@ -440,7 +449,7 @@ mod tests {
         )
         .await;
 
-        let readiness = ReadinessStore::connect(&database_url)
+        let readiness = ReadinessStore::connect(&pool)
             .await
             .expect("connect readiness store");
         let page = readiness
@@ -458,6 +467,8 @@ mod tests {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let unique_id = uuid_ish();
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
@@ -475,7 +486,7 @@ mod tests {
         // projection checkpoint without a further rebuild to catch it up.
         append_structural_fact(&database_url, &tenant_id, &repository_id, 2, "n2").await;
 
-        let readiness = ReadinessStore::connect(&database_url)
+        let readiness = ReadinessStore::connect(&pool)
             .await
             .expect("connect readiness store");
         let page = readiness
@@ -493,6 +504,8 @@ mod tests {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let unique_id = uuid_ish();
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
@@ -520,7 +533,7 @@ mod tests {
                 .expect("delegate claim");
         }
 
-        let readiness = ReadinessStore::connect(&database_url)
+        let readiness = ReadinessStore::connect(&pool)
             .await
             .expect("connect readiness store");
         // The soonest claim reaches its expiry exactly here. Ackplane's
@@ -542,6 +555,8 @@ mod tests {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let unique_id = uuid_ish();
         let tenant_id = format!("readiness-page-tenant-{unique_id}");
         let repository_ids = [
@@ -559,7 +574,7 @@ mod tests {
             .await;
         }
 
-        let readiness = ReadinessStore::connect(&database_url)
+        let readiness = ReadinessStore::connect(&pool)
             .await
             .expect("connect readiness store");
         let first_page = readiness
@@ -586,11 +601,13 @@ mod tests {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let unique_id = uuid_ish();
         let (tenant_id, _repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let readiness = ReadinessStore::connect(&database_url)
+        let readiness = ReadinessStore::connect(&pool)
             .await
             .expect("connect readiness store");
         let other_tenant = readiness

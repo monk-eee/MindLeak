@@ -135,7 +135,7 @@ async fn main() {
             return;
         }
     };
-    let knowledge_store = match KnowledgeStore::connect(config.database_url()).await {
+    let knowledge_store = match KnowledgeStore::connect(&db_pool).await {
         Ok(knowledge) => Arc::new(knowledge),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane knowledge domain: {error}");
@@ -170,7 +170,7 @@ async fn main() {
             return;
         }
     };
-    let readiness_store = match ReadinessStore::connect(config.database_url()).await {
+    let readiness_store = match ReadinessStore::connect(&db_pool).await {
         Ok(readiness) => Arc::new(readiness),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane readiness rollup: {error}");
@@ -219,7 +219,7 @@ async fn main() {
             return;
         }
     };
-    let delegation_store = match DelegationStore::connect(config.database_url()).await {
+    let delegation_store = match DelegationStore::connect(&db_pool).await {
         Ok(delegations) => Arc::new(delegations),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane delegations: {error}");

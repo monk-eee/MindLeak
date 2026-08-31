@@ -3,8 +3,8 @@ use std::collections::HashSet;
 
 use crate::model::{Consequence, KnowledgeAdvisory};
 use crate::{
-    Advice, AdviceDisposition, AdviceReason, GoalStatus, GoverningClause, Lodestar, LodestarError,
-    Result,
+    Advice, AdviceDisposition, AdviceReason, ArtifactBindingMode, GoalStatus, GoverningClause,
+    Lodestar, LodestarError, Result,
 };
 
 /// Cap on the clauses surfaced when picking up a task, so a broadly bound goal
@@ -203,6 +203,62 @@ impl Lodestar {
         let mut clauses = self
             .resolve_governing_clauses(&nodes, Some(&task.goal_id))?
             .clauses();
+        clauses.sort_by(|a, b| a.goal.id.cmp(&b.goal.id).then(a.node_id.cmp(&b.node_id)));
+        clauses.dedup_by(|a, b| a.goal.id == b.goal.id);
+        clauses.truncate(MAX_TASK_GOVERNING_CLAUSES);
+        Ok(clauses)
+    }
+
+    /// Clauses governing files already committed on this task's branch since
+    /// its base, that are *not* already covered by the task's own declared
+    /// scope or its `also_serves` coverage (ADR-0147).
+    ///
+    /// Distinct from [`Self::governing_clauses_for_task`], which answers "what
+    /// governs what I declared I will touch"; this answers "what already
+    /// governs something already sitting on my branch" — the two are reported
+    /// separately (never merged) so an agent can tell them apart at a glance.
+    /// `branch_committed_paths` is a caller declaration, exactly like
+    /// `branch`/`head_sha`/`base` at `open_session`: Lodestar never inspects
+    /// Git itself, so an absent or empty list degrades to no answer at all
+    /// rather than a guess.
+    pub fn governing_clauses_for_branch(
+        &self,
+        task_id: &str,
+        branch_committed_paths: &[String],
+    ) -> Result<Vec<GoverningClause>> {
+        if branch_committed_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let task = self
+            .store
+            .get_task(task_id)?
+            .ok_or_else(|| LodestarError::NotFound(task_id.to_string()))?;
+        let covered = self.store.goal_coverage(&task.id)?;
+        let resolved = self.resolve_governing_clauses_covering(
+            branch_committed_paths,
+            Some(&task.goal_id),
+            &covered,
+        )?;
+        // `in_scope` means bound to the task's own goal, or to a goal it
+        // declared covering via `also_serves` — exactly "already covered", so
+        // it is excluded here rather than repeated. A hard lock or a
+        // different goal's binding sitting on the branch is not: it is new
+        // information this task's own declared scope never surfaced.
+        let mut clauses = Vec::new();
+        for (node, goal) in &resolved.forbid {
+            clauses.push(GoverningClause {
+                node_id: node.clone(),
+                goal: goal.clone(),
+                mode: ArtifactBindingMode::ForbidChange,
+            });
+        }
+        for (node, goal) in &resolved.other {
+            clauses.push(GoverningClause {
+                node_id: node.clone(),
+                goal: goal.clone(),
+                mode: ArtifactBindingMode::Governed,
+            });
+        }
         clauses.sort_by(|a, b| a.goal.id.cmp(&b.goal.id).then(a.node_id.cmp(&b.node_id)));
         clauses.dedup_by(|a, b| a.goal.id == b.goal.id);
         clauses.truncate(MAX_TASK_GOVERNING_CLAUSES);
@@ -649,6 +705,110 @@ mod tests {
         let unbound = engine.create_task(&free_goal.id, "loose", "x").unwrap();
         assert!(engine
             .governing_clauses_for_task(&unbound.id)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// `gaps.d/consecutive-tasks-on-one-branch-inherit-governed-scope.md`:
+    /// a second task claimed on a branch that already carries a prior task's
+    /// governed file had no way to see that governance before completion,
+    /// where it surfaced as a `drift` finding naming a file it never touched
+    /// itself. `governing_clauses_for_branch` (ADR-0147) must report that
+    /// clause in `branch_inherited`, and `governing_clauses_for_task` (the
+    /// task's own declared scope) must NOT repeat it -- the two answer
+    /// different questions and are never merged into one list.
+    #[test]
+    fn governing_clauses_for_branch_reports_what_governing_for_task_omits() {
+        let engine = engine();
+        let payments = engine
+            .define_goal(
+                GoalKind::Constraint,
+                "Owns payments",
+                "Payment code stays within this boundary.",
+                None,
+            )
+            .unwrap();
+        let checkout = engine
+            .define_goal(
+                GoalKind::Objective,
+                "Ship checkout",
+                "Deliver checkout.",
+                None,
+            )
+            .unwrap();
+        let payments_file = "artifact:crates/pay/src/lib.rs".to_string();
+        engine
+            .link_goal_to_artifact(
+                &payments.id,
+                std::slice::from_ref(&payments_file),
+                ArtifactBindingMode::Governed,
+            )
+            .unwrap();
+
+        // Task A (payments' own goal) declares and touches the payments file
+        // first; its commits land on the shared branch.
+        let first = engine
+            .create_task(&payments.id, "Adjust payments", "done")
+            .unwrap();
+        assert!(engine
+            .claim_task_with_scope(
+                &first.id,
+                "agent-a",
+                600,
+                &TaskScope {
+                    paths: vec!["crates/pay/**".to_string()],
+                    symbols: Vec::new(),
+                },
+            )
+            .unwrap());
+
+        // Task B (a different, uncovered goal) is claimed next on the same
+        // branch, which by then already carries the payments file in its
+        // diff since base -- exactly `scripts/canonical-push.mjs`'s own
+        // `git diff --name-only <base>...HEAD`.
+        let second = engine
+            .create_task(&checkout.id, "Wire checkout", "done")
+            .unwrap();
+        assert!(engine
+            .claim_task_with_scope(
+                &second.id,
+                "agent-b",
+                600,
+                &TaskScope {
+                    paths: vec!["crates/checkout/**".to_string()],
+                    symbols: Vec::new(),
+                },
+            )
+            .unwrap());
+
+        let branch_committed_paths = vec![payments_file.clone()];
+        let inherited = engine
+            .governing_clauses_for_branch(&second.id, &branch_committed_paths)
+            .unwrap();
+        assert_eq!(inherited.len(), 1);
+        assert_eq!(inherited[0].goal.id, payments.id);
+        assert_eq!(inherited[0].node_id, payments_file);
+
+        // Task B's own declared scope never mentions the payments file, so
+        // `governing` must not repeat what `branch_inherited` already reported.
+        let governing = engine.governing_clauses_for_task(&second.id).unwrap();
+        assert!(!governing.iter().any(|c| c.goal.id == payments.id));
+
+        // Absent input degrades to exactly today's behaviour: no answer at
+        // all, not an empty guess treated as "nothing governs this branch".
+        assert!(engine
+            .governing_clauses_for_branch(&second.id, &[])
+            .unwrap()
+            .is_empty());
+
+        // Once task B declares it also serves `payments` (the actionable
+        // `also_serves` correction), the payments file is already covered and
+        // must drop out of `branch_inherited` rather than being reported twice.
+        engine
+            .declare_coverage(&second.id, "agent-b", std::slice::from_ref(&payments.id))
+            .unwrap();
+        assert!(engine
+            .governing_clauses_for_branch(&second.id, &branch_committed_paths)
             .unwrap()
             .is_empty());
     }

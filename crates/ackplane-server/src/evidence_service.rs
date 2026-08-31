@@ -199,8 +199,7 @@ fn parse_cursor(
 }
 
 fn rfc3339(timestamp: SystemTime) -> Result<String, String> {
-    OffsetDateTime::from(timestamp)
-        .format(&Rfc3339)
+    crate::wire_format::rfc3339(timestamp)
         .map_err(|error| format!("could not format an evidence timestamp: {error}"))
 }
 

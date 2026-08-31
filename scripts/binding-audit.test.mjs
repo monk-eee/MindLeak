@@ -6,6 +6,8 @@ import path from "node:path";
 import {
   addedRustSources,
   configuredRepositoryDb,
+  deletedBoundSources,
+  deletedRustSources,
   goalArtifactBindings,
   applyRepair,
   describeRepair,
@@ -71,6 +73,50 @@ test("unboundSources names only added files with no artifact binding", () => {
   ]);
 
   assert.deepEqual(unboundSources(files, bound), ["crates/beta/src/lib.rs"]);
+});
+
+test("deletedRustSources returns only removed Rust files under crate source trees", () => {
+  let calledWith;
+  const files = deletedRustSources((args) => {
+    calledWith = args;
+    return [
+      "crates/zeta/src/lib.rs",
+      "crates/alpha/src/nested/module.rs",
+      "crates/alpha/tests/integration.rs",
+      "scripts/tool.mjs",
+      "",
+    ].join("\n");
+  }, "origin/main");
+
+  assert.deepEqual(calledWith, [
+    "diff",
+    "--diff-filter=D",
+    "--name-only",
+    "origin/main...HEAD",
+    "--",
+    "crates",
+  ]);
+  assert.deepEqual(files, [
+    "crates/alpha/src/nested/module.rs",
+    "crates/zeta/src/lib.rs",
+  ]);
+});
+
+test("deletedBoundSources names only deleted files the ledger still binds", () => {
+  const files = [
+    "crates/alpha/src/lib.rs",
+    "crates/beta/src/lib.rs",
+    "crates/gamma/src/lib.rs",
+  ];
+  const bound = new Set([
+    "artifact:crates/alpha/src/lib.rs",
+    "artifact:crates/gamma/src/lib.rs",
+  ]);
+
+  assert.deepEqual(deletedBoundSources(files, bound), [
+    "crates/alpha/src/lib.rs",
+    "crates/gamma/src/lib.rs",
+  ]);
 });
 
 test("goalArtifactBindings reads equivalent current and legacy bindings", () => {

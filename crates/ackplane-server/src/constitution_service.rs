@@ -165,8 +165,7 @@ fn from_proto_clause(clause: v1::ConstitutionClause) -> ClauseSnapshot {
 }
 
 fn rfc3339(timestamp: std::time::SystemTime) -> Result<String, String> {
-    time::OffsetDateTime::from(timestamp)
-        .format(&time::format_description::well_known::Rfc3339)
+    crate::wire_format::rfc3339(timestamp)
         .map_err(|error| format!("could not format a constitution timestamp: {error}"))
 }
 

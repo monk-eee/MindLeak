@@ -100,7 +100,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let knowledge_store = match KnowledgeStore::connect(config.database_url()).await {
+            let knowledge_store = match KnowledgeStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(
@@ -145,7 +145,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let directive_store = match DirectiveStore::connect(config.database_url()).await {
+            let directive_store = match DirectiveStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(

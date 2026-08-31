@@ -278,12 +278,23 @@ export function activeClaimRefusal({ branch, checked, claim }) {
 
 /// Resolve the verdict for a working tree, recording ownership when it is
 /// unclaimed. Returns the verdict so callers decide how loudly to fail.
+///
+/// `record: false` computes the verdict and resolves the marker path without
+/// touching the disk, so a caller with further gates to run can decide first
+/// and write afterwards with [`recordWorktreeOwner`]. That seam exists because
+/// the adopt path has gates (`--adopt-worktree`) that can refuse *after* this
+/// verdict is known, and a refusal that has already written is not a refusal.
 export function checkWorktreeOwnership({
   cwd = process.cwd(),
   adopt = false,
+  record = true,
 } = {}) {
   const session = (process.env.LODESTAR_SESSION_ID ?? "").trim();
-  if (!session) return ownershipVerdict({ recorded: "", session, adopt });
+  if (!session)
+    return {
+      ...ownershipVerdict({ recorded: "", session, adopt }),
+      marker: "",
+    };
 
   const gitDir = capture(["rev-parse", "--absolute-git-dir"], cwd);
   const commonDir = capture(
@@ -298,8 +309,18 @@ export function checkWorktreeOwnership({
     : "";
   const verdict = ownershipVerdict({ recorded, session, adopt, linked });
 
-  if (verdict.action === "record") writeFileSync(marker, `${session}\n`);
-  return { ...verdict, session };
+  if (record && verdict.action === "record") {
+    recordWorktreeOwner({ marker, session });
+  }
+  return { ...verdict, session, marker };
+}
+
+/// Write the ownership marker. Separated from the verdict so the single write
+/// happens at one call site, after every gate that could refuse has run.
+export function recordWorktreeOwner({ marker, session }) {
+  if (!marker || !session) return false;
+  writeFileSync(marker, `${session}\n`);
+  return true;
 }
 
 // Hook entry point. `--stage=post-checkout` runs right after `git worktree
@@ -316,7 +337,12 @@ if (
   const isPostCheckout = process.argv.includes("--stage=post-checkout");
   const adopt = process.argv.includes("--adopt-worktree");
   const overrideActiveClaim = process.argv.includes("--override-active-claim");
-  const verdict = checkWorktreeOwnership({ adopt });
+  // Decide without writing. Every gate below can still refuse, and a refusal
+  // that has already overwritten the marker is not a refusal — it is the
+  // corruption this script exists to prevent, applied by this script
+  // (gaps.d, closed by this commit). The single write is at the very bottom,
+  // reached only once nothing has exited.
+  const verdict = checkWorktreeOwnership({ adopt, record: false });
   if (adopt) {
     const branch = capture(["branch", "--show-current"], process.cwd());
     const prWarning = existingPullRequestWarning({
@@ -358,5 +384,9 @@ if (
       );
       process.exit(4);
     }
+  }
+  // The only write. Anything that should stop the handover has already exited.
+  if (verdict.action === "record") {
+    recordWorktreeOwner({ marker: verdict.marker, session: verdict.session });
   }
 }
