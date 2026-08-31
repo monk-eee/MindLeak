@@ -92,7 +92,11 @@ pub enum ConnectionState {
 pub struct NodeSyncService {
     ledger: Arc<Mutex<LedgerStore>>,
     supervisor: Option<Arc<Mutex<SupervisorStore>>>,
-    directives: Option<Arc<Mutex<DirectiveStore>>>,
+    /// Not behind a `Mutex`, unlike its neighbours: since ADR-0143 this store
+    /// checks a connection out of the shared pool per call, so concurrent
+    /// callers no longer contend for one shared `Client` and nothing here
+    /// needs `&mut`.
+    directives: Option<Arc<DirectiveStore>>,
     work: Option<Arc<Mutex<WorkStore>>>,
     flow_control: v1::FlowControl,
 }
@@ -138,7 +142,7 @@ impl NodeSyncService {
         Self {
             ledger: Arc::new(Mutex::new(ledger)),
             supervisor: Some(Arc::new(Mutex::new(supervisor))),
-            directives: Some(Arc::new(Mutex::new(directives))),
+            directives: Some(Arc::new(directives)),
             work: None,
             flow_control,
         }
@@ -172,7 +176,7 @@ impl NodeSyncService {
         Self {
             ledger: Arc::new(Mutex::new(ledger)),
             supervisor: Some(Arc::new(Mutex::new(supervisor))),
-            directives: Some(Arc::new(Mutex::new(directives))),
+            directives: Some(Arc::new(directives)),
             work: Some(Arc::new(Mutex::new(work))),
             flow_control,
         }
@@ -241,9 +245,8 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                         (addressed, directives.as_ref())
                                     {
                                         if responses.iter().any(is_supervisor_receipt) {
-                                            let store = directives.lock().await;
                                             let pending = directive_delivery::pending_frames(
-                                                &store,
+                                                directives,
                                                 &tenant_id,
                                                 &repository_id,
                                                 &node_id,
@@ -275,17 +278,14 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                 if let (Some(supervisor), Some(directives)) =
                                     (supervisor.as_ref(), directives.as_ref())
                                 {
-                                    let outcome = {
-                                        let mut store = directives.lock().await;
-                                        directive_receipt::record_authenticated_receipt(
-                                            frame,
-                                            &tenant_id,
-                                            &repository_id,
-                                            &node_id,
-                                            &mut store,
-                                        )
-                                        .await
-                                    };
+                                    let outcome = directive_receipt::record_authenticated_receipt(
+                                        frame,
+                                        &tenant_id,
+                                        &repository_id,
+                                        &node_id,
+                                        directives,
+                                    )
+                                    .await;
                                     match outcome {
                                         Ok(outcome) => {
                                             let store = supervisor.lock().await;

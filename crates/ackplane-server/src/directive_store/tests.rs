@@ -85,7 +85,7 @@ async fn fixture(capabilities: Vec<SupervisorDirectiveCapability>) -> Option<Fix
         .expect("record directive target session");
 
     Some(Fixture {
-        directives: DirectiveStore::connect(&database_url)
+        directives: DirectiveStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect directive store"),
         tenant_id,
@@ -151,7 +151,7 @@ fn receipt_for(directive: &AgentDirective, occurred_at: SystemTime) -> Directive
 
 #[tokio::test]
 async fn enqueue_assigns_order_and_replays_only_the_exact_request() {
-    let Some(mut fixture) = fixture(vec![SupervisorDirectiveCapability::Pause]).await else {
+    let Some(fixture) = fixture(vec![SupervisorDirectiveCapability::Pause]).await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -203,9 +203,64 @@ async fn enqueue_assigns_order_and_replays_only_the_exact_request() {
     ));
 }
 
+/// Regression: a shared `DirectiveStore` must serve concurrent callers without
+/// external locking.
+///
+/// THE BUG THIS PREVENTS. Before ADR-0143 this store held one
+/// `tokio_postgres::Client` for its whole lifetime, and `Client::transaction()`
+/// needs `&mut`, so every write took `&mut self`. `NodeSyncService` could only
+/// share it as `Arc<Mutex<DirectiveStore>>`, which serialised every directive
+/// write across every connected supervisor -- a lock that existed solely
+/// because of how the connection was held, not because the data needed it.
+/// Now each call checks out its own pooled connection, so the methods take
+/// `&self` and the `Mutex` is gone.
+///
+/// This test fails to *compile* against the un-fixed store, which is the point:
+/// `tokio::join!` on two futures borrowing the same `&DirectiveStore` cannot be
+/// written at all while the methods require `&mut self`. It also asserts the
+/// runtime property that matters -- two concurrent enqueues both succeed and
+/// receive distinct sequences, so removing the lock did not trade a bottleneck
+/// for a race.
+#[tokio::test]
+async fn a_shared_store_enqueues_concurrently_without_an_external_lock() {
+    let Some(fixture) = fixture(vec![SupervisorDirectiveCapability::Pause]).await else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    // Built before the store moves, so no second helper is needed.
+    let first = pause_directive(
+        &fixture,
+        "directive-concurrent-a",
+        "directive-key-concurrent-a",
+    );
+    let second = pause_directive(
+        &fixture,
+        "directive-concurrent-b",
+        "directive-key-concurrent-b",
+    );
+    // Exactly how `NodeSyncService` now holds it: shared, immutable, unlocked.
+    let store = std::sync::Arc::new(fixture.directives);
+
+    let (left, right) = tokio::join!(store.enqueue(first), store.enqueue(second));
+    let left = left.expect("the first concurrent enqueue should succeed");
+    let right = right.expect("the second concurrent enqueue should succeed");
+
+    assert!(!left.idempotent_replay && !right.idempotent_replay);
+    let mut sequences = [
+        left.record.directive.sequence,
+        right.record.directive.sequence,
+    ];
+    sequences.sort_unstable();
+    assert_eq!(
+        sequences,
+        [1, 2],
+        "two concurrent enqueues must each take their own sequence, not collide or skip"
+    );
+}
+
 #[tokio::test]
 async fn enqueue_requires_the_registered_target_to_advertise_the_capability() {
-    let Some(mut fixture) = fixture(vec![SupervisorDirectiveCapability::Notify]).await else {
+    let Some(fixture) = fixture(vec![SupervisorDirectiveCapability::Notify]).await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -232,7 +287,7 @@ async fn enqueue_requires_the_registered_target_to_advertise_the_capability() {
 
 #[tokio::test]
 async fn enqueue_refuses_a_directive_that_is_already_expired() {
-    let Some(mut fixture) = fixture(vec![SupervisorDirectiveCapability::Pause]).await else {
+    let Some(fixture) = fixture(vec![SupervisorDirectiveCapability::Pause]).await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
@@ -247,7 +302,7 @@ async fn enqueue_refuses_a_directive_that_is_already_expired() {
 
 #[tokio::test]
 async fn receipts_append_once_and_require_the_exact_directive_binding() {
-    let Some(mut fixture) = fixture(vec![SupervisorDirectiveCapability::Pause]).await else {
+    let Some(fixture) = fixture(vec![SupervisorDirectiveCapability::Pause]).await else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
