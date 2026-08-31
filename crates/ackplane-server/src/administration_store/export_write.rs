@@ -23,14 +23,15 @@ impl AdministrationStore {
     /// without an active, tenant-scoped `Export` policy, or returns an
     /// identical prior request's exact record.
     pub async fn request_export(
-        &mut self,
+        &self,
         request: &NewExportRequest,
         now: SystemTime,
     ) -> Result<ExportRequestOutcome, AdministrationStoreError> {
         validate_request(request)?;
         let assigned_id = assigned_request_id(request);
         let digest = request_digest(request)?;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         if let Some(existing) = existing_request_by_id(&transaction, &assigned_id).await? {
             let outcome = replay_or_conflict(existing, &digest)?;
@@ -99,14 +100,15 @@ impl AdministrationStore {
     /// Appends one immutable Export receipt or returns its exact prior
     /// retry.
     pub async fn record_export_receipt(
-        &mut self,
+        &self,
         receipt: &NewExportReceipt,
         now: SystemTime,
     ) -> Result<ExportReceipt, AdministrationStoreError> {
         validate_receipt(receipt, now)?;
         let digest = receipt_digest(receipt)?;
         let assigned_id = assigned_receipt_id(receipt);
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         ensure_request_exists(&transaction, &receipt.request_id).await?;
         if let Some(existing) = existing_receipt_by_id(&transaction, &assigned_id).await? {
@@ -153,11 +155,11 @@ impl AdministrationStore {
     /// The request itself, so a caller can check `requested_by`/
     /// `repository_id` before disclosing its receipt to a different tenant.
     pub async fn export_request(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<ExportRequest>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_export_requests WHERE request_id = $1",
                 &[&request_id],
@@ -167,11 +169,11 @@ impl AdministrationStore {
     }
 
     pub async fn export_receipt_for_request(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<ExportReceipt>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_export_receipts WHERE request_id = $1",
                 &[&request_id],

@@ -25,7 +25,6 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 const DATA_CATEGORY: &str = "telemetry_events";
@@ -154,21 +153,21 @@ async fn administration_router(database_url: &str, tenant_id: &str) -> axum::Rou
             .await
             .expect("the test database should accept Fleet connections"),
     );
-    let administration = AdministrationStore::connect(database_url)
-        .await
-        .expect("the test database should accept Administration store connections");
     let db_pool = ackplane_server::db_pool::build_pool(
         database_url,
         ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
     )
     .expect("the test pool builds from the gated database url");
+    let administration = AdministrationStore::connect(&db_pool)
+        .await
+        .expect("the test database should accept Administration store connections");
     let claims = ClaimStore::connect(&db_pool)
         .await
         .expect("the test database should accept Claim connections");
     administration_routes(AdministrationApiState::with_claims(
         fleet,
         Arc::from(tenant_id.to_owned()),
-        Arc::new(Mutex::new(administration)),
+        Arc::new(administration),
         Arc::new(claims),
         None,
         None,

@@ -31,14 +31,15 @@ impl AdministrationStore {
     /// already been captured by the caller (the Bridge route) before this is
     /// called; its failure fails the preview by never reaching this call.
     pub async fn preview_recovery_execution(
-        &mut self,
+        &self,
         request: &RecoveryExecutionPreviewRequest,
         now: SystemTime,
     ) -> Result<RecoveryExecutionRequestOutcome, AdministrationStoreError> {
         validate_preview_request(request)?;
         let assigned_id = assigned_request_id(request);
         let digest = preview_request_digest(request)?;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         if let Some(existing) = existing_request_by_id(&transaction, &assigned_id).await? {
             let outcome = replay_or_conflict(existing, &digest)?;
@@ -152,14 +153,15 @@ impl AdministrationStore {
     /// executes `pg_restore`; it only records that authorization exists for
     /// slice 4 to later consume.
     pub async fn confirm_recovery_execution(
-        &mut self,
+        &self,
         request_id: &str,
         confirming_signing_key_id: &str,
         confirming_node_id: &str,
         confirming_public_key_fingerprint: &str,
         now: SystemTime,
     ) -> Result<RecoveryConfirmation, AdministrationStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let request = existing_request_by_id_for_update(&transaction, request_id)
             .await?
             .ok_or_else(
@@ -271,11 +273,11 @@ impl AdministrationStore {
     }
 
     pub async fn recovery_execution_request(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<RecoveryExecutionRequest>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_recovery_execution_requests WHERE request_id = $1",
                 &[&request_id],
@@ -285,11 +287,11 @@ impl AdministrationStore {
     }
 
     pub async fn recovery_confirmation_for_request(
-        &mut self,
+        &self,
         request_id: &str,
     ) -> Result<Option<RecoveryConfirmation>, AdministrationStoreError> {
-        let row = self
-            .client
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT * FROM administration_recovery_execution_confirmations \
                  WHERE request_id = $1",
