@@ -32,7 +32,6 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 
 const DESIGN_PAGE: &str = include_str!("../static/design.html");
 const DEFAULT_PAGE_SIZE: i64 = 20;
@@ -41,10 +40,7 @@ const MAX_PAGE_SIZE: i64 = 100;
 #[derive(Clone)]
 pub struct DesignApiState {
     designs: Arc<DesignStore>,
-    // `Mutex`-wrapped, not a plain `Arc`, because `record_materialization`
-    // takes `&mut self` -- the same reason Bridge's `ClaimStore` handle used
-    // to be a `Mutex` before ADR-0143 retired it there (ADR-0111).
-    materializations: Arc<Mutex<MaterializationStore>>,
+    materializations: Arc<MaterializationStore>,
     fleet: Arc<FleetStore>,
     tenant_id: Arc<str>,
 }
@@ -52,7 +48,7 @@ pub struct DesignApiState {
 impl DesignApiState {
     pub fn new(
         designs: Arc<DesignStore>,
-        materializations: Arc<Mutex<MaterializationStore>>,
+        materializations: Arc<MaterializationStore>,
         fleet: Arc<FleetStore>,
         tenant_id: Arc<str>,
     ) -> Self {
@@ -160,6 +156,7 @@ fn record_materialization_error(error: MaterializationStoreError) -> StatusCode 
         | MaterializationStoreError::InvalidGoalId
         | MaterializationStoreError::TooManyWorkTaskIds => StatusCode::BAD_REQUEST,
         MaterializationStoreError::IdempotencyConflict { .. } => StatusCode::CONFLICT,
+        MaterializationStoreError::PoolExhausted(_) => StatusCode::SERVICE_UNAVAILABLE,
         MaterializationStoreError::Database(ref database_error)
             if database_error.code()
                 == Some(&tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION) =>
@@ -402,8 +399,6 @@ async fn design_detail(
         .collect();
     let materializations = state
         .materializations
-        .lock()
-        .await
         .list_materializations(state.tenant_id.as_ref(), &repository_id, &design_id)
         .await
         .map_err(|error| {
@@ -482,8 +477,6 @@ async fn record_design_materialization(
     let _ = request.actor;
     let revision = state
         .materializations
-        .lock()
-        .await
         .record_materialization(RecordMaterializationRequest {
             tenant_id: state.tenant_id.to_string(),
             repository_id,

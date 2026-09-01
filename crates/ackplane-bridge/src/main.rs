@@ -252,10 +252,8 @@ async fn main() {
             return;
         }
     };
-    let design_materialization_store = match MaterializationStore::connect(config.database_url())
-        .await
-    {
-        Ok(materializations) => Arc::new(Mutex::new(materializations)),
+    let design_materialization_store = match MaterializationStore::connect(&db_pool).await {
+        Ok(materializations) => Arc::new(materializations),
         Err(error) => {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane's Design materialization domain: {error}"
