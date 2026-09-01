@@ -215,6 +215,7 @@ struct DesignSummary {
     constitution_version_id: Option<String>,
     work_task_id: Option<String>,
     evidence_id: Option<String>,
+    display_label: Option<String>,
     created_at_seconds: Option<u64>,
     updated_at_seconds: Option<u64>,
 }
@@ -230,6 +231,7 @@ impl From<Design> for DesignSummary {
             constitution_version_id: design.constitution_version_id,
             work_task_id: design.work_task_id,
             evidence_id: design.evidence_id,
+            display_label: design.display_label,
             created_at_seconds: unix_seconds(design.created_at),
             updated_at_seconds: unix_seconds(design.updated_at),
         }
@@ -306,6 +308,10 @@ struct ProposeDesignRequest {
     /// than silently forging an operator-chosen name.
     #[serde(default)]
     proposed_by: Option<String>,
+    /// ADR-0142 decision 4: a bounded, optional "who to show in the UI"
+    /// string, stored separately from and never substituted for `actor`.
+    #[serde(default)]
+    display_label: Option<String>,
 }
 
 async fn propose_design(
@@ -328,6 +334,7 @@ async fn propose_design(
             work_task_id: request.work_task_id,
             evidence_id: request.evidence_id,
             proposed_by: state.tenant_id.to_string(),
+            display_label: request.display_label,
         })
         .await
         .map_err(propose_design_error)?;

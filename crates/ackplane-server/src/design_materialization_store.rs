@@ -392,6 +392,7 @@ mod tests {
                 work_task_id: None,
                 evidence_id: None,
                 proposed_by: "agent:test".to_string(),
+                display_label: None,
             })
             .await
             .expect("creating the fixture design should succeed");

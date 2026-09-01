@@ -186,6 +186,7 @@ async fn proposing_a_design_makes_it_appear_in_the_list() {
                 "work_task_id": null,
                 "evidence_id": null,
                 "proposed_by": "agent:proposer",
+                "display_label": "Jordan (via Bridge)",
             }),
         ))
         .await
@@ -207,6 +208,10 @@ async fn proposing_a_design_makes_it_appear_in_the_list() {
     assert_eq!(list["total"], json!(1));
     assert_eq!(list["items"][0]["design_id"], json!(design_id));
     assert_eq!(list["items"][0]["lifecycle_state"], json!("proposed"));
+    assert_eq!(
+        list["items"][0]["display_label"],
+        json!("Jordan (via Bridge)")
+    );
 }
 
 #[tokio::test]

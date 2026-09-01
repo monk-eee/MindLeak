@@ -212,6 +212,13 @@ pub(crate) mod key {
     /// (see the migration's own comment), so the content changed and needed
     /// a fresh key rather than reusing 62 under new content.
     pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT: i64 = 63;
+    /// `migrations/0064_industrial_designs_display_label.sql` -- the third
+    /// and final table of ADR-0142 decision 4's display_label rollout
+    /// (`CONSTITUTION_PROPOSALS_DISPLAY_LABEL`/60 and
+    /// `DESIGN_MATERIALIZATION_DISPLAY_LABEL`/61 closed the other two;
+    /// this one was deferred while `design_store.rs` carried a live
+    /// ADR-0143 pool-migration claim).
+    pub(crate) const INDUSTRIAL_DESIGNS_DISPLAY_LABEL: i64 = 64;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
