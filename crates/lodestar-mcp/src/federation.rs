@@ -62,7 +62,7 @@ where
     F: Fn(&str) -> Option<String>,
 {
     let endpoint = non_empty(environment(ackplane_core::ACKPLANE_ENDPOINT_ENV))?;
-    let identity = node_identity::resolve_node_identity(&environment)?;
+    let identity = node_identity::resolve_node_identity(&environment).ok()?;
     Some(FederationIdentity {
         endpoint,
         tenant_id: identity.tenant_id,

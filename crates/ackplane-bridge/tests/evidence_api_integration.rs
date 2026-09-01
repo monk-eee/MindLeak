@@ -141,7 +141,7 @@ async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
             .expect("connect Bridge Evidence store"),
     );
     let fleet = Arc::new(
-        FleetStore::connect(database_url)
+        FleetStore::connect(&db_pool)
             .await
             .expect("connect Bridge Fleet store"),
     );

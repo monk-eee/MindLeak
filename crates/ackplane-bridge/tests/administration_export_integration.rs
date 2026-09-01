@@ -209,11 +209,16 @@ async fn adopting_a_policy_then_requesting_an_export_redacts_internal_identifier
     )
     .await;
 
-    let fleet = Arc::new(
-        FleetStore::connect(&database_url)
+    let fleet = Arc::new({
+        let pool = ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url");
+        FleetStore::connect(&pool)
             .await
-            .expect("the test database should accept Fleet connections"),
-    );
+            .expect("the test database should accept Fleet connections")
+    });
     let administration = AdministrationStore::connect(
         &ackplane_server::db_pool::build_pool(
             &database_url,
@@ -353,11 +358,16 @@ async fn adopting_a_policy_then_requesting_an_export_redacts_internal_identifier
     .await
     .expect("the test database should accept Administration store connections");
     let foreign_router = administration_routes(AdministrationApiState::new(
-        Arc::new(
-            FleetStore::connect(&database_url)
+        Arc::new({
+            let pool = ackplane_server::db_pool::build_pool(
+                &database_url,
+                ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+            )
+            .expect("the test pool builds from the gated database url");
+            FleetStore::connect(&pool)
                 .await
-                .expect("the test database should accept Fleet connections"),
-        ),
+                .expect("the test database should accept Fleet connections")
+        }),
         Arc::from(format!("foreign-{tenant_id}")),
         Arc::new(foreign_administration),
         None,

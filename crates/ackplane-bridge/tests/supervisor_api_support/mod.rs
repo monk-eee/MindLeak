@@ -167,11 +167,16 @@ pub async fn application(
             .await
             .expect("connect Supervisor store"),
     );
-    let fleet = Arc::new(
-        FleetStore::connect(database_url)
+    let fleet = Arc::new({
+        let pool = ackplane_server::db_pool::build_pool(
+            database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url");
+        FleetStore::connect(&pool)
             .await
-            .expect("connect Fleet store"),
-    );
+            .expect("connect Fleet store")
+    });
     supervisor_routes(SupervisorApiState::new(
         supervisors,
         fleet,

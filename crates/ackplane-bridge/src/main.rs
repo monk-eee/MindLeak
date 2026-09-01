@@ -128,7 +128,7 @@ async fn main() {
             return;
         }
     };
-    let fleet_store = match FleetStore::connect(config.database_url()).await {
+    let fleet_store = match FleetStore::connect(&db_pool).await {
         Ok(fleet) => Arc::new(fleet),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane read models: {error}");

@@ -169,6 +169,7 @@ pub struct ConstitutionProposalResponse {
     scope: Option<String>,
     rationale: Option<String>,
     author: String,
+    display_label: Option<String>,
     status: String,
     created_at_seconds: Option<u64>,
 }
@@ -185,6 +186,7 @@ impl From<ConstitutionProposal> for ConstitutionProposalResponse {
             scope: proposal.scope,
             rationale: proposal.rationale,
             author: proposal.author,
+            display_label: proposal.display_label,
             status: proposal.status,
             created_at_seconds: unix_seconds(proposal.created_at),
         }
@@ -238,6 +240,10 @@ pub struct ProposeClauseRequest {
     /// ADR-0126's own consequences called "honest but weak."
     #[serde(default)]
     author: Option<String>,
+    /// ADR-0142 decision 4: a bounded, optional "who to show in the UI"
+    /// string, stored separately from and never substituted for `author`.
+    #[serde(default)]
+    display_label: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -270,6 +276,7 @@ pub async fn propose_constitution_clause(
         scope: request.scope,
         rationale: request.rationale,
         author: state.tenant_id.to_string(),
+        display_label: request.display_label,
     };
 
     let constitution = &state.constitution;
@@ -439,6 +446,7 @@ mod page_tests {
             scope: Some("crates/ackplane-server".to_string()),
             rationale: Some("Prevent credential leakage via log aggregation.".to_string()),
             author: "reviewer@example.com".to_string(),
+            display_label: Some("Jordan".to_string()),
             status: "proposed".to_string(),
             created_at: UNIX_EPOCH + Duration::from_secs(600),
         };
@@ -456,6 +464,7 @@ mod page_tests {
                 "scope": "crates/ackplane-server",
                 "rationale": "Prevent credential leakage via log aggregation.",
                 "author": "reviewer@example.com",
+                "display_label": "Jordan",
                 "status": "proposed",
                 "created_at_seconds": 600,
             })
@@ -476,6 +485,7 @@ mod page_tests {
             scope: None,
             rationale: None,
             author: "reviewer@example.com".to_string(),
+            display_label: None,
             status: "withdrawn".to_string(),
             created_at: UNIX_EPOCH + Duration::from_secs(1_200),
         };
@@ -493,6 +503,7 @@ mod page_tests {
                 "scope": null,
                 "rationale": null,
                 "author": "reviewer@example.com",
+                "display_label": null,
                 "status": "withdrawn",
                 "created_at_seconds": 1_200,
             })
@@ -521,6 +532,7 @@ mod handler_tests {
             scope: None,
             rationale: Some("Because the Bridge operator noticed a gap.".to_string()),
             author: Some(author.to_string()),
+            display_label: None,
         }
     }
 

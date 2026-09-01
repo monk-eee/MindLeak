@@ -127,7 +127,7 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
     .expect("the test pool builds from the gated database url");
     let state = AppState {
         fleet: Arc::new(
-            FleetStore::connect(database_url)
+            FleetStore::connect(&db_pool)
                 .await
                 .expect("connect Fleet store"),
         ),

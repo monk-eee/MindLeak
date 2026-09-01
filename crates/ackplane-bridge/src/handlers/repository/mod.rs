@@ -289,7 +289,7 @@ pub(super) mod tests {
         .expect("the test pool builds from the gated database url");
         AppState {
             fleet: Arc::new(
-                FleetStore::connect(database_url)
+                FleetStore::connect(&db_pool)
                     .await
                     .expect("connect Fleet store"),
             ),

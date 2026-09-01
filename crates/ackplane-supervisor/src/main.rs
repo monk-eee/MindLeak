@@ -50,9 +50,9 @@ async fn main() -> ExitCode {
 
     tracing::info!(
         endpoint = %config.endpoint,
-        tenant_id = %config.tenant_id,
-        repository_id = %config.repository_id,
-        node_id = %config.node_id,
+        tenant_id = %config.identity.tenant_id,
+        repository_id = %config.identity.repository_id,
+        node_id = %config.identity.node_id,
         supervisor_id = %config.supervisor_id,
         state_dir = %config.state_dir.display(),
         "starting the Ackplane supervisor"

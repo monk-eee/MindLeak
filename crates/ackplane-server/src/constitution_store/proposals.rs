@@ -28,6 +28,9 @@ pub struct ProposeConstitutionClauseRequest {
     pub scope: Option<String>,
     pub rationale: Option<String>,
     pub author: String,
+    /// ADR-0142 decision 4: a bounded, optional "who to show in the UI"
+    /// string, stored separately from and never substituted for `author`.
+    pub display_label: Option<String>,
 }
 
 /// One proposal, as `propose_clause`/`list_proposals` return it.
@@ -44,6 +47,7 @@ pub struct ConstitutionProposal {
     pub scope: Option<String>,
     pub rationale: Option<String>,
     pub author: String,
+    pub display_label: Option<String>,
     pub status: String,
     pub created_at: SystemTime,
 }
@@ -78,7 +82,8 @@ impl ConstitutionStore {
         let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
-                "SELECT kind, slug, title, statement, consequence, scope, rationale, author, status \
+                "SELECT kind, slug, title, statement, consequence, scope, rationale, author, \
+                 display_label, status \
                  FROM constitution_proposals \
                  WHERE tenant_id = $1 AND repository_id = $2 AND proposal_id = $3",
                 &[
@@ -89,7 +94,7 @@ impl ConstitutionStore {
             )
             .await?;
         if let Some(row) = existing {
-            let status: String = row.get(8);
+            let status: String = row.get(9);
             if status != "proposed" {
                 transaction.commit().await?;
                 return Err(ConstitutionStoreError::ProposalWithdrawn {
@@ -103,7 +108,8 @@ impl ConstitutionStore {
                 && row.get::<_, Option<String>>(4) == request.consequence
                 && row.get::<_, Option<String>>(5) == request.scope
                 && row.get::<_, Option<String>>(6) == request.rationale
-                && row.get::<_, String>(7) == request.author;
+                && row.get::<_, String>(7) == request.author
+                && row.get::<_, Option<String>>(8) == request.display_label;
             transaction.commit().await?;
             if matches {
                 return Ok(());
@@ -117,8 +123,8 @@ impl ConstitutionStore {
             .execute(
                 "INSERT INTO constitution_proposals \
                  (tenant_id, repository_id, proposal_id, kind, slug, title, statement, \
-                  consequence, scope, rationale, author) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                  consequence, scope, rationale, author, display_label) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                 &[
                     &request.tenant_id,
                     &request.repository_id,
@@ -131,6 +137,7 @@ impl ConstitutionStore {
                     &request.scope,
                     &request.rationale,
                     &request.author,
+                    &request.display_label,
                 ],
             )
             .await?;
@@ -152,7 +159,7 @@ impl ConstitutionStore {
             .await?
             .query(
                 "SELECT proposal_id, kind, slug, title, statement, consequence, scope, \
-                 rationale, author, status, created_at \
+                 rationale, author, display_label, status, created_at \
                  FROM constitution_proposals \
                  WHERE tenant_id = $1 AND repository_id = $2 \
                  ORDER BY created_at DESC",
@@ -173,8 +180,9 @@ impl ConstitutionStore {
                 scope: row.get(6),
                 rationale: row.get(7),
                 author: row.get(8),
-                status: row.get(9),
-                created_at: row.get(10),
+                display_label: row.get(9),
+                status: row.get(10),
+                created_at: row.get(11),
             })
             .collect())
     }
@@ -228,6 +236,7 @@ mod tests {
             scope: None,
             rationale: Some("Because the Bridge operator noticed a gap.".to_string()),
             author: author.to_string(),
+            display_label: None,
         }
     }
 
@@ -256,7 +265,54 @@ mod tests {
         assert_eq!(proposals[0].scope, request.scope);
         assert_eq!(proposals[0].rationale, request.rationale);
         assert_eq!(proposals[0].author, request.author);
+        assert_eq!(proposals[0].display_label, request.display_label);
         assert_eq!(proposals[0].status, "proposed");
+    }
+
+    #[tokio::test]
+    async fn a_display_label_stores_separately_from_the_authoritative_author() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("proposal-display-label");
+        let mut request = proposal_request(&tenant_id, &repository_id, "proposal-1", "bridge-ui");
+        request.display_label = Some("Jordan (via Bridge)".to_string());
+
+        store.propose_clause(request.clone()).await.unwrap();
+
+        let proposals = store
+            .list_proposals(&tenant_id, &repository_id)
+            .await
+            .unwrap();
+        assert_eq!(proposals.len(), 1);
+        assert_eq!(
+            proposals[0].display_label,
+            Some("Jordan (via Bridge)".to_string())
+        );
+        assert_eq!(proposals[0].author, "bridge-ui");
+    }
+
+    #[tokio::test]
+    async fn a_retry_with_a_different_display_label_is_an_immutability_violation() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id) = unique_scope("proposal-display-label-conflict");
+        let mut request = proposal_request(&tenant_id, &repository_id, "proposal-1", "bridge-ui");
+        request.display_label = Some("Jordan".to_string());
+        store.propose_clause(request.clone()).await.unwrap();
+
+        request.display_label = Some("Alex".to_string());
+        let error = store
+            .propose_clause(request)
+            .await
+            .expect_err("a different display_label under the same identity must conflict");
+        assert!(matches!(
+            error,
+            ConstitutionStoreError::ProposalImmutabilityViolation { .. }
+        ));
     }
 
     #[tokio::test]
