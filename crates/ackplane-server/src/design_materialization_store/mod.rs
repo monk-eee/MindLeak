@@ -12,14 +12,14 @@
 //! not the store's own conflict check). Work-task references are a real
 //! foreign key via a junction table, never a bare unchecked array.
 
-mod query;
-
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
-use tokio_postgres::{Client, NoTls};
 
-const MIGRATION: &str = include_str!("../migrations/0032_industrial_design_materializations.sql");
+use crate::db_pool::{PgConnection, PgPool};
+
+const MIGRATION: &str =
+    include_str!("../../migrations/0032_industrial_design_materializations.sql");
 
 // Dependency migrations: 0032 foreign-keys into `industrial_designs`,
 // `constitution_publications`, and `work_tasks`, none of them created by
@@ -27,14 +27,14 @@ const MIGRATION: &str = include_str!("../migrations/0032_industrial_design_mater
 // foreign-keys into `evidence_records`. See design_store::mod's identical
 // note -- a shared, long-lived local dev database hides this until tested
 // against a genuinely fresh Postgres instance.
-const EVIDENCE_DEPENDENCY_MIGRATION: &str = include_str!("../migrations/0014_evidence.sql");
+const EVIDENCE_DEPENDENCY_MIGRATION: &str = include_str!("../../migrations/0014_evidence.sql");
 const INDUSTRIAL_DESIGNS_DEPENDENCY_MIGRATION: &str =
-    include_str!("../migrations/0027_industrial_designs.sql");
+    include_str!("../../migrations/0027_industrial_designs.sql");
 const CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION: &str =
-    include_str!("../migrations/0026_constitution_publication_history.sql");
-const WORK_DEPENDENCY_MIGRATION: &str = include_str!("../migrations/0028_work.sql");
+    include_str!("../../migrations/0026_constitution_publication_history.sql");
+const WORK_DEPENDENCY_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const DISPLAY_LABEL_MIGRATION: &str =
-    include_str!("../migrations/0061_design_materialization_display_label.sql");
+    include_str!("../../migrations/0061_design_materialization_display_label.sql");
 
 const MAX_ACTOR_BYTES: usize = 256;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
@@ -47,6 +47,8 @@ const MAX_WORK_TASK_IDS: usize = 32;
 pub enum MaterializationStoreError {
     #[error("materialization database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("materialization store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("materialization actor must be between 1 and {MAX_ACTOR_BYTES} bytes")]
     InvalidActor,
     #[error(
@@ -151,54 +153,61 @@ fn validate_request(
 }
 
 pub struct MaterializationStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl MaterializationStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane materialization store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not
+    /// a database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, MaterializationStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::EVIDENCE,
             EVIDENCE_DEPENDENCY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CONSTITUTION_PUBLICATION_HISTORY,
             CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::WORK,
             WORK_DEPENDENCY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::INDUSTRIAL_DESIGNS,
             INDUSTRIAL_DESIGNS_DEPENDENCY_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::INDUSTRIAL_DESIGN_MATERIALIZATIONS,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::DESIGN_MATERIALIZATION_DISPLAY_LABEL,
             DISPLAY_LABEL_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the
+    /// life of that transaction, which is the one case where holding a
+    /// connection across `.await` points is correct rather than accidental.
+    async fn connection(&self) -> Result<PgConnection, MaterializationStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Record one materialization revision. An identical resubmission (same
@@ -207,7 +216,7 @@ impl MaterializationStore {
     /// different field is refused as a conflict, never silently overwritten
     /// or appended as a fresh revision.
     pub async fn record_materialization(
-        &mut self,
+        &self,
         request: RecordMaterializationRequest,
     ) -> Result<MaterializationRevision, MaterializationStoreError> {
         validate_request(&request)?;
@@ -248,7 +257,8 @@ impl MaterializationStore {
             serde_json::to_vec(&payload).expect("MaterializationPayload always serializes");
         let payload_digest = Sha256::digest(&payload_bytes).to_vec();
 
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let next_revision: i64 = transaction
             .query_one(
                 "SELECT COALESCE(MAX(revision_number), 0) + 1 \
@@ -318,6 +328,9 @@ impl MaterializationStore {
         })
     }
 }
+
+mod listing;
+mod query;
 
 #[cfg(test)]
 mod tests {
@@ -426,7 +439,9 @@ mod tests {
             return;
         };
         let fixture = build_fixture(&database_url).await;
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
 
         let revision = store
             .record_materialization(request(&fixture, "key-1"))
@@ -459,7 +474,9 @@ mod tests {
             return;
         };
         let fixture = build_fixture(&database_url).await;
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
         let mut submitted = request(&fixture, "key-1");
         submitted.display_label = Some("Jordan (via Bridge)".to_string());
 
@@ -494,7 +511,9 @@ mod tests {
             return;
         };
         let fixture = build_fixture(&database_url).await;
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
         let mut first = request(&fixture, "key-1");
         first.display_label = Some("Jordan".to_string());
         store
@@ -521,7 +540,9 @@ mod tests {
             return;
         };
         let fixture = build_fixture(&database_url).await;
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
 
         let first = store
             .record_materialization(request(&fixture, "key-1"))
@@ -555,7 +576,9 @@ mod tests {
             return;
         };
         let fixture = build_fixture(&database_url).await;
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
 
         store
             .record_materialization(request(&fixture, "key-1"))
@@ -579,7 +602,9 @@ mod tests {
             return;
         };
         let fixture = build_fixture(&database_url).await;
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
 
         let first = store
             .record_materialization(request(&fixture, "key-1"))
@@ -601,7 +626,9 @@ mod tests {
             return;
         };
         let fixture = build_fixture(&database_url).await;
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
 
         let mut invalid = request(&fixture, "key-1");
         invalid.constitution_version_id = unique_id("nonexistent-version");
@@ -641,7 +668,9 @@ mod tests {
             .await
             .expect("creating the work task should succeed");
 
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
         let mut with_task = request(&fixture, "key-1");
         with_task.work_task_ids = vec![task_id.clone()];
         let revision = store
@@ -659,7 +688,9 @@ mod tests {
             return;
         };
         let fixture = build_fixture(&database_url).await;
-        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let store = MaterializationStore::connect(&pool).await.unwrap();
 
         let mut invalid = request(&fixture, "key-1");
         invalid.work_task_ids = vec![unique_id("nonexistent-task")];
