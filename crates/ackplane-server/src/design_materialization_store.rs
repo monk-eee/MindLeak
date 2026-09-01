@@ -12,6 +12,8 @@
 //! not the store's own conflict check). Work-task references are a real
 //! foreign key via a junction table, never a bare unchecked array.
 
+mod query;
+
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
@@ -31,6 +33,8 @@ const INDUSTRIAL_DESIGNS_DEPENDENCY_MIGRATION: &str =
 const CONSTITUTION_PUBLICATION_HISTORY_DEPENDENCY_MIGRATION: &str =
     include_str!("../migrations/0026_constitution_publication_history.sql");
 const WORK_DEPENDENCY_MIGRATION: &str = include_str!("../migrations/0028_work.sql");
+const DISPLAY_LABEL_MIGRATION: &str =
+    include_str!("../migrations/0061_design_materialization_display_label.sql");
 
 const MAX_ACTOR_BYTES: usize = 256;
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
@@ -79,6 +83,9 @@ pub struct RecordMaterializationRequest {
     pub constitution_version_id: String,
     pub work_task_ids: Vec<String>,
     pub goal_ids: Vec<String>,
+    /// ADR-0142 decision 4: a bounded, optional "who to show in the UI"
+    /// string, stored separately from and never substituted for `actor`.
+    pub display_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +98,7 @@ pub struct MaterializationRevision {
     pub constitution_version_id: String,
     pub work_task_ids: Vec<String>,
     pub goal_ids: Vec<String>,
+    pub display_label: Option<String>,
     pub payload_digest: Vec<u8>,
     pub recorded_at: SystemTime,
 }
@@ -104,6 +112,7 @@ struct MaterializationPayload {
     constitution_version_id: String,
     work_task_ids: Vec<String>,
     goal_ids: Vec<String>,
+    display_label: Option<String>,
 }
 
 fn validate_request(
@@ -183,6 +192,12 @@ impl MaterializationStore {
             MIGRATION,
         )
         .await?;
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::DESIGN_MATERIALIZATION_DISPLAY_LABEL,
+            DISPLAY_LABEL_MIGRATION,
+        )
+        .await?;
         Ok(Self { client })
     }
 
@@ -210,7 +225,8 @@ impl MaterializationStore {
                 && existing.rationale == request.rationale
                 && existing.constitution_version_id == request.constitution_version_id
                 && existing.work_task_ids == request.work_task_ids
-                && existing.goal_ids == request.goal_ids;
+                && existing.goal_ids == request.goal_ids
+                && existing.display_label == request.display_label;
             if !matches {
                 return Err(MaterializationStoreError::IdempotencyConflict {
                     design_id: request.design_id,
@@ -226,6 +242,7 @@ impl MaterializationStore {
             constitution_version_id: request.constitution_version_id.clone(),
             work_task_ids: request.work_task_ids.clone(),
             goal_ids: request.goal_ids.clone(),
+            display_label: request.display_label.clone(),
         };
         let payload_bytes =
             serde_json::to_vec(&payload).expect("MaterializationPayload always serializes");
@@ -249,8 +266,8 @@ impl MaterializationStore {
             .query_one(
                 "INSERT INTO industrial_design_materializations \
                  (tenant_id, repository_id, design_id, revision_number, actor, idempotency_key, \
-                  rationale, constitution_version_id, goal_ids, payload_digest) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+                  rationale, constitution_version_id, goal_ids, payload_digest, display_label) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
                  RETURNING recorded_at",
                 &[
                     &request.tenant_id,
@@ -263,6 +280,7 @@ impl MaterializationStore {
                     &request.constitution_version_id,
                     &request.goal_ids,
                     &payload_digest,
+                    &request.display_label,
                 ],
             )
             .await?
@@ -294,145 +312,10 @@ impl MaterializationStore {
             constitution_version_id: request.constitution_version_id,
             work_task_ids: request.work_task_ids,
             goal_ids: request.goal_ids,
+            display_label: request.display_label,
             payload_digest,
             recorded_at,
         })
-    }
-
-    async fn find_by_idempotency_key(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        design_id: &str,
-        idempotency_key: &str,
-    ) -> Result<Option<MaterializationRevision>, MaterializationStoreError> {
-        let Some(row) = self
-            .client
-            .query_opt(
-                "SELECT revision_number, actor, rationale, constitution_version_id, goal_ids, \
-                        payload_digest, recorded_at \
-                 FROM industrial_design_materializations \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
-                   AND idempotency_key = $4",
-                &[&tenant_id, &repository_id, &design_id, &idempotency_key],
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let revision_number: i64 = row.get(0);
-        let work_task_ids = self
-            .work_task_ids_for(tenant_id, repository_id, design_id, revision_number)
-            .await?;
-        Ok(Some(MaterializationRevision {
-            design_id: design_id.to_string(),
-            revision_number,
-            actor: row.get(1),
-            idempotency_key: idempotency_key.to_string(),
-            rationale: row.get(2),
-            constitution_version_id: row.get(3),
-            work_task_ids,
-            goal_ids: row.get(4),
-            payload_digest: row.get(5),
-            recorded_at: row.get(6),
-        }))
-    }
-
-    async fn work_task_ids_for(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        design_id: &str,
-        revision_number: i64,
-    ) -> Result<Vec<String>, MaterializationStoreError> {
-        let rows = self
-            .client
-            .query(
-                "SELECT work_task_id FROM industrial_design_materialization_work_tasks \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
-                   AND revision_number = $4 \
-                 ORDER BY work_task_id",
-                &[&tenant_id, &repository_id, &design_id, &revision_number],
-            )
-            .await?;
-        Ok(rows.into_iter().map(|row| row.get(0)).collect())
-    }
-
-    pub async fn get_materialization(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        design_id: &str,
-        revision_number: i64,
-    ) -> Result<Option<MaterializationRevision>, MaterializationStoreError> {
-        let Some(row) = self
-            .client
-            .query_opt(
-                "SELECT actor, idempotency_key, rationale, constitution_version_id, goal_ids, \
-                        payload_digest, recorded_at \
-                 FROM industrial_design_materializations \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
-                   AND revision_number = $4",
-                &[&tenant_id, &repository_id, &design_id, &revision_number],
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let work_task_ids = self
-            .work_task_ids_for(tenant_id, repository_id, design_id, revision_number)
-            .await?;
-        Ok(Some(MaterializationRevision {
-            design_id: design_id.to_string(),
-            revision_number,
-            actor: row.get(0),
-            idempotency_key: row.get(1),
-            rationale: row.get(2),
-            constitution_version_id: row.get(3),
-            work_task_ids,
-            goal_ids: row.get(4),
-            payload_digest: row.get(5),
-            recorded_at: row.get(6),
-        }))
-    }
-
-    pub async fn list_materializations(
-        &self,
-        tenant_id: &str,
-        repository_id: &str,
-        design_id: &str,
-    ) -> Result<Vec<MaterializationRevision>, MaterializationStoreError> {
-        let rows = self
-            .client
-            .query(
-                "SELECT revision_number, actor, idempotency_key, rationale, \
-                        constitution_version_id, goal_ids, payload_digest, recorded_at \
-                 FROM industrial_design_materializations \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
-                 ORDER BY revision_number ASC",
-                &[&tenant_id, &repository_id, &design_id],
-            )
-            .await?;
-        let mut revisions = Vec::with_capacity(rows.len());
-        for row in rows {
-            let revision_number: i64 = row.get(0);
-            let work_task_ids = self
-                .work_task_ids_for(tenant_id, repository_id, design_id, revision_number)
-                .await?;
-            revisions.push(MaterializationRevision {
-                design_id: design_id.to_string(),
-                revision_number,
-                actor: row.get(1),
-                idempotency_key: row.get(2),
-                rationale: row.get(3),
-                constitution_version_id: row.get(4),
-                work_task_ids,
-                goal_ids: row.get(5),
-                payload_digest: row.get(6),
-                recorded_at: row.get(7),
-            });
-        }
-        Ok(revisions)
     }
 }
 
@@ -529,6 +412,7 @@ mod tests {
             constitution_version_id: fixture.constitution_version_id.clone(),
             work_task_ids: vec![],
             goal_ids: vec!["goal:example@constitution:v4".to_string()],
+            display_label: None,
         }
     }
 
@@ -563,6 +447,68 @@ mod tests {
             .expect("reading the revision should succeed")
             .expect("the revision should exist");
         assert_eq!(fetched, revision);
+    }
+
+    #[tokio::test]
+    async fn a_display_label_stores_separately_from_the_authoritative_actor() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let fixture = build_fixture(&database_url).await;
+        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let mut submitted = request(&fixture, "key-1");
+        submitted.display_label = Some("Jordan (via Bridge)".to_string());
+
+        let revision = store
+            .record_materialization(submitted)
+            .await
+            .expect("recording a materialization should succeed");
+
+        assert_eq!(
+            revision.display_label,
+            Some("Jordan (via Bridge)".to_string())
+        );
+        assert_eq!(revision.actor, "agent:materializer");
+
+        let fetched = store
+            .get_materialization(
+                &fixture.tenant_id,
+                &fixture.repository_id,
+                &fixture.design_id,
+                1,
+            )
+            .await
+            .expect("reading the revision should succeed")
+            .expect("the revision should exist");
+        assert_eq!(fetched.display_label, revision.display_label);
+    }
+
+    #[tokio::test]
+    async fn a_retry_with_a_different_display_label_is_an_idempotency_conflict() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let fixture = build_fixture(&database_url).await;
+        let mut store = MaterializationStore::connect(&database_url).await.unwrap();
+        let mut first = request(&fixture, "key-1");
+        first.display_label = Some("Jordan".to_string());
+        store
+            .record_materialization(first)
+            .await
+            .expect("the first submission should succeed");
+
+        let mut retry = request(&fixture, "key-1");
+        retry.display_label = Some("Alex".to_string());
+        let error = store
+            .record_materialization(retry)
+            .await
+            .expect_err("a different display_label under the same idempotency key must conflict");
+        assert!(matches!(
+            error,
+            MaterializationStoreError::IdempotencyConflict { .. }
+        ));
     }
 
     #[tokio::test]

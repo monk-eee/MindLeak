@@ -351,6 +351,7 @@ struct MaterializationRevisionResponse {
     constitution_version_id: String,
     work_task_ids: Vec<String>,
     goal_ids: Vec<String>,
+    display_label: Option<String>,
     recorded_at_seconds: Option<u64>,
 }
 
@@ -363,6 +364,7 @@ impl From<MaterializationRevision> for MaterializationRevisionResponse {
             constitution_version_id: revision.constitution_version_id,
             work_task_ids: revision.work_task_ids,
             goal_ids: revision.goal_ids,
+            display_label: revision.display_label,
             recorded_at_seconds: unix_seconds(revision.recorded_at),
         }
     }
@@ -471,6 +473,10 @@ struct RecordDesignMaterializationRequest {
     work_task_ids: Vec<String>,
     #[serde(default)]
     goal_ids: Vec<String>,
+    /// ADR-0142 decision 4: a bounded, optional "who to show in the UI"
+    /// string, stored separately from and never substituted for `actor`.
+    #[serde(default)]
+    display_label: Option<String>,
 }
 
 async fn record_design_materialization(
@@ -494,6 +500,7 @@ async fn record_design_materialization(
             constitution_version_id: request.constitution_version_id,
             work_task_ids: request.work_task_ids,
             goal_ids: request.goal_ids,
+            display_label: request.display_label,
         })
         .await
         .map_err(record_materialization_error)?;
