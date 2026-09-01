@@ -100,7 +100,9 @@ const ADMINISTRATION_POLICY_RS: &str = include_str!("../src/administration/polic
 const ADMINISTRATION_SNAPSHOT_RS: &str = include_str!("../src/administration/snapshot.rs");
 const CONTEXT_API_RS: &str = include_str!("../src/context_api.rs");
 const DELEGATION_API_RS: &str = include_str!("../src/delegation_api.rs");
-const DESIGN_API_RS: &str = include_str!("../src/design_api.rs");
+const DESIGN_API_RS: &str = include_str!("../src/design_api/mod.rs");
+const DESIGN_API_LISTING_RS: &str = include_str!("../src/design_api/listing.rs");
+const DESIGN_API_MUTATIONS_RS: &str = include_str!("../src/design_api/mutations.rs");
 const EVIDENCE_API_RS: &str = include_str!("../src/evidence_api.rs");
 const EVIDENCE_API_BOARD_RS: &str = include_str!("../src/evidence_api/board.rs");
 const EVIDENCE_API_DETAIL_RS: &str = include_str!("../src/evidence_api/detail.rs");
@@ -196,6 +198,8 @@ const HANDLER_SOURCES: &[&str] = &[
     CONTEXT_API_RS,
     DELEGATION_API_RS,
     DESIGN_API_RS,
+    DESIGN_API_LISTING_RS,
+    DESIGN_API_MUTATIONS_RS,
     EVIDENCE_API_RS,
     EVIDENCE_API_BOARD_RS,
     EVIDENCE_API_DETAIL_RS,
@@ -217,6 +221,9 @@ const HANDLER_SOURCES: &[&str] = &[
 /// `evidence_api`'s `board`/`detail`/`export`/`page` submodules define
 /// handler bodies but never register a route themselves -- `evidence_api.rs`'s
 /// own router does that -- so they belong in `HANDLER_SOURCES` only, not here.
+/// `design_api`'s `listing`/`mutations` submodules are the same shape --
+/// `design_api/mod.rs`'s own `design_routes()` is still the only place any
+/// `.route(...)` call for this domain is registered.
 const ROUTE_SOURCES: &[&str] = &[
     MAIN_RS,
     ADMINISTRATION_RS,

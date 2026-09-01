@@ -22,6 +22,13 @@ use crate::db_pool::{PgConnection, PgPool};
 const MIGRATION: &str = include_str!("../../migrations/0027_industrial_designs.sql");
 const WORK_REFERENCE_MIGRATION: &str =
     include_str!("../../migrations/0031_industrial_design_work_reference.sql");
+// ADR-0142 decision 4: a caller may still supply a bounded, optional display
+// label, stored separately from and never substituted for the authoritative
+// `proposed_by`/actor (gaps.d/design-constitution-display-label-not-stored-
+// separately.md). Third and final table of that decision -- constitution_
+// proposals and industrial_design_materializations already closed it.
+const DISPLAY_LABEL_MIGRATION: &str =
+    include_str!("../../migrations/0064_industrial_designs_display_label.sql");
 
 // Dependency migrations: 0027 foreign-keys into `evidence_records` and
 // `constitution_publications`, and 0031 foreign-keys into `work_tasks` --
@@ -110,6 +117,10 @@ pub struct CreateDesignRequest {
     pub work_task_id: Option<String>,
     pub evidence_id: Option<String>,
     pub proposed_by: String,
+    /// ADR-0142 decision 4: a bounded, optional "who to show in the UI"
+    /// string, stored separately from and never substituted for
+    /// `proposed_by`.
+    pub display_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +149,7 @@ pub struct Design {
     pub constitution_version_id: Option<String>,
     pub work_task_id: Option<String>,
     pub evidence_id: Option<String>,
+    pub display_label: Option<String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
 }
@@ -168,6 +180,11 @@ struct DesignIdentityPayload {
     constitution_version_id: Option<String>,
     work_task_id: Option<String>,
     evidence_id: Option<String>,
+    // ADR-0142 decision 4: included in identity so a retry with a
+    // DIFFERENT display_label under the same design_id is a genuine
+    // conflict, matching constitution_proposals/design_materialization's
+    // own established precedent -- never silently overwritten.
+    display_label: Option<String>,
 }
 
 pub struct DesignStore {
@@ -210,6 +227,12 @@ impl DesignStore {
             WORK_REFERENCE_MIGRATION,
         )
         .await?;
+        crate::migration_lock::migrate_locked(
+            &mut connection,
+            crate::migration_lock::key::INDUSTRIAL_DESIGNS_DISPLAY_LABEL,
+            DISPLAY_LABEL_MIGRATION,
+        )
+        .await?;
         Ok(Self { pool: pool.clone() })
     }
 
@@ -221,208 +244,10 @@ impl DesignStore {
     async fn connection(&self) -> Result<PgConnection, DesignStoreError> {
         Ok(self.pool.get().await?)
     }
-
-    /// Propose a design: an idempotent-checked insert of the design row plus
-    /// its first (`Proposed`) decision-history row, in one transaction. An
-    /// identical retry (same identity fields) is a no-op; the same
-    /// `design_id` reused with different content is refused.
-    pub async fn create_design(
-        &self,
-        request: CreateDesignRequest,
-    ) -> Result<(), DesignStoreError> {
-        if request.design_id.trim().is_empty() {
-            return Err(DesignStoreError::EmptyDesignId);
-        }
-        if request.title.trim().is_empty() {
-            return Err(DesignStoreError::EmptyTitle);
-        }
-        if request.source_version.trim().is_empty() {
-            return Err(DesignStoreError::EmptySourceVersion);
-        }
-        if request.proposed_by.trim().is_empty() {
-            return Err(DesignStoreError::EmptyActor);
-        }
-
-        let payload = DesignIdentityPayload {
-            title: request.title.clone(),
-            summary: request.summary.clone(),
-            source_version: request.source_version.clone(),
-            constitution_version_id: request.constitution_version_id.clone(),
-            work_task_id: request.work_task_id.clone(),
-            evidence_id: request.evidence_id.clone(),
-        };
-        let payload_bytes =
-            serde_json::to_vec(&payload).expect("DesignIdentityPayload always serializes");
-        let content_digest = Sha256::digest(&payload_bytes).to_vec();
-
-        let mut connection = self.connection().await?;
-        let transaction = connection.transaction().await?;
-        let existing = transaction
-            .query_opt(
-                "SELECT content_digest FROM industrial_designs \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
-                &[
-                    &request.tenant_id,
-                    &request.repository_id,
-                    &request.design_id,
-                ],
-            )
-            .await?;
-        if let Some(row) = existing {
-            let stored_digest: Vec<u8> = row.get(0);
-            transaction.commit().await?;
-            if stored_digest == content_digest {
-                return Ok(());
-            }
-            return Err(DesignStoreError::DesignImmutabilityViolation {
-                design_id: request.design_id.clone(),
-            });
-        }
-
-        transaction
-            .execute(
-                "INSERT INTO industrial_designs \
-                 (tenant_id, repository_id, design_id, title, summary, source_version, \
-                  lifecycle_state, constitution_version_id, work_task_id, evidence_id, \
-                  content_digest) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-                &[
-                    &request.tenant_id,
-                    &request.repository_id,
-                    &request.design_id,
-                    &request.title,
-                    &request.summary,
-                    &request.source_version,
-                    &(DesignLifecycleState::Proposed as i16),
-                    &request.constitution_version_id,
-                    &request.work_task_id,
-                    &request.evidence_id,
-                    &content_digest,
-                ],
-            )
-            .await?;
-        transaction
-            .execute(
-                "INSERT INTO industrial_design_decisions \
-                 (tenant_id, repository_id, design_id, sequence_number, decision_kind, actor, \
-                  rationale) \
-                 VALUES ($1, $2, $3, 1, $4, $5, NULL)",
-                &[
-                    &request.tenant_id,
-                    &request.repository_id,
-                    &request.design_id,
-                    &(DesignLifecycleState::Proposed as i16),
-                    &request.proposed_by,
-                ],
-            )
-            .await?;
-        transaction.commit().await?;
-        Ok(())
-    }
-
-    /// Append one decision-history row and move the design's own
-    /// `lifecycle_state` to match, in one transaction. The guarded UPDATE
-    /// runs first: it only matches a row whose `lifecycle_state` still
-    /// equals `expected_lifecycle_state`, so two concurrent decisions
-    /// against the same design can never both land -- the loser gets
-    /// `LifecycleStateConflict` (an unknown `design_id` gets `UnknownDesign`
-    /// instead), mirroring `ClaimStore::recover`'s own compare-and-swap
-    /// (ADR-0111). Only once that guarded update actually lands does the
-    /// decision-history row get appended. Legality of a particular
-    /// transition (e.g. whether `Rejected` may return to `Proposed`) remains
-    /// deliberately unenforced beyond that race -- ADR-0121 decision 3
-    /// leaves the broader state-machine policy to a later decision.
-    pub async fn record_decision(
-        &self,
-        request: RecordDecisionRequest,
-    ) -> Result<(), DesignStoreError> {
-        if request.actor.trim().is_empty() {
-            return Err(DesignStoreError::EmptyActor);
-        }
-        let mut connection = self.connection().await?;
-        let transaction = connection.transaction().await?;
-        let updated = transaction
-            .execute(
-                "UPDATE industrial_designs SET lifecycle_state = $4, updated_at = now() \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
-                   AND lifecycle_state = $5",
-                &[
-                    &request.tenant_id,
-                    &request.repository_id,
-                    &request.design_id,
-                    &(request.decision_kind as i16),
-                    &(request.expected_lifecycle_state as i16),
-                ],
-            )
-            .await?;
-        if updated == 0 {
-            let current = transaction
-                .query_opt(
-                    "SELECT lifecycle_state FROM industrial_designs \
-                     WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
-                    &[
-                        &request.tenant_id,
-                        &request.repository_id,
-                        &request.design_id,
-                    ],
-                )
-                .await?;
-            transaction.commit().await?;
-            return match current {
-                None => Err(DesignStoreError::UnknownDesign {
-                    design_id: request.design_id,
-                }),
-                Some(row) => {
-                    let actual_value: i16 = row.get(0);
-                    let actual = DesignLifecycleState::try_from(actual_value).map_err(|()| {
-                        DesignStoreError::CorruptLifecycleState {
-                            design_id: request.design_id.clone(),
-                            value: actual_value,
-                        }
-                    })?;
-                    Err(DesignStoreError::LifecycleStateConflict {
-                        design_id: request.design_id,
-                        expected: request.expected_lifecycle_state,
-                        actual,
-                    })
-                }
-            };
-        }
-        let next_sequence: i64 = transaction
-            .query_one(
-                "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM industrial_design_decisions \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
-                &[
-                    &request.tenant_id,
-                    &request.repository_id,
-                    &request.design_id,
-                ],
-            )
-            .await?
-            .get(0);
-        transaction
-            .execute(
-                "INSERT INTO industrial_design_decisions \
-                 (tenant_id, repository_id, design_id, sequence_number, decision_kind, actor, \
-                  rationale) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                &[
-                    &request.tenant_id,
-                    &request.repository_id,
-                    &request.design_id,
-                    &next_sequence,
-                    &(request.decision_kind as i16),
-                    &request.actor,
-                    &request.rationale,
-                ],
-            )
-            .await?;
-        transaction.commit().await?;
-        Ok(())
-    }
 }
 
 mod listing;
+mod mutations;
 
 #[cfg(test)]
 mod tests {
@@ -448,6 +273,7 @@ mod tests {
             work_task_id: None,
             evidence_id: None,
             proposed_by: "agent:test".to_string(),
+            display_label: None,
         }
     }
 
@@ -483,6 +309,70 @@ mod tests {
         assert_eq!(decisions[0].sequence_number, 1);
         assert_eq!(decisions[0].decision_kind, DesignLifecycleState::Proposed);
         assert_eq!(decisions[0].actor, "agent:test");
+    }
+
+    #[tokio::test]
+    async fn a_display_label_stores_separately_from_the_authoritative_proposed_by() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let repository_id = unique_id("repository");
+        let design_id = unique_id("design");
+        let store = DesignStore::connect(&pool).await.unwrap();
+        let mut request = create_request(&tenant_id, &repository_id, &design_id);
+        request.display_label = Some("Jordan (via Bridge)".to_string());
+
+        store
+            .create_design(request)
+            .await
+            .expect("creating a design should succeed");
+
+        let design = store
+            .get_design(&tenant_id, &repository_id, &design_id)
+            .await
+            .expect("reading the design should succeed")
+            .expect("the design should exist");
+        assert_eq!(
+            design.display_label,
+            Some("Jordan (via Bridge)".to_string())
+        );
+
+        let decisions = store
+            .list_decisions(&tenant_id, &repository_id, &design_id)
+            .await
+            .expect("listing decisions should succeed");
+        assert_eq!(decisions[0].actor, "agent:test");
+    }
+
+    #[tokio::test]
+    async fn a_retry_with_a_different_display_label_is_a_design_immutability_violation() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let repository_id = unique_id("repository");
+        let design_id = unique_id("design");
+        let store = DesignStore::connect(&pool).await.unwrap();
+        let mut first = create_request(&tenant_id, &repository_id, &design_id);
+        first.display_label = Some("Jordan".to_string());
+        store
+            .create_design(first)
+            .await
+            .expect("the first submission should succeed");
+
+        let mut retry = create_request(&tenant_id, &repository_id, &design_id);
+        retry.display_label = Some("Alex".to_string());
+        let error = store
+            .create_design(retry)
+            .await
+            .expect_err("a different display_label under the same design_id must conflict");
+        assert!(matches!(
+            error,
+            DesignStoreError::DesignImmutabilityViolation { .. }
+        ));
     }
 
     #[tokio::test]

@@ -11,8 +11,8 @@ impl DesignStore {
         let row = connection
             .query_opt(
                 "SELECT title, summary, source_version, lifecycle_state, \
-                        constitution_version_id, work_task_id, evidence_id, created_at, \
-                        updated_at \
+                        constitution_version_id, work_task_id, evidence_id, display_label, \
+                        created_at, updated_at \
                  FROM industrial_designs \
                  WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3",
                 &[&tenant_id, &repository_id, &design_id],
@@ -38,8 +38,9 @@ impl DesignStore {
             constitution_version_id: row.get(4),
             work_task_id: row.get(5),
             evidence_id: row.get(6),
-            created_at: row.get(7),
-            updated_at: row.get(8),
+            display_label: row.get(7),
+            created_at: row.get(8),
+            updated_at: row.get(9),
         }))
     }
 
@@ -95,8 +96,9 @@ impl DesignStore {
                 connection
                     .query(
                         "SELECT design_id, title, summary, source_version, lifecycle_state, \
-                                constitution_version_id, work_task_id, evidence_id, created_at, \
-                                updated_at, COUNT(*) OVER()::BIGINT AS total_count \
+                                constitution_version_id, work_task_id, evidence_id, \
+                                display_label, created_at, updated_at, \
+                                COUNT(*) OVER()::BIGINT AS total_count \
                          FROM industrial_designs \
                          WHERE tenant_id = $1 AND repository_id = $2 AND lifecycle_state = $3 \
                          ORDER BY updated_at DESC, design_id ASC LIMIT $4 OFFSET $5",
@@ -114,8 +116,9 @@ impl DesignStore {
                 connection
                     .query(
                         "SELECT design_id, title, summary, source_version, lifecycle_state, \
-                                constitution_version_id, work_task_id, evidence_id, created_at, \
-                                updated_at, COUNT(*) OVER()::BIGINT AS total_count \
+                                constitution_version_id, work_task_id, evidence_id, \
+                                display_label, created_at, updated_at, \
+                                COUNT(*) OVER()::BIGINT AS total_count \
                          FROM industrial_designs \
                          WHERE tenant_id = $1 AND repository_id = $2 \
                          ORDER BY updated_at DESC, design_id ASC LIMIT $3 OFFSET $4",
@@ -145,6 +148,7 @@ impl DesignStore {
                 constitution_version_id: row.get("constitution_version_id"),
                 work_task_id: row.get("work_task_id"),
                 evidence_id: row.get("evidence_id"),
+                display_label: row.get("display_label"),
                 created_at: row.get("created_at"),
                 updated_at: row.get("updated_at"),
             });
@@ -184,6 +188,7 @@ mod tests {
                     work_task_id: None,
                     evidence_id: None,
                     proposed_by: "agent:test".to_string(),
+                    display_label: Some(format!("label for {label}")),
                 })
                 .await
                 .expect("creating a design should succeed");
@@ -196,6 +201,10 @@ mod tests {
 
         assert_eq!(page.total, 3);
         assert_eq!(page.items.len(), 2);
+        assert!(page.items.iter().all(|item| item
+            .display_label
+            .as_deref()
+            .is_some_and(|label| label.starts_with("label for "))));
 
         let second_page = store
             .list_designs(&tenant_id, &repository_id, None, 2, 2)
@@ -227,6 +236,7 @@ mod tests {
                 work_task_id: None,
                 evidence_id: None,
                 proposed_by: "agent:test".to_string(),
+                display_label: Some("Jordan (via Bridge)".to_string()),
             })
             .await
             .expect("creating a design should succeed");
@@ -255,5 +265,9 @@ mod tests {
             .expect("listing designs should succeed");
         assert_eq!(proposed_only.total, 1);
         assert_eq!(proposed_only.items[0].design_id, design_id);
+        assert_eq!(
+            proposed_only.items[0].display_label,
+            Some("Jordan (via Bridge)".to_string())
+        );
     }
 }
