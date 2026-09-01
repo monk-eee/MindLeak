@@ -59,10 +59,15 @@ async fn a_fresh_node_authenticates_then_syncs_and_publishes_native_work() {
         return;
     };
 
-    let enrollment_store = EnrollmentStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment_store = EnrollmentStore::connect(&pool)
         .await
         .expect("the gated test database should accept enrollment migrations");
-    let ledger = LedgerStore::connect(&database_url)
+    let ledger = LedgerStore::connect(&pool)
         .await
         .expect("the gated test database should accept ledger migrations");
     let work_store = WorkStore::connect(&database_url)
@@ -142,7 +147,7 @@ async fn a_fresh_node_authenticates_then_syncs_and_publishes_native_work() {
         .expect_err("an unapproved request must be refused, not silently issued a challenge");
     assert_eq!(refused.code(), Code::FailedPrecondition);
 
-    let mut store = EnrollmentStore::connect(&database_url)
+    let store = EnrollmentStore::connect(&pool)
         .await
         .expect("the gated test database should accept a second enrollment connection");
     store

@@ -408,8 +408,13 @@ mod tests {
     }
 
     async fn register_test_key(database_url: &str) {
+        let enrollment_pool = ackplane_server::db_pool::build_pool(
+            database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from a valid database url");
         drop(
-            EnrollmentStore::connect(database_url)
+            EnrollmentStore::connect(&enrollment_pool)
                 .await
                 .expect("the gated test database should accept enrollment migrations"),
         );
