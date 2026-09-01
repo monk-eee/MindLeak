@@ -51,6 +51,8 @@ pub enum KeyResolution {
 pub enum SigningKeyError {
     #[error("signing key database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("signing key store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
 }
 
 /// Record a key inside the caller's transaction, so a node becomes able to sign

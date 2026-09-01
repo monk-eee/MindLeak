@@ -11,7 +11,7 @@ impl FleetStore {
         now: SystemTime,
         after: Option<&ClaimListCursor>,
         page_size: i64,
-    ) -> Result<Option<ClaimListPage>, tokio_postgres::Error> {
+    ) -> Result<Option<ClaimListPage>, FleetStoreError> {
         if self.repository(tenant_id, repository_id).await?.is_none() {
             return Ok(None);
         }
@@ -21,7 +21,8 @@ impl FleetStore {
             .map(|cursor| cursor.task_id.as_str())
             .unwrap_or_default();
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT task_id, owner_id, branch, claim_started_at, lease_expires_at, \
                         claim_lapses, paths, symbols \
@@ -58,7 +59,7 @@ impl FleetStore {
         now: SystemTime,
         after: Option<&ClaimListCursor>,
         page_size: i64,
-    ) -> Result<Option<ClaimListPage>, tokio_postgres::Error> {
+    ) -> Result<Option<ClaimListPage>, FleetStoreError> {
         if self.repository(tenant_id, repository_id).await?.is_none() {
             return Ok(None);
         }
@@ -68,7 +69,8 @@ impl FleetStore {
             .map(|cursor| cursor.task_id.as_str())
             .unwrap_or_default();
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT task_id, owner_id, branch, claim_started_at, lease_expires_at, \
                         claim_lapses, paths, symbols \
@@ -135,7 +137,7 @@ impl FleetStore {
         page: i64,
         page_size: i64,
         now: SystemTime,
-    ) -> Result<FleetWorkPage, tokio_postgres::Error> {
+    ) -> Result<FleetWorkPage, FleetStoreError> {
         let offset = (page - 1) * page_size;
         let query = format!(
             "SELECT repository_id, task_id, owner_id, branch, claim_started_at, \
@@ -150,7 +152,8 @@ impl FleetStore {
             order_by = sort.order_by_clause(),
         );
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &query,
                 &[
@@ -194,9 +197,10 @@ impl FleetStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
-    ) -> Result<Option<ActiveWorkItem>, tokio_postgres::Error> {
+    ) -> Result<Option<ActiveWorkItem>, FleetStoreError> {
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "SELECT task_id, owner_id, branch, claim_started_at, lease_expires_at, \
                         claim_lapses, paths, symbols \
@@ -265,7 +269,10 @@ mod tests {
                 .expect("delegate claim");
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let active = fleet
@@ -341,7 +348,10 @@ mod tests {
                 .expect("delegate claim");
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let stranded = fleet
@@ -415,7 +425,9 @@ mod tests {
             .await
             .expect("delegate boundary claim");
         let at_expiry = now + Duration::from_secs(30);
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 
@@ -519,7 +531,10 @@ mod tests {
             "recovering an expired claim as its own owner must be granted"
         );
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let active = fleet
@@ -591,7 +606,10 @@ mod tests {
                 .expect("delegate paginated claim");
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let active_first = fleet
@@ -719,7 +737,10 @@ mod tests {
                 .expect("delegate claim");
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let page = fleet
@@ -827,7 +848,10 @@ mod tests {
                 .expect("delegate claim");
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 
@@ -906,7 +930,10 @@ mod tests {
                 .expect("delegate claim");
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 

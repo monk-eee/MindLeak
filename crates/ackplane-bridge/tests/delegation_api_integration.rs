@@ -176,7 +176,7 @@ async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
             .expect("connect Delegation store"),
     );
     let fleet = Arc::new(
-        FleetStore::connect(database_url)
+        FleetStore::connect(&db_pool)
             .await
             .expect("connect Fleet store"),
     );

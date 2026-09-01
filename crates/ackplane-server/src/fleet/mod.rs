@@ -8,8 +8,9 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use tokio_postgres::{Client, NoTls};
+use thiserror::Error;
 
+use crate::db_pool::{PgConnection, PgPool};
 use crate::projection::STRUCTURAL_FACT_PAYLOAD_TYPE;
 use crate::signing_keys::{self, EnvelopeBinding, KeyResolution, SigningKeyError};
 
@@ -205,7 +206,24 @@ pub struct SigningKeyStatus {
 
 /// Read-only access to Fleet summaries derived from Ackplane's accepted state.
 pub struct FleetStore {
-    client: Client,
+    pool: PgPool,
+}
+
+#[derive(Debug, Error)]
+pub enum FleetStoreError {
+    #[error("fleet database error: {0}")]
+    Database(#[from] tokio_postgres::Error),
+    #[error("fleet store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
+}
+
+impl From<SigningKeyError> for FleetStoreError {
+    fn from(error: SigningKeyError) -> Self {
+        match error {
+            SigningKeyError::Database(error) => Self::Database(error),
+            SigningKeyError::PoolExhausted(error) => Self::PoolExhausted(error),
+        }
+    }
 }
 
 /// Server-side filters for [`FleetStore::repositories`] (ADR-0112). Each
@@ -370,45 +388,52 @@ pub fn escape_like_pattern(input: &str) -> String {
 }
 
 impl FleetStore {
-    /// Connect to the Ackplane read models needed for Fleet queries.
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane fleet connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database url: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound. Every statement
+    /// in each migration is idempotent, matching every other migrated store.
+    pub async fn connect(pool: &PgPool) -> Result<Self, FleetStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::ENROLLMENT,
             ENROLLMENT_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::PROJECTION,
             PROJECTION_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::LEDGER,
             LEDGER_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::CLAIM_DELEGATION,
             CLAIM_MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::SIGNING_KEYS,
             SIGNING_KEYS_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the
+    /// life of that transaction, which is the one case where holding a
+    /// connection across `.await` points is correct rather than accidental.
+    async fn connection(&self) -> Result<PgConnection, FleetStoreError> {
+        Ok(self.pool.get().await?)
     }
 }
 
