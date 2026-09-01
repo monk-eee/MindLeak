@@ -225,6 +225,8 @@ pub struct WorkCommandReceiptWriteOutcome {
 pub enum WorkCommandStoreError {
     #[error("work command database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("work command store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("{field} must be a bounded non-empty identifier")]
     InvalidIdentifier { field: &'static str },
     #[error("{field} must be absent or a bounded non-empty identifier")]

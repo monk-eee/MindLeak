@@ -202,6 +202,16 @@ pub(crate) mod key {
     /// clean-container run. Each store now only ever migrates tables it
     /// already owns or transitively depends on.
     pub(crate) const DESIGN_MATERIALIZATION_DISPLAY_LABEL: i64 = 61;
+    /// `migrations/0063_administration_recovery_execution_receipt.sql`
+    /// (ADR-0145 slice 4). Filed as 59, 60, 61, then 62 -- each time the
+    /// shared development database (`ackplane_test`) had accepted a different
+    /// migration under that key from a concurrent branch first. Renumbered a
+    /// fifth time to 63 for a genuinely new reason: CI caught that 62's own
+    /// content had real foreign keys from `rehearsal_id`/`request_id` to
+    /// tables a real restore always empties before this row is ever inserted
+    /// (see the migration's own comment), so the content changed and needed
+    /// a fresh key rather than reusing 62 under new content.
+    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT: i64 = 63;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

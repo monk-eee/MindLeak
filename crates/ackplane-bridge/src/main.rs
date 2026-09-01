@@ -236,8 +236,8 @@ async fn main() {
             return;
         }
     };
-    let work_command_service = match WorkCommandService::connect(config.database_url()).await {
-        Ok(commands) => Arc::new(Mutex::new(commands)),
+    let work_command_service = match WorkCommandService::connect(&db_pool).await {
+        Ok(commands) => Arc::new(commands),
         Err(error) => {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane's Work command domain: {error}"
