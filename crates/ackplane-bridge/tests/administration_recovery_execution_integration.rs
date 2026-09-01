@@ -136,16 +136,16 @@ async fn administration_router(
     tenant_id: &str,
     snapshot: Option<Arc<SnapshotProviderConfig>>,
 ) -> axum::Router {
-    let fleet = Arc::new(
-        FleetStore::connect(database_url)
-            .await
-            .expect("the test database should accept Fleet connections"),
-    );
     let db_pool = ackplane_server::db_pool::build_pool(
         database_url,
         ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
     )
     .expect("the test pool builds from the gated database url");
+    let fleet = Arc::new(
+        FleetStore::connect(&db_pool)
+            .await
+            .expect("the test database should accept Fleet connections"),
+    );
     let administration = AdministrationStore::connect(&db_pool)
         .await
         .expect("the test database should accept Administration store connections");

@@ -156,7 +156,7 @@ async fn streams_an_authorized_event_and_refuses_the_same_repository_to_another_
         .await
         .expect("the authorized repository should publish its Live Feed event");
     let fleet = Arc::new(
-        FleetStore::connect(&database_url)
+        FleetStore::connect(&pool)
             .await
             .expect("the test database should accept Fleet connections"),
     );
