@@ -4,7 +4,7 @@ impl EnrollmentStore {
     /// Persist a pending request or return its already-recorded state when a
     /// node retries the exact same request id and binding.
     pub async fn submit(
-        &mut self,
+        &self,
         submission: &EnrollmentSubmission,
     ) -> Result<EnrollmentStatus, EnrollmentStoreError> {
         if public_key_fingerprint(&submission.public_key) != submission.public_key_fingerprint {
@@ -12,7 +12,8 @@ impl EnrollmentStore {
                 request_id: submission.request_id.clone(),
             });
         }
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
                 "SELECT proposed_node_id, display_name, public_key, public_key_fingerprint, \
@@ -88,10 +89,11 @@ impl EnrollmentStore {
 
     /// Record an administrator's approval of the exact fingerprint it reviewed.
     pub async fn approve(
-        &mut self,
+        &self,
         approval: &EnrollmentApproval,
     ) -> Result<EnrollmentStatus, EnrollmentStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let row = transaction
             .query_opt(
                 "SELECT proposed_node_id, public_key_fingerprint, state, expires_at FROM enrollment_requests \
@@ -189,11 +191,11 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn exact_retry_observes_the_approved_enrollment_state() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
-        let mut store = EnrollmentStore::connect(&database_url)
+        let store = EnrollmentStore::connect(&pool)
             .await
             .expect("test database connects");
         let enrollment = sample_submission();

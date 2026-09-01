@@ -49,7 +49,7 @@ pub(super) async fn handle_authenticated_frame(
     tenant_id: &str,
     repository_id: &str,
     node_id: &str,
-    store: &mut SupervisorStore,
+    store: &SupervisorStore,
 ) -> Vec<v1::AckplaneFrame> {
     let Some(frame) = frame.frame else {
         return Vec::new();
@@ -311,7 +311,7 @@ async fn registration_receipt(
     tenant_id: &str,
     repository_id: &str,
     node_id: &str,
-    store: &mut SupervisorStore,
+    store: &SupervisorStore,
 ) -> Result<v1::SupervisorFrameReceipt, IngressError> {
     let supervisor_id = wire.supervisor_id.clone();
     let registration = registration_from_wire(wire, tenant_id, repository_id, node_id)?;
@@ -444,8 +444,8 @@ mod tests {
     }
 
     async fn store() -> Option<SupervisorStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(SupervisorStore::connect(&database_url).await.unwrap())
+        let pool = crate::test_support::test_pool()?;
+        Some(SupervisorStore::connect(&pool).await.unwrap())
     }
 
     #[test]
@@ -466,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_supervisor_session_time_is_refused_before_persistence() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -491,7 +491,7 @@ mod tests {
             &tenant_id,
             &repository_id,
             &node_id,
-            &mut store,
+            &store,
         )
         .await;
 
@@ -515,7 +515,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_registration_refuses_a_node_other_than_the_authenticated_connection() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -528,7 +528,7 @@ mod tests {
             &tenant_id,
             &repository_id,
             "node-authenticated",
-            &mut store,
+            &store,
         )
         .await;
 
@@ -554,7 +554,7 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_supervisor_frames_persist_and_replay_lifecycle_facts() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -572,7 +572,7 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 &node_id,
-                &mut store,
+                &store,
             )
             .await,
         );
@@ -602,7 +602,7 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 &node_id,
-                &mut store,
+                &store,
             )
             .await,
         );
@@ -635,7 +635,7 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 &node_id,
-                &mut store,
+                &store,
             )
             .await,
         );
@@ -670,7 +670,7 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 &node_id,
-                &mut store,
+                &store,
             )
             .await,
         );
@@ -692,7 +692,7 @@ mod tests {
                 &tenant_id,
                 &repository_id,
                 &node_id,
-                &mut store,
+                &store,
             )
             .await,
         );

@@ -45,7 +45,12 @@ struct RunningService {
 }
 
 async fn start_enrollment_service(database_url: &str) -> RunningService {
-    let store = EnrollmentStore::connect(database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let store = EnrollmentStore::connect(&pool)
         .await
         .expect("the gated test database should accept enrollment migrations");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -104,7 +109,12 @@ async fn enroll_and_activate(endpoint: &str) -> (String, String, String, String,
 
     let database_url =
         std::env::var("ACKPLANE_TEST_DATABASE_URL").expect("already required by the caller");
-    let mut store = EnrollmentStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let store = EnrollmentStore::connect(&pool)
         .await
         .expect("the gated test database should accept a second enrollment connection");
     store

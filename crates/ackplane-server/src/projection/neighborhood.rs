@@ -175,7 +175,7 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
         let rebuilder = Projector::connect(&pool).await.expect("connect rebuilder");
         let tenant = format!("t-{}", uuid_ish());
@@ -268,7 +268,7 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-sample".to_string();
@@ -310,7 +310,7 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-sample-order".to_string();
@@ -356,7 +356,7 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-sample-tenant".to_string();

@@ -41,17 +41,17 @@ struct TestServer {
 }
 
 async fn start_sync_server(database_url: &str) -> TestServer {
-    let ledger = LedgerStore::connect(database_url)
-        .await
-        .expect("the gated test database should accept ledger migrations");
-    let supervisors = SupervisorStore::connect(database_url)
-        .await
-        .expect("the gated test database should accept supervisor migrations");
     let db_pool = ackplane_server::db_pool::build_pool(
         database_url,
         ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
     )
     .expect("the gated test database url builds a pool");
+    let ledger = LedgerStore::connect(&db_pool)
+        .await
+        .expect("the gated test database should accept ledger migrations");
+    let supervisors = SupervisorStore::connect(&db_pool)
+        .await
+        .expect("the gated test database should accept supervisor migrations");
     let directives = DirectiveStore::connect(&db_pool)
         .await
         .expect("the gated test database should accept directive migrations");

@@ -139,7 +139,6 @@ pub(super) mod tests {
     };
     use ed25519_dalek::{Signer, SigningKey};
     use sha2::{Digest, Sha256};
-    use tokio::sync::Mutex;
 
     use super::*;
 
@@ -188,7 +187,12 @@ pub(super) mod tests {
             proposed_node_id: node_id,
             public_key_fingerprint: fingerprint.clone(),
         };
-        let mut enrollment = EnrollmentStore::connect(database_url)
+        let enrollment_pool = ackplane_server::db_pool::build_pool(
+            database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from a valid database url");
+        let enrollment = EnrollmentStore::connect(&enrollment_pool)
             .await
             .expect("connect enrollment store");
         enrollment
@@ -243,7 +247,12 @@ pub(super) mod tests {
         repository_id: &str,
         unique: &str,
     ) {
-        let mut ledger = LedgerStore::connect(database_url)
+        let ledger_pool = ackplane_server::db_pool::build_pool(
+            database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let envelope = EventEnvelope {
@@ -289,11 +298,11 @@ pub(super) mod tests {
                     .await
                     .expect("connect Knowledge store"),
             ),
-            constitution: Arc::new(Mutex::new(
-                ConstitutionStore::connect(database_url)
+            constitution: Arc::new(
+                ConstitutionStore::connect(&db_pool)
                     .await
                     .expect("connect Constitution store"),
-            )),
+            ),
             claims: Arc::new(
                 ClaimStore::connect(&db_pool)
                     .await
@@ -310,7 +319,7 @@ pub(super) mod tests {
                     .expect("connect Readiness store"),
             ),
             telemetry: Arc::new(
-                TelemetryStore::connect(database_url)
+                TelemetryStore::connect(&db_pool)
                     .await
                     .expect("connect Telemetry store"),
             ),

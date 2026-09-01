@@ -29,7 +29,6 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 use super::repository_telemetry;
@@ -68,7 +67,12 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
         proposed_node_id: node_id,
         public_key_fingerprint: fingerprint.clone(),
     };
-    let mut enrollment = EnrollmentStore::connect(database_url)
+    let enrollment_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment = EnrollmentStore::connect(&enrollment_pool)
         .await
         .expect("connect enrollment store");
     enrollment
@@ -132,11 +136,11 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
                 .await
                 .expect("connect Knowledge store"),
         ),
-        constitution: Arc::new(Mutex::new(
-            ConstitutionStore::connect(database_url)
+        constitution: Arc::new(
+            ConstitutionStore::connect(&db_pool)
                 .await
                 .expect("connect Constitution store"),
-        )),
+        ),
         claims: Arc::new(
             ClaimStore::connect(&db_pool)
                 .await
@@ -153,7 +157,7 @@ async fn application(database_url: &str, tenant_id: &str) -> Router {
                 .expect("connect Readiness store"),
         ),
         telemetry: Arc::new(
-            TelemetryStore::connect(database_url)
+            TelemetryStore::connect(&db_pool)
                 .await
                 .expect("connect Telemetry store"),
         ),
@@ -203,7 +207,12 @@ async fn telemetry_route_preserves_bounded_server_buckets_recent_events_and_tena
     let tenant_id = format!("tenant-{unique}");
     let repository_id = format!("repository-{unique}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
-    let telemetry = TelemetryStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let telemetry = TelemetryStore::connect(&pool)
         .await
         .expect("connect Telemetry store for fixtures");
     let first_bucket = UNIX_EPOCH + Duration::from_secs(1_700_000_100);

@@ -12,7 +12,6 @@ use std::time::SystemTime;
 use ackplane_protocol::telemetry_auth::TelemetryOperation;
 use ackplane_protocol::v1;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 use crate::telemetry_signature::{self, TelemetryAuthRefusal};
@@ -31,13 +30,13 @@ const DEFAULT_MAX_POINTS: u32 = 60;
 const MAX_MAX_POINTS: u32 = 500;
 
 pub struct TelemetryGrpcService {
-    store: Arc<Mutex<TelemetryStore>>,
+    store: Arc<TelemetryStore>,
 }
 
 impl TelemetryGrpcService {
     pub fn new(store: TelemetryStore) -> Self {
         Self {
-            store: Arc::new(Mutex::new(store)),
+            store: Arc::new(store),
         }
     }
 
@@ -66,8 +65,6 @@ impl TelemetryGrpcService {
         };
         let resolution = self
             .store
-            .lock()
-            .await
             .resolve_signing_key(&binding)
             .await
             .map_err(|error| Status::internal(error.to_string()))?;
@@ -92,8 +89,6 @@ impl TelemetryGrpcService {
         // never be able to burn a legitimate nonce out from under its owner.
         let fresh = self
             .store
-            .lock()
-            .await
             .consume_telemetry_nonce(
                 &authentication.signing_key_id,
                 &authentication.nonce,
@@ -126,6 +121,10 @@ fn store_error(error: TelemetryStoreError) -> Status {
             Status::invalid_argument("occurred_at is not a valid RFC3339 timestamp")
         }
         TelemetryStoreError::Database(error) => Status::internal(error.to_string()),
+        // A bounded pool timeout is a condition the caller can retry, not an
+        // internal fault (ADR-0143 decision 5, mirroring ClaimStore's mapping).
+        TelemetryStoreError::PoolExhausted(error) => Status::unavailable(error.to_string()),
+        TelemetryStoreError::SigningKey(error) => Status::internal(error.to_string()),
     }
 }
 
@@ -191,8 +190,6 @@ impl v1::telemetry_service_server::TelemetryService for TelemetryGrpcService {
 
         let recorded = self
             .store
-            .lock()
-            .await
             .record(RecordTelemetryRequest {
                 tenant_id: request.tenant_id,
                 repository_id: request.repository_id,
@@ -247,8 +244,6 @@ impl v1::telemetry_service_server::TelemetryService for TelemetryGrpcService {
 
         let snapshot = self
             .store
-            .lock()
-            .await
             .read(ReadTelemetryRequest {
                 tenant_id: request.tenant_id,
                 repository_id: request.repository_id,
@@ -500,7 +495,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("record");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -533,7 +528,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("replay");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -566,7 +561,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("stale");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -611,12 +606,12 @@ mod tests {
     /// before it ever reaches the store.
     #[tokio::test]
     async fn a_request_with_no_authentication_is_refused() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let identity = TestIdentity::fresh("unsigned");
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&pool)
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -641,7 +636,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("read");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -684,7 +679,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("binding-mismatch");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -736,7 +731,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("bad-occurred-at");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -785,7 +780,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("empty-name");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -813,7 +808,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("too-many-measurements");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -866,7 +861,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("empty-measurement-name");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);
@@ -920,7 +915,7 @@ mod tests {
         };
         let identity = TestIdentity::fresh("non-finite-measurement");
         register_test_key(&database_url, &identity).await;
-        let store = TelemetryStore::connect(&database_url)
+        let store = TelemetryStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("the gated test database should accept a telemetry-store connection");
         let service = TelemetryGrpcService::new(store);

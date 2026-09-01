@@ -5,12 +5,13 @@ impl EnrollmentStore {
     /// record a fresh supplied nonce after the prior challenge expires. The
     /// caller generates the nonce with its operating-system CSPRNG.
     pub async fn issue_challenge(
-        &mut self,
+        &self,
         request: &ActivationChallengeRequest,
         nonce: &[u8],
         now: SystemTime,
     ) -> Result<IssuedActivationChallenge, EnrollmentStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let enrollment = transaction
             .query_opt(
                 "SELECT proposed_node_id, public_key_fingerprint, state, expires_at FROM enrollment_requests \
@@ -114,14 +115,15 @@ impl EnrollmentStore {
     /// its challenge, record the activating transition, and mint one receipt.
     /// An exact replay returns that receipt rather than creating fresh authority.
     pub async fn activate(
-        &mut self,
+        &self,
         activation: &EnrollmentActivation,
         enrollment_receipt_id: &str,
         signing_key_id: &str,
         now: SystemTime,
     ) -> Result<EnrollmentActivationResult, EnrollmentStoreError> {
         let request = &activation.request;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let enrollment = transaction
             .query_opt(
                 "SELECT proposed_node_id, public_key_fingerprint, public_key, state, expires_at \
@@ -346,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn activation_reuses_its_live_challenge_and_exact_replay_receipt() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -368,7 +370,7 @@ mod tests {
             approved_by: "administrator-test".to_owned(),
         };
         let now = SystemTime::now();
-        let mut store = EnrollmentStore::connect(&database_url)
+        let store = EnrollmentStore::connect(&pool)
             .await
             .expect("test database connects");
         store.submit(&enrollment).await.expect("request persists");

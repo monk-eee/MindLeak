@@ -66,7 +66,7 @@ impl ConstitutionStore {
     /// the durable status is `proposed`, so a caller never has to re-read to
     /// know it.
     pub async fn propose_clause(
-        &mut self,
+        &self,
         request: ProposeConstitutionClauseRequest,
     ) -> Result<(), ConstitutionStoreError> {
         if request.proposal_id.trim().is_empty() {
@@ -76,7 +76,10 @@ impl ConstitutionStore {
             return Err(ConstitutionStoreError::EmptyAuthor);
         }
 
-        let transaction = self.client.transaction().await?;
+        // One connection, checked out once and held until commit (ADR-0143
+        // decision 4).
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
                 "SELECT kind, slug, title, statement, consequence, scope, rationale, author, \
@@ -152,7 +155,8 @@ impl ConstitutionStore {
         repository_id: &str,
     ) -> Result<Vec<ConstitutionProposal>, ConstitutionStoreError> {
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT proposal_id, kind, slug, title, statement, consequence, scope, \
                  rationale, author, display_label, status, created_at \
@@ -196,7 +200,8 @@ impl ConstitutionStore {
         author: &str,
     ) -> Result<bool, ConstitutionStoreError> {
         let updated = self
-            .client
+            .connection()
+            .await?
             .execute(
                 "UPDATE constitution_proposals SET status = 'withdrawn' \
                  WHERE tenant_id = $1 AND repository_id = $2 AND proposal_id = $3 \
@@ -237,7 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_proposed_clause_reads_back_as_proposed() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -266,7 +271,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_display_label_stores_separately_from_the_authoritative_author() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -290,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_retry_with_a_different_display_label_is_an_immutability_violation() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -327,7 +332,7 @@ mod tests {
 
     #[tokio::test]
     async fn proposing_the_same_clause_twice_is_an_idempotent_no_op() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -349,7 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn proposing_different_content_under_the_same_id_is_rejected() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -374,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_proposal_id_is_refused() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -387,7 +392,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_author_is_refused() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -400,7 +405,7 @@ mod tests {
 
     #[tokio::test]
     async fn its_own_author_can_withdraw_a_proposal() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -439,7 +444,7 @@ mod tests {
     /// must stay `withdrawn`.
     #[tokio::test]
     async fn replaying_a_withdrawn_proposal_is_refused_and_status_stays_withdrawn() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -472,7 +477,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_different_author_cannot_withdraw_a_proposal() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -505,7 +510,7 @@ mod tests {
 
     #[tokio::test]
     async fn withdrawing_an_already_withdrawn_proposal_is_a_no_op_not_an_error() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -551,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn proposals_are_scoped_to_their_own_tenant_and_repository() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };

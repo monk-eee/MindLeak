@@ -104,7 +104,12 @@ pub async fn enroll_repository(
         proposed_node_id: node_id.clone(),
         public_key_fingerprint: fingerprint.clone(),
     };
-    let mut enrollment = EnrollmentStore::connect(database_url)
+    let enrollment_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment = EnrollmentStore::connect(&enrollment_pool)
         .await
         .expect("connect enrollment store");
     enrollment
@@ -152,9 +157,13 @@ pub async fn enroll_repository(
     node_id
 }
 
-pub async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+pub async fn application(
+    pool: &ackplane_server::db_pool::PgPool,
+    database_url: &str,
+    tenant_id: &str,
+) -> axum::Router {
     let supervisors = Arc::new(
-        SupervisorStore::connect(database_url)
+        SupervisorStore::connect(pool)
             .await
             .expect("connect Supervisor store"),
     );

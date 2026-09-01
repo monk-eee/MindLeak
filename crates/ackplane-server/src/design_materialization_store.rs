@@ -345,7 +345,10 @@ mod tests {
         let design_id = unique_id("design");
         let version_id = unique_id("version");
 
-        let mut constitution_store = ConstitutionStore::connect(database_url).await.unwrap();
+        let constitution_store =
+            ConstitutionStore::connect(&crate::test_support::gated_test_pool())
+                .await
+                .unwrap();
         constitution_store
             .record_publication(RecordConstitutionPublicationRequest {
                 tenant_id: tenant_id.clone(),

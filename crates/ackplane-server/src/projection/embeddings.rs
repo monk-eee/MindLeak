@@ -92,7 +92,7 @@ mod tests {
 
     async fn projected_node(
         projector: &Projector,
-        ledger: &mut LedgerStore,
+        ledger: &LedgerStore,
         tenant: &str,
         repo: &str,
         node_id: &str,
@@ -127,19 +127,12 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
-        projected_node(
-            &projector,
-            &mut ledger,
-            &tenant,
-            &repo,
-            "artifact:src/lib.rs",
-        )
-        .await;
+        projected_node(&projector, &ledger, &tenant, &repo, "artifact:src/lib.rs").await;
 
         let missing = projector
             .nodes_missing_embedding(&tenant, &repo, "nomic-embed-text", 10)
@@ -159,19 +152,12 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
-        projected_node(
-            &projector,
-            &mut ledger,
-            &tenant,
-            &repo,
-            "artifact:src/lib.rs",
-        )
-        .await;
+        projected_node(&projector, &ledger, &tenant, &repo, "artifact:src/lib.rs").await;
         projector
             .upsert_embedding(
                 &tenant,
@@ -197,19 +183,12 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
-        projected_node(
-            &projector,
-            &mut ledger,
-            &tenant,
-            &repo,
-            "artifact:src/lib.rs",
-        )
-        .await;
+        projected_node(&projector, &ledger, &tenant, &repo, "artifact:src/lib.rs").await;
         projector
             .upsert_embedding(
                 &tenant,
@@ -235,19 +214,12 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = LedgerStore::connect(&url).await.expect("connect ledger");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
 
-        projected_node(
-            &projector,
-            &mut ledger,
-            &tenant,
-            &repo,
-            "artifact:src/lib.rs",
-        )
-        .await;
+        projected_node(&projector, &ledger, &tenant, &repo, "artifact:src/lib.rs").await;
         projector
             .upsert_embedding(
                 &tenant,

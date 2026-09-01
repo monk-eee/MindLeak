@@ -109,13 +109,30 @@ fn digest_hex(digest: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// A bounded pool timeout is a condition the caller can retry, not an
+/// internal fault -- mirrors `ContextPacketStore`'s HTTP mapping and
+/// `ClaimStore`'s gRPC `unavailable` mapping (ADR-0143 decision 5). Every
+/// other refusal here keeps its existing catch-all `500`.
+fn constitution_store_error(error: ConstitutionStoreError) -> StatusCode {
+    match error {
+        ConstitutionStoreError::PoolExhausted(error) => {
+            tracing::error!(%error, "Bridge constitution query could not obtain a database connection");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        error => {
+            tracing::error!(%error, "Bridge constitution query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 pub async fn repository_constitution(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
 ) -> Result<Json<ConstitutionResponse>, StatusCode> {
     enrolled_or_not_found(&state, &repository_id, "constitution").await?;
 
-    let constitution = state.constitution.lock().await;
+    let constitution = &state.constitution;
     match constitution
         .get_active(&state.tenant_id, &repository_id)
         .await
@@ -126,18 +143,12 @@ pub async fn repository_constitution(
                 .await
             {
                 Ok(publication) => publication,
-                Err(error) => {
-                    tracing::error!(%error, "Bridge repository constitution publication query failed");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
+                Err(error) => return Err(constitution_store_error(error)),
             };
             Ok(Json(ConstitutionResponse::from_active(active, publication)))
         }
         Ok(None) => Ok(Json(ConstitutionResponse::not_found())),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository constitution query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(error) => Err(constitution_store_error(error)),
     }
 }
 
@@ -196,7 +207,7 @@ pub async fn list_constitution_proposals(
 ) -> Result<Json<ConstitutionProposalsResponse>, StatusCode> {
     enrolled_or_not_found(&state, &repository_id, "constitution proposals").await?;
 
-    let constitution = state.constitution.lock().await;
+    let constitution = &state.constitution;
     match constitution
         .list_proposals(&state.tenant_id, &repository_id)
         .await
@@ -207,10 +218,7 @@ pub async fn list_constitution_proposals(
                 .map(ConstitutionProposalResponse::from)
                 .collect(),
         })),
-        Err(error) => {
-            tracing::error!(%error, "Bridge constitution proposal list failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(error) => Err(constitution_store_error(error)),
     }
 }
 
@@ -271,7 +279,7 @@ pub async fn propose_constitution_clause(
         display_label: request.display_label,
     };
 
-    let mut constitution = state.constitution.lock().await;
+    let constitution = &state.constitution;
     match constitution.propose_clause(store_request.clone()).await {
         Ok(()) => Ok(Json(ProposeClauseResponse {
             proposal_id: store_request.proposal_id,
@@ -284,10 +292,7 @@ pub async fn propose_constitution_clause(
             Err(StatusCode::CONFLICT)
         }
         Err(ConstitutionStoreError::ProposalWithdrawn { .. }) => Err(StatusCode::GONE),
-        Err(error) => {
-            tracing::error!(%error, "Bridge constitution proposal write failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(error) => Err(constitution_store_error(error)),
     }
 }
 
@@ -322,7 +327,7 @@ pub async fn withdraw_constitution_proposal(
     enrolled_or_not_found(&state, &repository_id, "constitution proposal withdrawal").await?;
     let _ = request.author;
 
-    let constitution = state.constitution.lock().await;
+    let constitution = &state.constitution;
     match constitution
         .withdraw_proposal(
             &state.tenant_id,
@@ -333,10 +338,7 @@ pub async fn withdraw_constitution_proposal(
         .await
     {
         Ok(withdrawn) => Ok(Json(WithdrawProposalResponse { withdrawn })),
-        Err(error) => {
-            tracing::error!(%error, "Bridge constitution proposal withdrawal failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(error) => Err(constitution_store_error(error)),
     }
 }
 

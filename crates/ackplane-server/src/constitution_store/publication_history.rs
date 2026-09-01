@@ -108,7 +108,7 @@ impl ConstitutionStore {
     /// identity is refused as an immutability violation, never silently
     /// overwritten.
     pub async fn record_publication(
-        &mut self,
+        &self,
         request: RecordConstitutionPublicationRequest,
     ) -> Result<(), ConstitutionStoreError> {
         if request.version_id.trim().is_empty() {
@@ -136,7 +136,10 @@ impl ConstitutionStore {
             serde_json::to_vec(&payload).expect("PublicationPayloadV1 always serializes");
         let payload_digest = Sha256::digest(&payload_bytes).to_vec();
 
-        let transaction = self.client.transaction().await?;
+        // One connection, checked out once and held until commit (ADR-0143
+        // decision 4).
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
                 "SELECT payload_digest FROM constitution_publications \
@@ -192,7 +195,8 @@ impl ConstitutionStore {
         version_id: &str,
     ) -> Result<Option<ConstitutionPublication>, ConstitutionStoreError> {
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "SELECT payload, source_reference, source_digest, published_at \
                  FROM constitution_publications \
@@ -237,7 +241,8 @@ impl ConstitutionStore {
         repository_id: &str,
     ) -> Result<Vec<ConstitutionPublication>, ConstitutionStoreError> {
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT version_id, payload, source_reference, source_digest, published_at \
                  FROM constitution_publications \
@@ -303,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_recorded_publication_reads_back_unchanged() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -341,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn recording_the_same_publication_twice_is_an_idempotent_no_op() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -363,7 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn recording_different_content_under_the_same_version_id_is_rejected() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -389,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_republish_through_publish_never_touches_recorded_publication_history() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -423,7 +428,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_publications_orders_oldest_first() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };

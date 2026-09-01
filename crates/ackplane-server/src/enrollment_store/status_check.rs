@@ -27,8 +27,9 @@ impl EnrollmentStore {
         public_key_fingerprint: &str,
         now: SystemTime,
     ) -> Result<Option<EnrollmentStatusLookup>, EnrollmentStoreError> {
+        let connection = self.connection().await?;
         if let Some(lifecycle) = crate::signing_keys::lifecycle_for_binding(
-            &self.client,
+            &connection,
             tenant_id,
             repository_id,
             node_id,
@@ -42,8 +43,7 @@ impl EnrollmentStore {
             }));
         }
 
-        let Some(row) = self
-            .client
+        let Some(row) = connection
             .query_opt(
                 "SELECT public_key, state FROM enrollment_requests \
                  WHERE tenant_id = $1 AND repository_id = $2 AND proposed_node_id = $3 \
@@ -83,7 +83,8 @@ impl EnrollmentStore {
         now: SystemTime,
     ) -> Result<bool, EnrollmentStoreError> {
         let inserted = self
-            .client
+            .connection()
+            .await?
             .execute(
                 "INSERT INTO enrollment_status_authentication_nonces \
                  (tenant_id, repository_id, node_id, public_key_fingerprint, nonce, consumed_at) \

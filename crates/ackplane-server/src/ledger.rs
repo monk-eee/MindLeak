@@ -21,7 +21,7 @@
 //! that provisions PostgreSQL and sets that variable is a natural follow-up,
 //! deliberately left to its own change rather than bundled with this one.
 
-use tokio_postgres::{Client, NoTls};
+use crate::db_pool::{PgConnection, PgPool};
 
 use thiserror::Error;
 
@@ -111,34 +111,37 @@ pub enum AppendError {
     Conflict { producer_id: String, sequence: i64 },
     #[error("ledger database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("ledger could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
 }
 
 /// A connection to Ackplane's authoritative store (ADR-0086 clause 1).
 pub struct LedgerStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl LedgerStore {
-    /// Connect and apply the schema. Every statement in the migration is
-    /// idempotent, so this is safe to call on every process start rather than
-    /// only on a fresh database (ADR-0088 clause 5 still reserves the actual
-    /// *first* application of a migration to a one-shot `migrate` step in the
-    /// Compose topology; this repeats safely, it does not race a concurrent
-    /// first application).
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane ledger connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound. Every statement
+    /// in the migration is idempotent, so applying it here is safe to call on
+    /// every process start rather than only on a fresh database (ADR-0088
+    /// clause 5 still reserves the actual *first* application of a migration
+    /// to a one-shot `migrate` step in the Compose topology; this repeats
+    /// safely, it does not race a concurrent first application).
+    pub async fn connect(pool: &PgPool) -> Result<Self, AppendError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::LEDGER,
             MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, AppendError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Resolve the signing key an envelope claims, judged as of acceptance.
@@ -149,7 +152,8 @@ impl LedgerStore {
         &self,
         binding: &crate::signing_keys::EnvelopeBinding<'_>,
     ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
-        crate::signing_keys::resolve(&self.client, binding).await
+        let connection = self.pool.get().await?;
+        crate::signing_keys::resolve(&connection, binding).await
     }
 
     /// The transaction ADR-0086 clauses 4, 5, 6 and 11 describe: lock the
@@ -157,9 +161,10 @@ impl LedgerStore {
     /// most one record, create its receipt, and advance the head — all before
     /// anything is returned, so a caller never observes a position that was
     /// not durably committed.
-    pub async fn append(&mut self, envelope: &EventEnvelope) -> Result<AppendOutcome, AppendError> {
+    pub async fn append(&self, envelope: &EventEnvelope) -> Result<AppendOutcome, AppendError> {
         let key = &envelope.key;
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         // A same-key retry is answered from the row already written, without
         // touching the stream head at all: it neither allocates a position
@@ -329,7 +334,9 @@ mod tests {
     #[tokio::test]
     async fn a_fresh_stream_assigns_increasing_positions() {
         let url = require_test_database!();
-        let mut store = LedgerStore::connect(&url).await.expect("connect");
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from a valid database url");
+        let store = LedgerStore::connect(&pool).await.expect("connect");
         let tenant = format!("t-{}", uuid_ish());
         let repo = "repo-a".to_string();
         let producer = "producer-a".to_string();
@@ -366,7 +373,9 @@ mod tests {
     #[tokio::test]
     async fn a_same_key_same_digest_retry_returns_the_original_position_and_appends_nothing() {
         let url = require_test_database!();
-        let mut store = LedgerStore::connect(&url).await.expect("connect");
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from a valid database url");
+        let store = LedgerStore::connect(&pool).await.expect("connect");
         let key = DedupKey {
             tenant_id: format!("t-{}", uuid_ish()),
             repository_id: "repo-a".to_string(),
@@ -385,7 +394,9 @@ mod tests {
     #[tokio::test]
     async fn a_same_key_different_digest_retry_is_a_non_retryable_conflict() {
         let url = require_test_database!();
-        let mut store = LedgerStore::connect(&url).await.expect("connect");
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from a valid database url");
+        let store = LedgerStore::connect(&pool).await.expect("connect");
         let key = DedupKey {
             tenant_id: format!("t-{}", uuid_ish()),
             repository_id: "repo-a".to_string(),
@@ -408,7 +419,9 @@ mod tests {
     #[tokio::test]
     async fn two_repositories_advance_independent_stream_positions() {
         let url = require_test_database!();
-        let mut store = LedgerStore::connect(&url).await.expect("connect");
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from a valid database url");
+        let store = LedgerStore::connect(&pool).await.expect("connect");
         let tenant = format!("t-{}", uuid_ish());
 
         let repo_a = envelope(

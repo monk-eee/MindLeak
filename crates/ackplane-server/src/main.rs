@@ -64,7 +64,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let ledger = match LedgerStore::connect(config.database_url()).await {
+            let ledger = match LedgerStore::connect(&db_pool).await {
                 Ok(ledger) => ledger,
                 Err(error) => {
                     eprintln!(
@@ -73,7 +73,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let enrollment_store = match EnrollmentStore::connect(config.database_url()).await {
+            let enrollment_store = match EnrollmentStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(
@@ -118,7 +118,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
+            let constitution_store = match ConstitutionStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(
@@ -127,7 +127,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let telemetry_store = match TelemetryStore::connect(config.database_url()).await {
+            let telemetry_store = match TelemetryStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(
@@ -136,7 +136,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let supervisor_store = match SupervisorStore::connect(config.database_url()).await {
+            let supervisor_store = match SupervisorStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(

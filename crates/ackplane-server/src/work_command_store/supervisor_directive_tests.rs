@@ -58,7 +58,7 @@ async fn fixture(database_url: &str, capabilities: Vec<SupervisorDirectiveCapabi
     let session_id = format!("session-{suffix}");
     let task_id = format!("task-{suffix}");
 
-    let mut supervisors = SupervisorStore::connect(database_url)
+    let supervisors = SupervisorStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("connect supervisor store");
     supervisors
