@@ -135,16 +135,11 @@ async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
             .await
             .expect("connect Bridge Evidence store"),
     );
-    let fleet = Arc::new({
-        let pool = ackplane_server::db_pool::build_pool(
-            database_url,
-            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
-        )
-        .expect("the test pool builds from the gated database url");
-        FleetStore::connect(&pool)
+    let fleet = Arc::new(
+        FleetStore::connect(&db_pool)
             .await
-            .expect("connect Bridge Fleet store")
-    });
+            .expect("connect Bridge Fleet store"),
+    );
     evidence_routes(EvidenceApiState::new(
         evidence,
         fleet,
