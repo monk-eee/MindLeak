@@ -18,8 +18,7 @@ impl EvidenceStore {
             return Err(ConformanceStoreError::InvalidTaskId);
         }
         let rows = self
-            .pool
-            .get()
+            .connection()
             .await?
             .query(
                 "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
@@ -61,7 +60,7 @@ impl EvidenceStore {
             .ok_or(ConformanceStoreError::InvalidEvidenceId)?;
         let agent_id = filter.agent_id;
         let review_state = filter.review_state.map(ConformanceReviewState::as_i16);
-        let connection = self.pool.get().await?;
+        let connection = self.connection().await?;
         let rows = match cursor {
             Some(cursor) => {
                 connection

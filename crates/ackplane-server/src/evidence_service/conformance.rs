@@ -71,8 +71,6 @@ pub(super) fn conformance_store_error(error: ConformanceStoreError) -> Status {
             Status::internal(format!("stored conformance finding code {code} is invalid"))
         }
         ConformanceStoreError::Database(error) => Status::internal(error.to_string()),
-        // A bounded pool timeout is a condition the caller can retry, not an
-        // internal fault (ADR-0143 decision 5, mirroring ClaimStore's mapping).
         ConformanceStoreError::PoolExhausted(error) => Status::unavailable(error.to_string()),
     }
 }

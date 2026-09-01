@@ -72,6 +72,8 @@ pub enum EvidenceStoreError {
     Database(#[from] tokio_postgres::Error),
     #[error("evidence store could not obtain a database connection: {0}")]
     PoolExhausted(#[from] deadpool_postgres::PoolError),
+    #[error(transparent)]
+    SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("task_id must be between 1 and {MAX_TASK_ID_BYTES} bytes")]
     InvalidTaskId,
     #[error("source_ref must be between 1 and {MAX_SOURCE_REF_BYTES} bytes")]
@@ -92,8 +94,6 @@ pub enum EvidenceStoreError {
     InvalidIdempotencyKey,
     #[error("idempotency_key was already used for a different evidence record")]
     IdempotencyConflict,
-    #[error("evidence signing key error: {0}")]
-    SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("stored evidence kind {0} is outside the EvidenceKind contract")]
     UnknownStoredKind(i16),
 }
@@ -167,13 +167,21 @@ impl EvidenceStore {
         Ok(Self { pool: pool.clone() })
     }
 
-    async fn connection(&self) -> Result<PgConnection, EvidenceStoreError> {
-        Ok(self.pool.get().await?)
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// Returns the raw pool error rather than `EvidenceStoreError` so this
+    /// crate's other error types defined alongside this store (e.g.
+    /// `ConformanceStoreError`) can convert it through their own
+    /// `#[from] deadpool_postgres::PoolError` variant with `?`.
+    pub(crate) async fn connection(&self) -> Result<PgConnection, deadpool_postgres::PoolError> {
+        self.pool.get().await
     }
 
+    /// Resolve the signing key an envelope claims, judged as of acceptance.
+    ///
     /// Returns `EvidenceStoreError` rather than `SigningKeyError` because
-    /// obtaining the connection is now a way this can fail, and that is the
-    /// store's concern -- `signing_keys` never sees a pool.
+    /// obtaining a pooled connection is now itself a failure mode the store
+    /// must report, matching `ClaimStore::resolve_signing_key`'s precedent.
     pub async fn resolve_signing_key(
         &self,
         binding: &crate::signing_keys::EnvelopeBinding<'_>,
@@ -188,9 +196,8 @@ impl EvidenceStore {
         nonce: &[u8],
         now: SystemTime,
     ) -> Result<bool, EvidenceStoreError> {
-        let inserted = self
-            .connection()
-            .await?
+        let connection = self.connection().await?;
+        let inserted = connection
             .execute(
                 "INSERT INTO evidence_authentication_nonces (signing_key_id, nonce, consumed_at) \
                  VALUES ($1, $2, $3) ON CONFLICT (signing_key_id, nonce) DO NOTHING",
@@ -222,9 +229,8 @@ impl EvidenceStore {
         }
         validate_request(&request)?;
         let evidence_id = unique_evidence_id();
-        let row = self
-            .connection()
-            .await?
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "INSERT INTO evidence_records (
                      tenant_id, repository_id, evidence_id, task_id, evidence_kind,
@@ -291,8 +297,8 @@ impl EvidenceStore {
         if !is_bounded(idempotency_key, MAX_IDEMPOTENCY_KEY_BYTES) {
             return Err(EvidenceStoreError::InvalidIdempotencyKey);
         }
-        self.connection()
-            .await?
+        let connection = self.connection().await?;
+        connection
             .query_opt(
                 "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                         source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \

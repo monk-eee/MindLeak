@@ -151,8 +151,6 @@ fn store_error(error: EvidenceStoreError) -> Status {
             Status::internal(format!("stored evidence kind {kind} is invalid"))
         }
         EvidenceStoreError::Database(error) => Status::internal(error.to_string()),
-        // A bounded pool timeout is a condition the caller can retry, not an
-        // internal fault (ADR-0143 decision 5, mirroring ClaimStore's mapping).
         EvidenceStoreError::PoolExhausted(error) => Status::unavailable(error.to_string()),
         EvidenceStoreError::SigningKey(error) => Status::internal(error.to_string()),
     }
@@ -531,8 +529,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("conformance-pending");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -576,8 +576,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("conformance-tamper");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -623,8 +625,10 @@ mod tests {
         other_node.repository_id = producer.repository_id.clone();
         register_test_key(&database_url, &producer).await;
         register_test_key(&database_url, &other_node).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -664,8 +668,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("conformance-retry");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -723,8 +729,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("conformance-nanoseconds");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -961,8 +969,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("record-list");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -994,8 +1004,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("evidence-pagination");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -1040,8 +1052,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("evidence-retry");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -1090,8 +1104,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("tampered-task");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );
@@ -1120,8 +1136,10 @@ mod tests {
         };
         let identity = TestIdentity::fresh("untyped-reference");
         register_test_key(&database_url, &identity).await;
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
         let service = EvidenceGrpcService::new(
-            EvidenceStore::connect(&crate::test_support::gated_test_pool())
+            EvidenceStore::connect(&pool)
                 .await
                 .expect("the gated test database should accept an evidence-store connection"),
         );

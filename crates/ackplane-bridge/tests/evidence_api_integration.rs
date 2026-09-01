@@ -80,7 +80,7 @@ async fn enroll_repository(
         database_url,
         ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
     )
-    .expect("the test pool builds from a valid database url");
+    .expect("the test pool builds from the gated database url");
     let enrollment = EnrollmentStore::connect(&enrollment_pool)
         .await
         .expect("connect enrollment store");
@@ -129,13 +129,14 @@ async fn enroll_repository(
     node_id
 }
 
-async fn application(
-    pool: &ackplane_server::db_pool::PgPool,
-    database_url: &str,
-    tenant_id: &str,
-) -> axum::Router {
+async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
     let evidence = Arc::new(
-        BridgeEvidenceStore::connect(pool)
+        BridgeEvidenceStore::connect(&db_pool)
             .await
             .expect("connect Bridge Evidence store"),
     );
@@ -173,12 +174,7 @@ async fn malformed_evidence_filters_are_bad_requests() {
     let task_id = format!("task:{unique}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
     let invalid_agent_id = "a".repeat(257);
-    let pool = ackplane_server::db_pool::build_pool(
-        &database_url,
-        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
-    )
-    .expect("the test database url should build a pool");
-    let app = application(&pool, &database_url, &tenant_id).await;
+    let app = application(&database_url, &tenant_id).await;
 
     for route in [
         format!(
@@ -234,14 +230,15 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
     )
     .await;
     let raw_session_label = "session:v1:evidence-api-private";
-    let pool = ackplane_server::db_pool::build_pool(
-        &database_url,
-        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    let evidence_store = EvidenceStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
     )
-    .expect("the test database url should build a pool");
-    let evidence_store = EvidenceStore::connect(&pool)
-        .await
-        .expect("connect Evidence store");
+    .await
+    .expect("connect Evidence store");
     let evidence = evidence_store
         .record(RecordEvidenceRequest {
             tenant_id: tenant_id.clone(),
@@ -311,7 +308,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
 
     let route =
         format!("/api/v1/repositories/{repository_id}/tasks/{task_id}/evidence-board?limit=20");
-    let app = application(&pool, &database_url, &tenant_id).await;
+    let app = application(&database_url, &tenant_id).await;
     let board = app
         .clone()
         .oneshot(
@@ -399,7 +396,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         json!(conformance.record.conformance_id)
     );
 
-    let filtered_board = application(&pool, &database_url, &tenant_id)
+    let filtered_board = application(&database_url, &tenant_id)
         .await
         .oneshot(
             Request::builder()
@@ -434,7 +431,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         json!(conformance.record.conformance_id)
     );
 
-    let filtered_export = application(&pool, &database_url, &tenant_id)
+    let filtered_export = application(&database_url, &tenant_id)
         .await
         .oneshot(
             Request::builder()
@@ -462,7 +459,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         json!(other_evidence.record.evidence_id)
     );
 
-    let pending_export = application(&pool, &database_url, &tenant_id)
+    let pending_export = application(&database_url, &tenant_id)
         .await
         .oneshot(
             Request::builder()
@@ -525,7 +522,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         original_board_conformance
     );
 
-    let export = application(&pool, &database_url, &tenant_id)
+    let export = application(&database_url, &tenant_id)
         .await
         .oneshot(
             Request::builder()
@@ -561,7 +558,7 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
         .is_none());
     assert!(exported_original_evidence.get("idempotency_key").is_none());
 
-    let foreign = application(&pool, &database_url, &format!("{tenant_id}-other"))
+    let foreign = application(&database_url, &format!("{tenant_id}-other"))
         .await
         .oneshot(
             Request::builder()
