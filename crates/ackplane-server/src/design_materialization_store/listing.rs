@@ -13,7 +13,7 @@ impl MaterializationStore {
             .await?
             .query_opt(
                 "SELECT actor, idempotency_key, rationale, constitution_version_id, goal_ids, \
-                        payload_digest, recorded_at \
+                        payload_digest, recorded_at, display_label \
                  FROM industrial_design_materializations \
                  WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
                    AND revision_number = $4",
@@ -37,6 +37,7 @@ impl MaterializationStore {
             goal_ids: row.get(4),
             payload_digest: row.get(5),
             recorded_at: row.get(6),
+            display_label: row.get(7),
         }))
     }
 
@@ -51,7 +52,8 @@ impl MaterializationStore {
             .await?
             .query(
                 "SELECT revision_number, actor, idempotency_key, rationale, \
-                        constitution_version_id, goal_ids, payload_digest, recorded_at \
+                        constitution_version_id, goal_ids, payload_digest, recorded_at, \
+                        display_label \
                  FROM industrial_design_materializations \
                  WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
                  ORDER BY revision_number ASC",
@@ -75,6 +77,7 @@ impl MaterializationStore {
                 goal_ids: row.get(5),
                 payload_digest: row.get(6),
                 recorded_at: row.get(7),
+                display_label: row.get(8),
             });
         }
         Ok(revisions)

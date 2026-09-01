@@ -103,7 +103,12 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
         public_key_fingerprint: submission.public_key_fingerprint.clone(),
     };
     let now = SystemTime::now();
-    let mut enrollment = EnrollmentStore::connect(database_url)
+    let enrollment_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment = EnrollmentStore::connect(&enrollment_pool)
         .await
         .expect("the test database should accept enrollment connections");
     enrollment
@@ -160,11 +165,16 @@ async fn returns_an_honest_status_for_the_tenant_and_hides_it_from_another_tenan
     let repository_id = format!("repository-administration-{suffix}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &suffix).await;
 
-    let fleet = Arc::new(
-        FleetStore::connect(&database_url)
+    let fleet = Arc::new({
+        let pool = ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url");
+        FleetStore::connect(&pool)
             .await
-            .expect("the test database should accept Fleet connections"),
-    );
+            .expect("the test database should accept Fleet connections")
+    });
     let authorized =
         administration_routes(administration_state(&database_url, fleet.clone(), &tenant_id).await);
     let page_response = authorized
@@ -309,11 +319,16 @@ async fn a_snapshot_request_with_no_adopted_policy_is_refused_with_a_named_reaso
     };
     let suffix = unique_suffix();
     let tenant_id = format!("tenant-administration-snapshot-refusal-{suffix}");
-    let fleet = Arc::new(
-        FleetStore::connect(&database_url)
+    let fleet = Arc::new({
+        let pool = ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url");
+        FleetStore::connect(&pool)
             .await
-            .expect("the test database should accept Fleet connections"),
-    );
+            .expect("the test database should accept Fleet connections")
+    });
     let administration = AdministrationStore::connect(
         &ackplane_server::db_pool::build_pool(
             &database_url,
@@ -372,11 +387,16 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
     }
     let suffix = unique_suffix();
     let tenant_id = format!("tenant-administration-snapshot-{suffix}");
-    let fleet = Arc::new(
-        FleetStore::connect(&database_url)
+    let fleet = Arc::new({
+        let pool = ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url");
+        FleetStore::connect(&pool)
             .await
-            .expect("the test database should accept Fleet connections"),
-    );
+            .expect("the test database should accept Fleet connections")
+    });
     let administration = AdministrationStore::connect(
         &ackplane_server::db_pool::build_pool(
             &database_url,
@@ -491,11 +511,16 @@ async fn adopting_a_policy_then_requesting_a_platform_snapshot_succeeds_and_repl
     .await
     .expect("the test database should accept Administration store connections");
     let foreign_router = administration_routes(AdministrationApiState::new(
-        Arc::new(
-            FleetStore::connect(&database_url)
+        Arc::new({
+            let pool = ackplane_server::db_pool::build_pool(
+                &database_url,
+                ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+            )
+            .expect("the test pool builds from the gated database url");
+            FleetStore::connect(&pool)
                 .await
-                .expect("the test database should accept Fleet connections"),
-        ),
+                .expect("the test database should accept Fleet connections")
+        }),
         Arc::from(format!("foreign-{tenant_id}")),
         Arc::new(foreign_administration),
         None,

@@ -77,6 +77,8 @@ pub struct SupervisorLifecycleOutcome {
 pub enum SupervisorStoreError {
     #[error("supervisor database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("supervisor store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("invalid supervisor contract: {0}")]
     Contract(#[from] SupervisorError),
     #[error("supervisor JSON serialization failed: {0}")]

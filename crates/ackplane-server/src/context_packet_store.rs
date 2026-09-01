@@ -10,8 +10,8 @@ use ackplane_protocol::context_packet::{
 };
 pub use ackplane_protocol::context_packet::{ContextPacketUseReason, ContextPacketUseStatus};
 use sha2::{Digest, Sha256};
-use tokio_postgres::{Client, NoTls};
 
+use crate::db_pool::{PgConnection, PgPool};
 use crate::migration_lock;
 
 const MIGRATION: &str = include_str!("../migrations/0020_context_packets.sql");
@@ -24,13 +24,15 @@ pub use summary::{
 };
 
 pub struct ContextPacketStore {
-    client: Client,
+    pool: PgPool,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ContextPacketStoreError {
     #[error("ackplane database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("context packet store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("invalid context packet: {0}")]
     Invalid(#[from] ContextPacketError),
     #[error(
@@ -56,21 +58,22 @@ pub enum ContextPacketStoreError {
 }
 
 impl ContextPacketStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                eprintln!("ackplane-server: context packet store connection error: {error}");
-            }
-        });
-        let mut client = client;
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, ContextPacketStoreError> {
+        let mut connection = pool.get().await?;
         migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             migration_lock::key::CONTEXT_PACKETS,
             MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, ContextPacketStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Decisions 1 and 5: store a validated packet once. A byte-identical
@@ -78,7 +81,7 @@ impl ContextPacketStore {
     /// "fetched again... to resume"); any other content under the same id is
     /// an immutability violation, never a silent overwrite.
     pub async fn store_packet(
-        &mut self,
+        &self,
         packet: &ContextPacket,
     ) -> Result<(), ContextPacketStoreError> {
         packet.validate()?;
@@ -88,7 +91,10 @@ impl ContextPacketStore {
         let tenant_id = &packet.scope.tenant_id;
         let repository_id = &packet.scope.repository_id;
 
-        let transaction = self.client.transaction().await?;
+        // One connection, checked out once and held until commit (ADR-0143
+        // decision 4).
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
                 "SELECT payload_digest FROM context_packets \
@@ -145,7 +151,8 @@ impl ContextPacketStore {
         packet_id: &str,
     ) -> Result<Option<ContextPacket>, ContextPacketStoreError> {
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 "SELECT payload, payload_digest FROM context_packets \
                  WHERE tenant_id = $1 AND repository_id = $2 AND packet_id = $3",
@@ -193,15 +200,18 @@ impl ContextPacketStore {
     /// match the packet's own stored scope -- both are typed, named
     /// refusals rather than a bare foreign-key database error.
     pub async fn record_use(
-        &mut self,
+        &self,
         receipt: &ContextPacketUseReceipt,
     ) -> Result<(), ContextPacketStoreError> {
         receipt.validate()?;
         let tenant_id = &receipt.scope.tenant_id;
         let repository_id = &receipt.scope.repository_id;
 
-        let row = self
-            .client
+        // One connection for both statements: a receipt's validity depends on
+        // the packet row read above, so the store's own view of that row must
+        // not change out from under it mid-check.
+        let connection = self.connection().await?;
+        let row = connection
             .query_opt(
                 "SELECT task_id, goal_id, agent_session_id FROM context_packets \
                  WHERE tenant_id = $1 AND repository_id = $2 AND packet_id = $3",
@@ -225,7 +235,7 @@ impl ContextPacketStore {
             });
         }
 
-        self.client
+        connection
             .execute(
                 "INSERT INTO context_packet_use_receipts \
                  (tenant_id, repository_id, packet_id, status, reason, occurred_at) \
@@ -254,7 +264,8 @@ impl ContextPacketStore {
         packet_id: &str,
     ) -> Result<Vec<ContextPacketUseReceipt>, ContextPacketStoreError> {
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT r.status, r.reason, r.occurred_at, p.task_id, p.goal_id, p.agent_session_id \
                  FROM context_packet_use_receipts r \
@@ -468,13 +479,13 @@ mod tests {
     }
 
     async fn store() -> Option<ContextPacketStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(ContextPacketStore::connect(&database_url).await.unwrap())
+        let pool = crate::test_support::test_pool()?;
+        Some(ContextPacketStore::connect(&pool).await.unwrap())
     }
 
     #[tokio::test]
     async fn a_stored_packet_reads_back_unchanged() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -515,7 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn storing_the_same_packet_twice_is_an_idempotent_no_op() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -541,7 +552,7 @@ mod tests {
 
     #[tokio::test]
     async fn storing_different_content_under_the_same_packet_id_is_rejected() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -575,7 +586,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_invalid_packet_is_rejected_before_persistence() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -598,7 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_use_receipt_for_an_unknown_packet_is_rejected() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -620,7 +631,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_use_receipt_with_a_mismatched_scope_is_rejected() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -646,7 +657,7 @@ mod tests {
 
     #[tokio::test]
     async fn use_receipts_are_listed_oldest_first_with_the_packets_own_scope() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -683,7 +694,7 @@ mod tests {
 
     #[tokio::test]
     async fn packet_summaries_page_without_payloads_and_remain_tenant_scoped() {
-        let Some(mut store) = store().await else {
+        let Some(store) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };

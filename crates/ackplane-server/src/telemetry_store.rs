@@ -8,7 +8,7 @@
 
 use std::time::SystemTime;
 
-use tokio_postgres::{Client, NoTls};
+use crate::db_pool::{PgConnection, PgPool};
 
 const MIGRATION: &str = include_str!("../migrations/0016_telemetry.sql");
 const NONCE_MIGRATION: &str =
@@ -30,6 +30,10 @@ const MAX_RECENT_EVENTS: i64 = 50;
 pub enum TelemetryStoreError {
     #[error("telemetry database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("telemetry store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
+    #[error("telemetry signing key error: {0}")]
+    SigningKey(#[from] crate::signing_keys::SigningKeyError),
     #[error("name must be between 1 and {MAX_NAME_BYTES} bytes")]
     InvalidName,
     #[error("an event may carry at most {MAX_MEASUREMENTS} measurements")]
@@ -132,41 +136,48 @@ pub struct TelemetrySnapshot {
 }
 
 pub struct TelemetryStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl TelemetryStore {
-    pub async fn connect(database_url: &str) -> Result<Self, tokio_postgres::Error> {
-        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane telemetry store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not
+    /// a database URL: a store that resolved its own connection would be
+    /// exactly the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, TelemetryStoreError> {
+        let mut connection = pool.get().await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::TELEMETRY,
             MIGRATION,
         )
         .await?;
         crate::migration_lock::migrate_locked(
-            &mut client,
+            &mut connection,
             crate::migration_lock::key::TELEMETRY_AUTHENTICATION_NONCES,
             NONCE_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    async fn connection(&self) -> Result<PgConnection, TelemetryStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Resolve the signing key a telemetry request's authentication claims.
     /// Mirrors `KnowledgeStore::resolve_signing_key`: the decision lives in
     /// `signing_keys` (generic across every authenticated domain), this only
     /// owns the connection.
+    ///
+    /// Returns `TelemetryStoreError` rather than `SigningKeyError` because
+    /// obtaining the connection is now a way this can fail, and that is the
+    /// store's concern -- `signing_keys` never sees a pool.
     pub async fn resolve_signing_key(
         &self,
         binding: &crate::signing_keys::EnvelopeBinding<'_>,
-    ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
-        crate::signing_keys::resolve(&self.client, binding).await
+    ) -> Result<crate::signing_keys::KeyResolution, TelemetryStoreError> {
+        let connection = self.connection().await?;
+        Ok(crate::signing_keys::resolve(&connection, binding).await?)
     }
 
     /// Consume a (signing_key_id, nonce) pair exactly once (anti-replay for
@@ -179,7 +190,8 @@ impl TelemetryStore {
         now: SystemTime,
     ) -> Result<bool, TelemetryStoreError> {
         let inserted = self
-            .client
+            .connection()
+            .await?
             .execute(
                 "INSERT INTO telemetry_authentication_nonces (signing_key_id, nonce, consumed_at) \
                  VALUES ($1, $2, $3) ON CONFLICT (signing_key_id, nonce) DO NOTHING",
@@ -217,7 +229,8 @@ impl TelemetryStore {
         )
         .expect("a Vec of bounded, finite measurements always serializes");
         let row = self
-            .client
+            .connection()
+            .await?
             .query_one(
                 "INSERT INTO telemetry_events (
                      tenant_id, repository_id, telemetry_id, node_id, agent_session_id,
@@ -259,8 +272,9 @@ impl TelemetryStore {
         request: ReadTelemetryRequest,
     ) -> Result<TelemetrySnapshot, TelemetryStoreError> {
         let name_filter = request.name.clone().unwrap_or_default();
-        let metric_rows = self
-            .client
+        // One connection for both queries below.
+        let connection = self.connection().await?;
+        let metric_rows = connection
             .query(
                 "SELECT kind, name, \
                         COUNT(*) AS calls, \
@@ -306,8 +320,7 @@ impl TelemetryStore {
             .collect();
 
         let bucket_seconds = request.bucket_seconds.max(1);
-        let series_rows = self
-            .client
+        let series_rows = connection
             .query(
                 "WITH bucketed AS ( \
                      SELECT kind, name, \
@@ -382,7 +395,8 @@ impl TelemetryStore {
     ) -> Result<Vec<RecentTelemetryEvent>, TelemetryStoreError> {
         let limit = limit.clamp(1, MAX_RECENT_EVENTS);
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT kind, name, outcome, duration_ms, occurred_at \
                  FROM telemetry_events \
@@ -426,9 +440,9 @@ mod tests {
     }
 
     async fn connect() -> Option<TelemetryStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
+        let pool = crate::test_support::test_pool()?;
         Some(
-            TelemetryStore::connect(&database_url)
+            TelemetryStore::connect(&pool)
                 .await
                 .expect("connect to the test database"),
         )

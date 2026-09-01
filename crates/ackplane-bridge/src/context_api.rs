@@ -194,6 +194,13 @@ fn context_store_error(error: ContextPacketStoreError) -> StatusCode {
             tracing::error!(%error, "Bridge Context query failed");
             StatusCode::INTERNAL_SERVER_ERROR
         }
+        // A bounded pool timeout is a condition the caller can retry, not an
+        // internal fault -- mirrors `ClaimStore`'s gRPC `unavailable` mapping
+        // (ADR-0143 decision 5).
+        ContextPacketStoreError::PoolExhausted(error) => {
+            tracing::error!(%error, "Bridge Context query could not obtain a database connection");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
         ContextPacketStoreError::Invalid(_)
         | ContextPacketStoreError::ImmutabilityViolation { .. }
         | ContextPacketStoreError::UnknownPacket { .. }

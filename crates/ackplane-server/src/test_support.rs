@@ -169,7 +169,9 @@ pub(crate) async fn enroll_and_activate_in(
         public_key_fingerprint: submission.public_key_fingerprint.clone(),
     };
     let now = SystemTime::now();
-    let mut enrollment = EnrollmentStore::connect(database_url)
+    let pool = build_pool(database_url, TEST_POOL_MAX_SIZE)
+        .expect("the test pool builds from a valid database url");
+    let enrollment = EnrollmentStore::connect(&pool)
         .await
         .expect("connect enrollment store");
     enrollment

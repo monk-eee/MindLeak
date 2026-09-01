@@ -54,10 +54,15 @@ struct TestServer {
 }
 
 async fn start_sync_server(database_url: &str) -> TestServer {
-    let ledger = LedgerStore::connect(database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let ledger = LedgerStore::connect(&pool)
         .await
         .expect("the gated test database should accept ledger migrations");
-    let supervisors = SupervisorStore::connect(database_url)
+    let supervisors = SupervisorStore::connect(&pool)
         .await
         .expect("the gated test database should accept supervisor migrations");
 
@@ -178,7 +183,12 @@ fn heartbeat_frame(supervisor_id: &str) -> v1::NodeFrame {
 }
 
 async fn get_json(database_url: &str, tenant_id: &str, uri: String) -> Value {
-    let response = application(database_url, tenant_id)
+    let pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let response = application(&pool, database_url, tenant_id)
         .await
         .oneshot(
             Request::builder()

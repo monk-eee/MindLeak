@@ -109,13 +109,30 @@ fn digest_hex(digest: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// A bounded pool timeout is a condition the caller can retry, not an
+/// internal fault -- mirrors `ContextPacketStore`'s HTTP mapping and
+/// `ClaimStore`'s gRPC `unavailable` mapping (ADR-0143 decision 5). Every
+/// other refusal here keeps its existing catch-all `500`.
+fn constitution_store_error(error: ConstitutionStoreError) -> StatusCode {
+    match error {
+        ConstitutionStoreError::PoolExhausted(error) => {
+            tracing::error!(%error, "Bridge constitution query could not obtain a database connection");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+        error => {
+            tracing::error!(%error, "Bridge constitution query failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
 pub async fn repository_constitution(
     State(state): State<AppState>,
     Path(repository_id): Path<String>,
 ) -> Result<Json<ConstitutionResponse>, StatusCode> {
     enrolled_or_not_found(&state, &repository_id, "constitution").await?;
 
-    let constitution = state.constitution.lock().await;
+    let constitution = &state.constitution;
     match constitution
         .get_active(&state.tenant_id, &repository_id)
         .await
@@ -126,18 +143,12 @@ pub async fn repository_constitution(
                 .await
             {
                 Ok(publication) => publication,
-                Err(error) => {
-                    tracing::error!(%error, "Bridge repository constitution publication query failed");
-                    return Err(StatusCode::INTERNAL_SERVER_ERROR);
-                }
+                Err(error) => return Err(constitution_store_error(error)),
             };
             Ok(Json(ConstitutionResponse::from_active(active, publication)))
         }
         Ok(None) => Ok(Json(ConstitutionResponse::not_found())),
-        Err(error) => {
-            tracing::error!(%error, "Bridge repository constitution query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(error) => Err(constitution_store_error(error)),
     }
 }
 
@@ -158,6 +169,7 @@ pub struct ConstitutionProposalResponse {
     scope: Option<String>,
     rationale: Option<String>,
     author: String,
+    display_label: Option<String>,
     status: String,
     created_at_seconds: Option<u64>,
 }
@@ -174,6 +186,7 @@ impl From<ConstitutionProposal> for ConstitutionProposalResponse {
             scope: proposal.scope,
             rationale: proposal.rationale,
             author: proposal.author,
+            display_label: proposal.display_label,
             status: proposal.status,
             created_at_seconds: unix_seconds(proposal.created_at),
         }
@@ -194,7 +207,7 @@ pub async fn list_constitution_proposals(
 ) -> Result<Json<ConstitutionProposalsResponse>, StatusCode> {
     enrolled_or_not_found(&state, &repository_id, "constitution proposals").await?;
 
-    let constitution = state.constitution.lock().await;
+    let constitution = &state.constitution;
     match constitution
         .list_proposals(&state.tenant_id, &repository_id)
         .await
@@ -205,10 +218,7 @@ pub async fn list_constitution_proposals(
                 .map(ConstitutionProposalResponse::from)
                 .collect(),
         })),
-        Err(error) => {
-            tracing::error!(%error, "Bridge constitution proposal list failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(error) => Err(constitution_store_error(error)),
     }
 }
 
@@ -230,6 +240,10 @@ pub struct ProposeClauseRequest {
     /// ADR-0126's own consequences called "honest but weak."
     #[serde(default)]
     author: Option<String>,
+    /// ADR-0142 decision 4: a bounded, optional "who to show in the UI"
+    /// string, stored separately from and never substituted for `author`.
+    #[serde(default)]
+    display_label: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -262,9 +276,10 @@ pub async fn propose_constitution_clause(
         scope: request.scope,
         rationale: request.rationale,
         author: state.tenant_id.to_string(),
+        display_label: request.display_label,
     };
 
-    let mut constitution = state.constitution.lock().await;
+    let constitution = &state.constitution;
     match constitution.propose_clause(store_request.clone()).await {
         Ok(()) => Ok(Json(ProposeClauseResponse {
             proposal_id: store_request.proposal_id,
@@ -277,10 +292,7 @@ pub async fn propose_constitution_clause(
             Err(StatusCode::CONFLICT)
         }
         Err(ConstitutionStoreError::ProposalWithdrawn { .. }) => Err(StatusCode::GONE),
-        Err(error) => {
-            tracing::error!(%error, "Bridge constitution proposal write failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(error) => Err(constitution_store_error(error)),
     }
 }
 
@@ -315,7 +327,7 @@ pub async fn withdraw_constitution_proposal(
     enrolled_or_not_found(&state, &repository_id, "constitution proposal withdrawal").await?;
     let _ = request.author;
 
-    let constitution = state.constitution.lock().await;
+    let constitution = &state.constitution;
     match constitution
         .withdraw_proposal(
             &state.tenant_id,
@@ -326,10 +338,7 @@ pub async fn withdraw_constitution_proposal(
         .await
     {
         Ok(withdrawn) => Ok(Json(WithdrawProposalResponse { withdrawn })),
-        Err(error) => {
-            tracing::error!(%error, "Bridge constitution proposal withdrawal failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Err(error) => Err(constitution_store_error(error)),
     }
 }
 
@@ -437,6 +446,7 @@ mod page_tests {
             scope: Some("crates/ackplane-server".to_string()),
             rationale: Some("Prevent credential leakage via log aggregation.".to_string()),
             author: "reviewer@example.com".to_string(),
+            display_label: Some("Jordan".to_string()),
             status: "proposed".to_string(),
             created_at: UNIX_EPOCH + Duration::from_secs(600),
         };
@@ -454,6 +464,7 @@ mod page_tests {
                 "scope": "crates/ackplane-server",
                 "rationale": "Prevent credential leakage via log aggregation.",
                 "author": "reviewer@example.com",
+                "display_label": "Jordan",
                 "status": "proposed",
                 "created_at_seconds": 600,
             })
@@ -474,6 +485,7 @@ mod page_tests {
             scope: None,
             rationale: None,
             author: "reviewer@example.com".to_string(),
+            display_label: None,
             status: "withdrawn".to_string(),
             created_at: UNIX_EPOCH + Duration::from_secs(1_200),
         };
@@ -491,6 +503,7 @@ mod page_tests {
                 "scope": null,
                 "rationale": null,
                 "author": "reviewer@example.com",
+                "display_label": null,
                 "status": "withdrawn",
                 "created_at_seconds": 1_200,
             })
@@ -519,6 +532,7 @@ mod handler_tests {
             scope: None,
             rationale: Some("Because the Bridge operator noticed a gap.".to_string()),
             author: Some(author.to_string()),
+            display_label: None,
         }
     }
 

@@ -7,11 +7,12 @@ impl EnrollmentStore {
     /// typed outcome precisely so a node can distinguish "try again" from
     /// "stop and re-enrol" without parsing a status message.
     pub async fn rotate_key(
-        &mut self,
+        &self,
         rotation: &KeyRotation,
         now: SystemTime,
     ) -> Result<KeyRotationResult, EnrollmentStoreError> {
-        let transaction = self.client.transaction().await?;
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
 
         let current =
             signing_keys::fetch_lifecycle_for_update(&transaction, &rotation.current_key_id)
@@ -133,19 +134,19 @@ mod tests {
 
     #[tokio::test]
     async fn a_continuity_proven_rotation_retires_the_old_key_and_activates_the_new_one() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let now = SystemTime::now();
-        let mut store = EnrollmentStore::connect(&database_url)
+        let store = EnrollmentStore::connect(&pool)
             .await
             .expect("test database connects");
         let current_key = SigningKey::from_bytes(&[11; 32]);
         let successor_key = SigningKey::from_bytes(&[12; 32]);
         let signing_key_id = format!("signing-key-rotation-current-{}", node_suffix());
         let successor_key_id = format!("signing-key-rotation-successor-{}", node_suffix());
-        let enrollment = activated_node(&mut store, &current_key, &signing_key_id, now).await;
+        let enrollment = activated_node(&store, &current_key, &signing_key_id, now).await;
 
         let rotation = signed_rotation(
             &current_key,
@@ -181,8 +182,9 @@ mod tests {
             }
         );
 
+        let connection = store.connection().await.expect("connection checks out");
         let current_after = signing_keys::resolve(
-            &store.client,
+            &connection,
             &signing_keys::EnvelopeBinding {
                 signing_key_id: &signing_key_id,
                 tenant_id: &rotation.tenant_id,
@@ -194,7 +196,7 @@ mod tests {
         .await
         .expect("resolve queries succeed");
         let successor_after = signing_keys::resolve(
-            &store.client,
+            &connection,
             &signing_keys::EnvelopeBinding {
                 signing_key_id: &successor_key_id,
                 tenant_id: &rotation.tenant_id,
@@ -219,12 +221,12 @@ mod tests {
     /// authorisation, could rotate a node away from its owner.
     #[tokio::test]
     async fn a_rotation_missing_the_current_keys_authorisation_is_rejected() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let now = SystemTime::now();
-        let mut store = EnrollmentStore::connect(&database_url)
+        let store = EnrollmentStore::connect(&pool)
             .await
             .expect("test database connects");
         let current_key = SigningKey::from_bytes(&[13; 32]);
@@ -232,7 +234,7 @@ mod tests {
         let attacker_key = SigningKey::from_bytes(&[15; 32]);
         let signing_key_id = format!("signing-key-rotation-current-{}", node_suffix());
         let successor_key_id = format!("signing-key-rotation-successor-{}", node_suffix());
-        let enrollment = activated_node(&mut store, &current_key, &signing_key_id, now).await;
+        let enrollment = activated_node(&store, &current_key, &signing_key_id, now).await;
 
         // Signed by an attacker's key instead of the node's actual current key.
         let rotation = signed_rotation(
@@ -264,8 +266,9 @@ mod tests {
             KeyRotationOutcome::Rejected(KeyRotationRejection::ContinuityProofInvalid)
         );
 
+        let connection = store.connection().await.expect("connection checks out");
         let successor_after = signing_keys::resolve(
-            &store.client,
+            &connection,
             &signing_keys::EnvelopeBinding {
                 signing_key_id: &successor_key_id,
                 tenant_id: &rotation.tenant_id,
@@ -285,12 +288,12 @@ mod tests {
 
     #[tokio::test]
     async fn rotating_an_unknown_current_key_is_rejected_as_not_active() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
         let now = SystemTime::now();
-        let mut store = EnrollmentStore::connect(&database_url)
+        let store = EnrollmentStore::connect(&pool)
             .await
             .expect("test database connects");
         let current_key = SigningKey::from_bytes(&[16; 32]);
@@ -329,7 +332,7 @@ mod tests {
     /// Submit, approve, challenge and activate one node end to end, leaving it
     /// with a live signing key a rotation test can then act on.
     async fn activated_node(
-        store: &mut EnrollmentStore,
+        store: &EnrollmentStore,
         signing_key: &SigningKey,
         signing_key_id: &str,
         now: SystemTime,

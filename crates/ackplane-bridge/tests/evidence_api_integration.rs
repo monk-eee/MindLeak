@@ -76,7 +76,12 @@ async fn enroll_repository(
         proposed_node_id: node_id.clone(),
         public_key_fingerprint: fingerprint.clone(),
     };
-    let mut enrollment = EnrollmentStore::connect(database_url)
+    let enrollment_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let enrollment = EnrollmentStore::connect(&enrollment_pool)
         .await
         .expect("connect enrollment store");
     enrollment
@@ -125,13 +130,18 @@ async fn enroll_repository(
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
     let evidence = Arc::new(
-        BridgeEvidenceStore::connect(database_url)
+        BridgeEvidenceStore::connect(&db_pool)
             .await
             .expect("connect Bridge Evidence store"),
     );
     let fleet = Arc::new(
-        FleetStore::connect(database_url)
+        FleetStore::connect(&db_pool)
             .await
             .expect("connect Bridge Fleet store"),
     );
@@ -220,9 +230,15 @@ async fn tenant_scoped_evidence_board_and_export_remain_redacted() {
     )
     .await;
     let raw_session_label = "session:v1:evidence-api-private";
-    let evidence_store = EvidenceStore::connect(&database_url)
-        .await
-        .expect("connect Evidence store");
+    let evidence_store = EvidenceStore::connect(
+        &ackplane_server::db_pool::build_pool(
+            &database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url"),
+    )
+    .await
+    .expect("connect Evidence store");
     let evidence = evidence_store
         .record(RecordEvidenceRequest {
             tenant_id: tenant_id.clone(),

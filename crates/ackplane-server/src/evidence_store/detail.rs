@@ -19,7 +19,8 @@ impl EvidenceStore {
         if !is_bounded(evidence_id, MAX_TASK_ID_BYTES) {
             return Err(EvidenceStoreError::InvalidEvidenceId);
         }
-        self.client
+        self.connection()
+            .await?
             .query_opt(
                 "SELECT evidence_id, tenant_id, repository_id, task_id, evidence_kind, \
                         source_ref, content_digest, observed_at, reported_agent_session_id, recorded_by, \

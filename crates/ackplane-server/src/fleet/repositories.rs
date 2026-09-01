@@ -13,7 +13,7 @@ impl FleetStore {
         sort: FleetSort,
         page: i64,
         page_size: i64,
-    ) -> Result<FleetPage, tokio_postgres::Error> {
+    ) -> Result<FleetPage, FleetStoreError> {
         let offset = (page - 1) * page_size;
         let query = format!(
             "SELECT request.repository_id, count(*)::BIGINT, max(receipt.activated_at), \
@@ -50,7 +50,8 @@ impl FleetStore {
             order_by = sort.order_by_clause(),
         );
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 &query,
                 &[
@@ -101,9 +102,10 @@ impl FleetStore {
         &self,
         tenant_id: &str,
         repository_id: &str,
-    ) -> Result<Option<RepositoryDetail>, tokio_postgres::Error> {
+    ) -> Result<Option<RepositoryDetail>, FleetStoreError> {
         let row = self
-            .client
+            .connection()
+            .await?
             .query_opt(
                 &format!(
                     "SELECT request.repository_id, count(*)::BIGINT, max(receipt.activated_at), \
@@ -174,9 +176,9 @@ impl FleetStore {
         repository_id: &str,
         before: Option<i64>,
         limit: i64,
-    ) -> Result<Vec<TimelineEvent>, SigningKeyError> {
-        let rows = self
-            .client
+    ) -> Result<Vec<TimelineEvent>, FleetStoreError> {
+        let connection = self.connection().await?;
+        let rows = connection
             .query(
                 "SELECT stream_position, occurred_at, payload_type, producer_id, signing_key_id \
                  FROM ledger_records \
@@ -189,7 +191,7 @@ impl FleetStore {
             .await?;
 
         let keys_by_id: HashMap<String, _> =
-            signing_keys::for_repository(&self.client, tenant_id, repository_id)
+            signing_keys::for_repository(&connection, tenant_id, repository_id)
                 .await?
                 .into_iter()
                 .map(|lifecycle| (lifecycle.record.signing_key_id.clone(), lifecycle))
@@ -238,12 +240,13 @@ impl FleetStore {
         &self,
         tenant_id: &str,
         repository_id: &str,
-    ) -> Result<Option<Vec<SigningKeyStatus>>, SigningKeyError> {
+    ) -> Result<Option<Vec<SigningKeyStatus>>, FleetStoreError> {
         if self.repository(tenant_id, repository_id).await?.is_none() {
             return Ok(None);
         }
         let now = SystemTime::now();
-        let keys = signing_keys::for_repository(&self.client, tenant_id, repository_id).await?;
+        let connection = self.connection().await?;
+        let keys = signing_keys::for_repository(&connection, tenant_id, repository_id).await?;
         Ok(Some(
             keys.into_iter()
                 .map(|lifecycle| {
@@ -290,7 +293,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let page = fleet
@@ -323,7 +329,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 
@@ -353,7 +362,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let envelope = EventEnvelope {
@@ -375,7 +387,10 @@ mod tests {
         };
         ledger.append(&envelope).await.expect("append envelope");
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let detail = fleet
@@ -411,7 +426,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         for sequence in 1..=3i64 {
@@ -435,7 +453,10 @@ mod tests {
             ledger.append(&envelope).await.expect("append envelope");
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 
@@ -494,7 +515,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let fact = StructuralFact {
@@ -530,7 +554,10 @@ mod tests {
             .await
             .expect("rebuild projection");
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let detail = fleet
@@ -572,7 +599,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let fact = StructuralFact {
@@ -618,7 +648,10 @@ mod tests {
             .await
             .expect("append non-structural record");
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 
@@ -695,7 +728,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 
@@ -769,7 +805,10 @@ mod tests {
         .expect("revoke second key");
         transaction.commit().await.expect("commit revocation");
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let keys = fleet
@@ -818,7 +857,10 @@ mod tests {
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
         let signing_key_id = format!("fleet-signing-key-{unique_id}");
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let envelope = EventEnvelope {
@@ -840,7 +882,10 @@ mod tests {
         };
         ledger.append(&envelope).await.expect("append envelope");
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let before_revocation = fleet
@@ -913,7 +958,10 @@ mod tests {
         let (tenant_id, repository_id) =
             enroll_and_activate(&database_url, &unique_id.to_string()).await;
 
-        let mut ledger = LedgerStore::connect(&database_url)
+        let ledger_pool =
+            crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                .expect("the test pool builds from a valid database url");
+        let ledger = LedgerStore::connect(&ledger_pool)
             .await
             .expect("connect ledger store");
         let envelope = EventEnvelope {
@@ -935,7 +983,10 @@ mod tests {
         };
         ledger.append(&envelope).await.expect("append envelope");
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
         let timeline = fleet
@@ -974,7 +1025,10 @@ mod tests {
             .await;
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 
@@ -1066,7 +1120,10 @@ mod tests {
         )
         .await;
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 
@@ -1131,7 +1188,10 @@ mod tests {
             .await;
         }
 
-        let fleet = FleetStore::connect(&database_url)
+        let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test pool builds from the gated database url");
+
+        let fleet = FleetStore::connect(&pool)
             .await
             .expect("connect fleet store");
 

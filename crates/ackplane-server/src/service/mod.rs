@@ -86,12 +86,17 @@ pub enum ConnectionState {
     Rejected,
 }
 
-/// The concrete gRPC service. The ledger is deliberately serialized: its
-/// append transaction borrows the PostgreSQL client mutably, and ordering on a
-/// stream is part of the receipt contract.
+/// The concrete gRPC service.
 pub struct NodeSyncService {
-    ledger: Arc<Mutex<LedgerStore>>,
-    supervisor: Option<Arc<Mutex<SupervisorStore>>>,
+    /// Not behind a `Mutex`, unlike `work`: since ADR-0143 this store checks a
+    /// connection out of the shared pool per call, so concurrent callers no
+    /// longer contend for one shared `Client` and nothing here needs `&mut`.
+    ledger: Arc<LedgerStore>,
+    /// Not behind a `Mutex`, unlike `ledger` and `work`: since ADR-0143 this
+    /// store checks a connection out of the shared pool per call, so
+    /// concurrent callers no longer contend for one shared `Client` and
+    /// nothing here needs `&mut`.
+    supervisor: Option<Arc<SupervisorStore>>,
     /// Not behind a `Mutex`, unlike its neighbours: since ADR-0143 this store
     /// checks a connection out of the shared pool per call, so concurrent
     /// callers no longer contend for one shared `Client` and nothing here
@@ -107,7 +112,7 @@ impl NodeSyncService {
     /// supervisor facts receive a retryable unavailable result.
     pub fn new(ledger: LedgerStore, flow_control: v1::FlowControl) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
+            ledger: Arc::new(ledger),
             supervisor: None,
             directives: None,
             work: None,
@@ -123,8 +128,8 @@ impl NodeSyncService {
         flow_control: v1::FlowControl,
     ) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
-            supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            ledger: Arc::new(ledger),
+            supervisor: Some(Arc::new(supervisor)),
             directives: None,
             work: None,
             flow_control,
@@ -140,8 +145,8 @@ impl NodeSyncService {
         flow_control: v1::FlowControl,
     ) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
-            supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            ledger: Arc::new(ledger),
+            supervisor: Some(Arc::new(supervisor)),
             directives: Some(Arc::new(directives)),
             work: None,
             flow_control,
@@ -156,7 +161,7 @@ impl NodeSyncService {
         flow_control: v1::FlowControl,
     ) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
+            ledger: Arc::new(ledger),
             supervisor: None,
             directives: None,
             work: Some(Arc::new(Mutex::new(work))),
@@ -174,8 +179,8 @@ impl NodeSyncService {
         flow_control: v1::FlowControl,
     ) -> Self {
         Self {
-            ledger: Arc::new(Mutex::new(ledger)),
-            supervisor: Some(Arc::new(Mutex::new(supervisor))),
+            ledger: Arc::new(ledger),
+            supervisor: Some(Arc::new(supervisor)),
             directives: Some(Arc::new(directives)),
             work: Some(Arc::new(Mutex::new(work))),
             flow_control,
@@ -226,17 +231,14 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                     // target this connection may now be
                                     // owed work for.
                                     let addressed = directive_delivery::addressed_session(&frame);
-                                    let mut responses = {
-                                        let mut store = supervisor.lock().await;
-                                        supervisor::handle_authenticated_frame(
-                                            frame,
-                                            &tenant_id,
-                                            &repository_id,
-                                            &node_id,
-                                            &mut store,
-                                        )
-                                        .await
-                                    };
+                                    let mut responses = supervisor::handle_authenticated_frame(
+                                        frame,
+                                        &tenant_id,
+                                        &repository_id,
+                                        &node_id,
+                                        supervisor,
+                                    )
+                                    .await;
                                     // Only after the session itself was
                                     // accepted: delivering against a
                                     // refused session would address a
@@ -288,12 +290,11 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                     .await;
                                     match outcome {
                                         Ok(outcome) => {
-                                            let store = supervisor.lock().await;
                                             match directive_receipt::acknowledgement(
                                                 outcome,
                                                 &tenant_id,
                                                 &repository_id,
-                                                &store,
+                                                supervisor,
                                             )
                                             .await
                                             {
@@ -333,16 +334,12 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                     &mut state,
                                     |envelope| {
                                         let ledger = Arc::clone(&ledger);
-                                        async move { ledger.lock().await.append(&envelope).await }
+                                        async move { ledger.append(&envelope).await }
                                     },
                                     |binding| {
                                         let ledger = Arc::clone(&ledger);
                                         async move {
-                                            ledger
-                                                .lock()
-                                                .await
-                                                .resolve_signing_key(&binding.as_binding())
-                                                .await
+                                            ledger.resolve_signing_key(&binding.as_binding()).await
                                         }
                                     },
                                 )

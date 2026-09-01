@@ -36,10 +36,10 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     // none is left half-migrated.
     let pool = crate::db_pool::build_pool(database_url, crate::db_pool::SERVICE_POOL_MAX_SIZE)
         .map_err(|error| format!("building the database pool failed: {error}"))?;
-    LedgerStore::connect(database_url)
+    LedgerStore::connect(&pool)
         .await
         .map_err(|error| format!("ledger schema failed: {error}"))?;
-    EnrollmentStore::connect(database_url)
+    EnrollmentStore::connect(&pool)
         .await
         .map_err(|error| format!("enrollment schema failed: {error}"))?;
     ClaimStore::connect(&pool)
@@ -51,13 +51,13 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     KnowledgeStore::connect(&pool)
         .await
         .map_err(|error| format!("knowledge schema failed: {error}"))?;
-    EvidenceStore::connect(database_url)
+    EvidenceStore::connect(&pool)
         .await
         .map_err(|error| format!("evidence schema failed: {error}"))?;
-    ConstitutionStore::connect(database_url)
+    ConstitutionStore::connect(&pool)
         .await
         .map_err(|error| format!("constitution schema failed: {error}"))?;
-    TelemetryStore::connect(database_url)
+    TelemetryStore::connect(&pool)
         .await
         .map_err(|error| format!("telemetry schema failed: {error}"))?;
     DelegationStore::connect(&pool)
@@ -66,7 +66,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     DirectiveStore::connect(&pool)
         .await
         .map_err(|error| format!("directive schema failed: {error}"))?;
-    SupervisorStore::connect(database_url)
+    SupervisorStore::connect(&pool)
         .await
         .map_err(|error| format!("supervisor schema failed: {error}"))?;
     LiveFeedStore::connect(&pool)

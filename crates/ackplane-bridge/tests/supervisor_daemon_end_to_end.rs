@@ -16,6 +16,7 @@ mod supervisor_api_support;
 
 use std::{path::PathBuf, time::Duration};
 
+use ackplane_client::node_identity::{NodeIdentity, NodeSignerSource};
 use ackplane_client::{auth::SeedSigner, node_sync::NodeSyncConnection};
 use ackplane_protocol::{
     supervisor::directive_payload_digest,
@@ -25,10 +26,7 @@ use ackplane_server::{
     directive_store::DirectiveStore, ledger::LedgerStore, service::NodeSyncService,
     supervisor_store::SupervisorStore,
 };
-use ackplane_supervisor::{
-    config::{SignerSource, SupervisorConfig},
-    daemon, SupervisorInbox, SupervisorOutbox,
-};
+use ackplane_supervisor::{config::SupervisorConfig, daemon, SupervisorInbox, SupervisorOutbox};
 use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::oneshot;
@@ -43,17 +41,17 @@ struct TestServer {
 }
 
 async fn start_sync_server(database_url: &str) -> TestServer {
-    let ledger = LedgerStore::connect(database_url)
-        .await
-        .expect("the gated test database should accept ledger migrations");
-    let supervisors = SupervisorStore::connect(database_url)
-        .await
-        .expect("the gated test database should accept supervisor migrations");
     let db_pool = ackplane_server::db_pool::build_pool(
         database_url,
         ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
     )
     .expect("the gated test database url builds a pool");
+    let ledger = LedgerStore::connect(&db_pool)
+        .await
+        .expect("the gated test database should accept ledger migrations");
+    let supervisors = SupervisorStore::connect(&db_pool)
+        .await
+        .expect("the gated test database should accept supervisor migrations");
     let directives = DirectiveStore::connect(&db_pool)
         .await
         .expect("the gated test database should accept directive migrations");
@@ -100,14 +98,16 @@ fn config(
 ) -> SupervisorConfig {
     SupervisorConfig {
         endpoint: endpoint.to_string(),
-        tenant_id: tenant.to_string(),
-        repository_id: repository.to_string(),
-        node_id: node.to_string(),
-        signing_key_id: format!("signing-key-{unique}"),
+        identity: NodeIdentity {
+            tenant_id: tenant.to_string(),
+            repository_id: repository.to_string(),
+            node_id: node.to_string(),
+            signing_key_id: format!("signing-key-{unique}"),
+            signer_source: NodeSignerSource::Seed(Box::new(
+                Sha256::digest(format!("key-{unique}").as_bytes()).into(),
+            )),
+        },
         supervisor_id: format!("supervisor-{unique}"),
-        signer_source: SignerSource::Seed(Box::new(
-            Sha256::digest(format!("key-{unique}").as_bytes()).into(),
-        )),
         state_dir: std::env::temp_dir().join(format!("ackplane-supervisor-{unique}")),
         heartbeat_interval: Duration::from_secs(30),
     }
@@ -119,18 +119,18 @@ fn database_url() -> Option<String> {
 
 async fn connect(server: &TestServer, config: &SupervisorConfig) -> NodeSyncConnection {
     let signer = SeedSigner::new(
-        config.signing_key_id.clone(),
-        config.node_id.clone(),
-        match &config.signer_source {
-            SignerSource::Seed(seed) => seed.as_ref(),
-            SignerSource::CredentialFacility { .. } => panic!("the fixture uses a seed"),
+        config.identity.signing_key_id.clone(),
+        config.identity.node_id.clone(),
+        match &config.identity.signer_source {
+            NodeSignerSource::Seed(seed) => seed.as_ref(),
+            NodeSignerSource::CredentialFacility { .. } => panic!("the fixture uses a seed"),
         },
     );
     NodeSyncConnection::open(
         &server.endpoint,
         &signer,
-        &config.tenant_id,
-        &config.repository_id,
+        &config.identity.tenant_id,
+        &config.identity.repository_id,
         vec!["synchronize".to_string()],
         0,
     )
@@ -181,10 +181,10 @@ fn session_frame(session: &ackplane_protocol::supervisor::SupervisorSession) -> 
 fn notify_directive(config: &SupervisorConfig, session_id: &str, unique: &str) -> AgentDirective {
     let mut directive = AgentDirective {
         directive_id: format!("directive-{unique}"),
-        tenant_id: config.tenant_id.clone(),
+        tenant_id: config.identity.tenant_id.clone(),
         project_id: "project:slice5".to_string(),
-        repository_id: config.repository_id.clone(),
-        target_node_id: config.node_id.clone(),
+        repository_id: config.identity.repository_id.clone(),
+        target_node_id: config.identity.node_id.clone(),
         target_agent_session_id: session_id.to_string(),
         kind: v1::DirectiveKind::Notify as i32,
         schema_version: "v1".to_string(),
@@ -242,18 +242,18 @@ async fn the_daemon_registers_and_opens_a_session_against_a_real_ackplane() {
         .expect("the daemon's registration must be protocol-valid");
 
     let signer = SeedSigner::new(
-        config.signing_key_id.clone(),
-        config.node_id.clone(),
-        match &config.signer_source {
-            SignerSource::Seed(seed) => seed.as_ref(),
-            SignerSource::CredentialFacility { .. } => panic!("the fixture uses a seed"),
+        config.identity.signing_key_id.clone(),
+        config.identity.node_id.clone(),
+        match &config.identity.signer_source {
+            NodeSignerSource::Seed(seed) => seed.as_ref(),
+            NodeSignerSource::CredentialFacility { .. } => panic!("the fixture uses a seed"),
         },
     );
     let mut connection = NodeSyncConnection::open(
         &config.endpoint,
         &signer,
-        &config.tenant_id,
-        &config.repository_id,
+        &config.identity.tenant_id,
+        &config.identity.repository_id,
         vec!["synchronize".to_string()],
         0,
     )
@@ -326,10 +326,10 @@ async fn a_worker_driven_directive_is_receipted_refused_not_applied() {
     // declare the capability.
     let mut directive = AgentDirective {
         directive_id: format!("directive-{unique}"),
-        tenant_id: config.tenant_id.clone(),
+        tenant_id: config.identity.tenant_id.clone(),
         project_id: "project:slice5".to_string(),
-        repository_id: config.repository_id.clone(),
-        target_node_id: config.node_id.clone(),
+        repository_id: config.identity.repository_id.clone(),
+        target_node_id: config.identity.node_id.clone(),
         target_agent_session_id: session.session_id.clone(),
         kind: v1::DirectiveKind::Pause as i32,
         schema_version: "v1".to_string(),
@@ -395,10 +395,10 @@ async fn a_notification_is_accepted_because_recording_it_is_the_whole_action() {
 
     let mut directive = AgentDirective {
         directive_id: format!("directive-{unique}"),
-        tenant_id: config.tenant_id.clone(),
+        tenant_id: config.identity.tenant_id.clone(),
         project_id: "project:slice5".to_string(),
-        repository_id: config.repository_id.clone(),
-        target_node_id: config.node_id.clone(),
+        repository_id: config.identity.repository_id.clone(),
+        target_node_id: config.identity.node_id.clone(),
         target_agent_session_id: session.session_id.clone(),
         kind: v1::DirectiveKind::Notify as i32,
         schema_version: "v1".to_string(),

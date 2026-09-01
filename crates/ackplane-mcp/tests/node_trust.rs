@@ -50,10 +50,15 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
         return;
     };
 
-    let enrollment_store = EnrollmentStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment_store = EnrollmentStore::connect(&pool)
         .await
         .expect("the gated test database should accept enrollment migrations");
-    let ledger = LedgerStore::connect(&database_url)
+    let ledger = LedgerStore::connect(&pool)
         .await
         .expect("the gated test database should accept ledger migrations");
 
@@ -111,7 +116,7 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
         .await
         .expect("submit_enrollment_request should round-trip over the wire");
 
-    let mut store = EnrollmentStore::connect(&database_url)
+    let store = EnrollmentStore::connect(&pool)
         .await
         .expect("the gated test database should accept a second enrollment connection");
     store

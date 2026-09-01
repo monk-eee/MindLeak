@@ -309,7 +309,7 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = crate::ledger::LedgerStore::connect(&url)
+        let ledger = crate::ledger::LedgerStore::connect(&pool)
             .await
             .expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");
@@ -385,7 +385,7 @@ mod tests {
         let url = require_test_database!();
         let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut ledger = crate::ledger::LedgerStore::connect(&url)
+        let ledger = crate::ledger::LedgerStore::connect(&pool)
             .await
             .expect("connect ledger");
         let projector = Projector::connect(&pool).await.expect("connect projector");

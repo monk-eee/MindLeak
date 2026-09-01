@@ -51,6 +51,12 @@ pub enum KeyResolution {
 pub enum SigningKeyError {
     #[error("signing key database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    /// Only reachable through a caller (e.g. `LedgerStore::resolve_signing_key`)
+    /// that checks out its own connection before calling into this module --
+    /// `register`/`retire`/`resolve` etc. take an already-open
+    /// `&Transaction`/`&Client` and never see a pool themselves.
+    #[error("signing key lookup could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
 }
 
 /// Record a key inside the caller's transaction, so a node becomes able to sign

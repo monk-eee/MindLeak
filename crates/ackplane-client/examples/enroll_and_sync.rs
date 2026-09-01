@@ -134,7 +134,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2. Approve it. Standing in for the administrator ADR-0085 requires,
     // played here for demonstration only -- see the module doc comment.
-    let mut store = EnrollmentStore::connect(&db_url).await?;
+    let pool = ackplane_server::db_pool::build_pool(&db_url, 1)?;
+    let store = EnrollmentStore::connect(&pool).await?;
     let approval = store
         .approve(&EnrollmentApproval {
             request_id: request_id.clone(),

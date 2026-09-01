@@ -34,11 +34,7 @@
 
 use std::time::Duration;
 
-use ackplane_client::{
-    auth::{ClaimSigner, CredentialFacilitySigner, SeedSigner},
-    node_sync::NodeSyncConnection,
-    ClientError,
-};
+use ackplane_client::{auth::ClaimSigner, node_sync::NodeSyncConnection, ClientError};
 use ackplane_protocol::supervisor::{
     SupervisorCapabilities, SupervisorDirectiveCapability, SupervisorIdentity,
     SupervisorOutboxDurability, SupervisorRegistration, SupervisorRuntime, SupervisorSession,
@@ -54,7 +50,7 @@ pub use delivery::resend_pending;
 use frames::{heartbeat_frame, registration_frame, session_frame};
 
 use crate::{
-    config::{SignerSource, SupervisorConfig},
+    config::SupervisorConfig,
     reconcile::{reconcile, Reconciliation},
     InboxError, OutboxError, SupervisorInbox, SupervisorOutbox,
 };
@@ -94,22 +90,15 @@ pub enum DaemonError {
 const RUNTIME: SupervisorRuntime = SupervisorRuntime::LocalMachine;
 
 /// Build the signer this configuration selected.
+///
+/// The selection itself lives on [`NodeIdentity`], shared with every other
+/// process that authenticates as this node; only the error mapping is the
+/// daemon's.
 pub fn signer(config: &SupervisorConfig) -> Result<Box<dyn ClaimSigner>, DaemonError> {
-    match &config.signer_source {
-        SignerSource::Seed(seed) => Ok(Box::new(SeedSigner::new(
-            config.signing_key_id.clone(),
-            config.node_id.clone(),
-            seed.as_ref(),
-        ))),
-        SignerSource::CredentialFacility { service, account } => CredentialFacilitySigner::load(
-            config.signing_key_id.clone(),
-            config.node_id.clone(),
-            service,
-            account,
-        )
-        .map(|signer| Box::new(signer) as Box<dyn ClaimSigner>)
-        .map_err(|error| DaemonError::Signer(error.to_string())),
-    }
+    config
+        .identity
+        .signer()
+        .map_err(|error| DaemonError::Signer(error.to_string()))
 }
 
 /// This supervisor's registration: an honest declaration of what it can do.
@@ -122,9 +111,9 @@ pub fn registration(config: &SupervisorConfig) -> SupervisorRegistration {
     SupervisorRegistration {
         supervisor_id: config.supervisor_id.clone(),
         identity: SupervisorIdentity {
-            tenant_id: config.tenant_id.clone(),
-            repository_id: config.repository_id.clone(),
-            node_id: config.node_id.clone(),
+            tenant_id: config.identity.tenant_id.clone(),
+            repository_id: config.identity.repository_id.clone(),
+            node_id: config.identity.node_id.clone(),
         },
         supervisor_version: env!("CARGO_PKG_VERSION").to_string(),
         protocol_version: "v1".to_string(),
@@ -176,8 +165,8 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
     let mut connection = NodeSyncConnection::open(
         &config.endpoint,
         signer.as_ref(),
-        &config.tenant_id,
-        &config.repository_id,
+        &config.identity.tenant_id,
+        &config.identity.repository_id,
         vec!["synchronize".to_string()],
         positions.acknowledged,
     )
@@ -384,19 +373,21 @@ pub async fn run(config: &SupervisorConfig, reconnect_delay: Duration) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SignerSource;
+    use ackplane_client::node_identity::{NodeIdentity, NodeSignerSource};
     use ackplane_protocol::v1;
     use std::path::PathBuf;
 
     fn config() -> SupervisorConfig {
         SupervisorConfig {
             endpoint: "http://127.0.0.1:8443".to_string(),
-            tenant_id: "tenant-1".to_string(),
-            repository_id: "repository-1".to_string(),
-            node_id: "node-1".to_string(),
-            signing_key_id: "signing-key-1".to_string(),
+            identity: NodeIdentity {
+                tenant_id: "tenant-1".to_string(),
+                repository_id: "repository-1".to_string(),
+                node_id: "node-1".to_string(),
+                signing_key_id: "signing-key-1".to_string(),
+                signer_source: NodeSignerSource::Seed(Box::new([7; 32])),
+            },
             supervisor_id: "supervisor-1".to_string(),
-            signer_source: SignerSource::Seed(Box::new([7; 32])),
             state_dir: PathBuf::from(".mindleak/supervisor"),
             heartbeat_interval: Duration::from_secs(30),
         }

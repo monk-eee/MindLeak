@@ -62,7 +62,12 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
         proposed_node_id: node_id,
         public_key_fingerprint: fingerprint,
     };
-    let mut enrollment = EnrollmentStore::connect(database_url)
+    let enrollment_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment = EnrollmentStore::connect(&enrollment_pool)
         .await
         .expect("connect enrollment store");
     enrollment
@@ -114,11 +119,16 @@ async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
             .await
             .expect("connect Work store"),
     );
-    let fleet = Arc::new(
-        FleetStore::connect(database_url)
+    let fleet = Arc::new({
+        let pool = ackplane_server::db_pool::build_pool(
+            database_url,
+            ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+        )
+        .expect("the test pool builds from the gated database url");
+        FleetStore::connect(&pool)
             .await
-            .expect("connect Fleet store"),
-    );
+            .expect("connect Fleet store")
+    });
     work_routes(WorkApiState::new(
         work,
         fleet,

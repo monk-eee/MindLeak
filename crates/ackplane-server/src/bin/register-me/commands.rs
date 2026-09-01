@@ -103,7 +103,9 @@ pub(super) async fn run_approve(flags: HashMap<String, String>) -> Result<(), St
          developer shortcut, not how a real deployment approves nodes."
     );
 
-    let mut store = EnrollmentStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(&database_url, 1)
+        .map_err(|error| format!("could not build a database pool for {database_url}: {error}"))?;
+    let store = EnrollmentStore::connect(&pool)
         .await
         .map_err(|error| format!("could not connect to {database_url}: {error}"))?;
     let status = store

@@ -68,10 +68,15 @@ struct TestServer {
 }
 
 async fn start_server(database_url: &str) -> TestServer {
-    let enrollment_store = EnrollmentStore::connect(database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment_store = EnrollmentStore::connect(&pool)
         .await
         .expect("the gated test database should accept enrollment migrations");
-    let ledger = LedgerStore::connect(database_url)
+    let ledger = LedgerStore::connect(&pool)
         .await
         .expect("the gated test database should accept ledger migrations");
     let work_store = WorkStore::connect(database_url)
@@ -151,7 +156,12 @@ async fn enroll_and_activate(endpoint: &str, database_url: &str) -> EnrolledNode
         .await
         .expect("submit_enrollment_request should round-trip over the wire");
 
-    let mut store = EnrollmentStore::connect(database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let store = EnrollmentStore::connect(&pool)
         .await
         .expect("the gated test database should accept an enrollment connection");
     store

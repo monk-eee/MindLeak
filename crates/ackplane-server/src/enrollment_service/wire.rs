@@ -265,6 +265,9 @@ pub(super) fn map_store_error(error: EnrollmentStoreError) -> Status {
         EnrollmentStoreError::Database(_)
         | EnrollmentStoreError::SigningKey(_)
         | EnrollmentStoreError::UnknownState { .. } => Status::internal(error.to_string()),
+        // A bounded pool timeout is a condition the caller can retry, not an
+        // internal fault (ADR-0143 decision 5, mirroring ClaimStore's mapping).
+        EnrollmentStoreError::PoolExhausted(_) => Status::unavailable(error.to_string()),
     }
 }
 

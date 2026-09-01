@@ -66,7 +66,12 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
         proposed_node_id: node_id,
         public_key_fingerprint: fingerprint.clone(),
     };
-    let mut enrollment = EnrollmentStore::connect(database_url)
+    let enrollment_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from a valid database url");
+    let enrollment = EnrollmentStore::connect(&enrollment_pool)
         .await
         .expect("connect enrollment store");
     enrollment
@@ -112,14 +117,14 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
         .expect("activate enrollment");
 }
 
-async fn application(pool: &PgPool, database_url: &str, tenant_id: &str) -> axum::Router {
+async fn application(pool: &PgPool, tenant_id: &str) -> axum::Router {
     let knowledge = Arc::new(
         KnowledgeStore::connect(pool)
             .await
             .expect("connect Knowledge store"),
     );
     let fleet = Arc::new(
-        FleetStore::connect(database_url)
+        FleetStore::connect(pool)
             .await
             .expect("connect Fleet store"),
     );
@@ -220,7 +225,7 @@ async fn knowledge_history_exposes_lifecycle_provenance_without_cross_tenant_dat
         .await
         .expect("retire knowledge"));
 
-    let app = application(&pool, &database_url, &tenant_id).await;
+    let app = application(&pool, &tenant_id).await;
     let all = app
         .clone()
         .oneshot(
@@ -430,7 +435,7 @@ async fn revalidation_queue_classifies_active_records_and_stays_within_its_tenan
         .await
         .expect("record contradicting evidence");
 
-    let app = application(&pool, &database_url, &tenant_id).await;
+    let app = application(&pool, &tenant_id).await;
     let unfiltered = app
         .clone()
         .oneshot(

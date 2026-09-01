@@ -41,7 +41,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use tokio::sync::Mutex;
 
 mod handlers;
 
@@ -61,10 +60,7 @@ const GRAPH_PAGE: &str = include_str!("../static/graph.html");
 struct AppState {
     fleet: Arc<FleetStore>,
     knowledge: Arc<KnowledgeStore>,
-    // A plain read-only Arc until ADR-0126: propose_clause takes &mut self,
-    // so the same Mutex-per-mutable-store pattern claims/ClaimStore already
-    // uses applies here too.
-    constitution: Arc<Mutex<ConstitutionStore>>,
+    constitution: Arc<ConstitutionStore>,
     claims: Arc<ClaimStore>,
     projector: Arc<Projector>,
     readiness: Arc<ReadinessStore>,
@@ -131,7 +127,7 @@ async fn main() {
             return;
         }
     };
-    let fleet_store = match FleetStore::connect(config.database_url()).await {
+    let fleet_store = match FleetStore::connect(&db_pool).await {
         Ok(fleet) => Arc::new(fleet),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane read models: {error}");
@@ -145,8 +141,8 @@ async fn main() {
             return;
         }
     };
-    let constitution_store = match ConstitutionStore::connect(config.database_url()).await {
-        Ok(constitution) => Arc::new(Mutex::new(constitution)),
+    let constitution_store = match ConstitutionStore::connect(&db_pool).await {
+        Ok(constitution) => Arc::new(constitution),
         Err(error) => {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane constitution domain: {error}"
@@ -180,28 +176,28 @@ async fn main() {
             return;
         }
     };
-    let telemetry_store = match TelemetryStore::connect(config.database_url()).await {
+    let telemetry_store = match TelemetryStore::connect(&db_pool).await {
         Ok(telemetry) => Arc::new(telemetry),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane telemetry domain: {error}");
             return;
         }
     };
-    let evidence_store = match BridgeEvidenceStore::connect(config.database_url()).await {
+    let evidence_store = match BridgeEvidenceStore::connect(&db_pool).await {
         Ok(evidence) => Arc::new(evidence),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane evidence domain: {error}");
             return;
         }
     };
-    let supervisor_store = match SupervisorStore::connect(config.database_url()).await {
+    let supervisor_store = match SupervisorStore::connect(&db_pool).await {
         Ok(store) => Arc::new(store),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane supervisor store: {error}");
             return;
         }
     };
-    let context_packet_store = match ContextPacketStore::connect(config.database_url()).await {
+    let context_packet_store = match ContextPacketStore::connect(&db_pool).await {
         Ok(context_packets) => Arc::new(context_packets),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane context packets: {error}");

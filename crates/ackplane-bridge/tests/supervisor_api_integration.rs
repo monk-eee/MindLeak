@@ -32,7 +32,12 @@ async fn supervisor_inventory_is_tenant_scoped_ordered_and_redacted() {
     let node_id = enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
     let active_supervisor_id = format!("supervisor-active-{unique}");
     let never_supervisor_id = format!("supervisor-never-{unique}");
-    let mut supervisors = SupervisorStore::connect(&database_url)
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test database url should build a pool");
+    let supervisors = SupervisorStore::connect(&pool)
         .await
         .expect("connect Supervisor store for fixtures");
     let active_registration = supervisors
@@ -106,7 +111,7 @@ async fn supervisor_inventory_is_tenant_scoped_ordered_and_redacted() {
         })
         .await
         .expect("record pause receipt");
-    let app = application(&database_url, &tenant_id).await;
+    let app = application(&pool, &database_url, &tenant_id).await;
 
     let inventory = app
         .clone()
@@ -276,7 +281,7 @@ async fn supervisor_inventory_is_tenant_scoped_ordered_and_redacted() {
         );
     }
 
-    let foreign_app = application(&database_url, &format!("foreign-{unique}")).await;
+    let foreign_app = application(&pool, &database_url, &format!("foreign-{unique}")).await;
     let foreign_response = foreign_app
         .oneshot(
             Request::builder()

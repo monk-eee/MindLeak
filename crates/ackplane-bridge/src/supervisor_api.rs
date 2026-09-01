@@ -274,6 +274,12 @@ async fn ensure_supervisor_visible(
 }
 
 fn supervisor_store_error(error: SupervisorStoreError) -> StatusCode {
+    // A bounded pool timeout is a condition the caller can retry, not an
+    // internal fault (ADR-0143 decision 5, mirroring ClaimStore's mapping).
+    if matches!(error, SupervisorStoreError::PoolExhausted(_)) {
+        tracing::error!(%error, "Bridge supervisor query could not obtain a database connection");
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
     tracing::error!(%error, "Bridge supervisor query failed");
     StatusCode::INTERNAL_SERVER_ERROR
 }
