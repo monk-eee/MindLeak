@@ -25,7 +25,6 @@ use axum::{
     Router,
 };
 use serde::Serialize;
-use tokio::sync::Mutex;
 
 mod listing;
 mod mutations;
@@ -38,10 +37,7 @@ const DESIGN_PAGE: &str = include_str!("../../static/design.html");
 #[derive(Clone)]
 pub struct DesignApiState {
     designs: Arc<DesignStore>,
-    // `Mutex`-wrapped, not a plain `Arc`, because `record_materialization`
-    // takes `&mut self` -- the same reason Bridge's `ClaimStore` handle used
-    // to be a `Mutex` before ADR-0143 retired it there (ADR-0111).
-    materializations: Arc<Mutex<MaterializationStore>>,
+    materializations: Arc<MaterializationStore>,
     fleet: Arc<FleetStore>,
     tenant_id: Arc<str>,
 }
@@ -49,7 +45,7 @@ pub struct DesignApiState {
 impl DesignApiState {
     pub fn new(
         designs: Arc<DesignStore>,
-        materializations: Arc<Mutex<MaterializationStore>>,
+        materializations: Arc<MaterializationStore>,
         fleet: Arc<FleetStore>,
         tenant_id: Arc<str>,
     ) -> Self {

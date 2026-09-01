@@ -144,8 +144,6 @@ pub(super) async fn design_detail(
         .collect();
     let materializations = state
         .materializations
-        .lock()
-        .await
         .list_materializations(state.tenant_id.as_ref(), &repository_id, &design_id)
         .await
         .map_err(|error| {

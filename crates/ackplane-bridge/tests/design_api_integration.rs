@@ -25,7 +25,6 @@ use axum::{
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 
 fn unique_id(prefix: &str) -> String {
@@ -126,11 +125,11 @@ async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
             .await
             .expect("connect Design store"),
     );
-    let materializations = Arc::new(Mutex::new(
-        MaterializationStore::connect(database_url)
+    let materializations = Arc::new(
+        MaterializationStore::connect(&db_pool)
             .await
             .expect("connect Design materialization store"),
-    ));
+    );
     let fleet = Arc::new(
         FleetStore::connect(&db_pool)
             .await

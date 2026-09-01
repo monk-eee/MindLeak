@@ -61,6 +61,7 @@ fn record_materialization_error(error: MaterializationStoreError) -> StatusCode 
         | MaterializationStoreError::InvalidGoalId
         | MaterializationStoreError::TooManyWorkTaskIds => StatusCode::BAD_REQUEST,
         MaterializationStoreError::IdempotencyConflict { .. } => StatusCode::CONFLICT,
+        MaterializationStoreError::PoolExhausted(_) => StatusCode::SERVICE_UNAVAILABLE,
         MaterializationStoreError::Database(ref database_error)
             if database_error.code()
                 == Some(&tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION) =>
@@ -191,8 +192,6 @@ pub(super) async fn record_design_materialization(
     let _ = request.actor;
     let revision = state
         .materializations
-        .lock()
-        .await
         .record_materialization(RecordMaterializationRequest {
             tenant_id: state.tenant_id.to_string(),
             repository_id,
