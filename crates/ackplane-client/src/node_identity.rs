@@ -2,14 +2,12 @@
 //! standard `MINDLEAK_ACKPLANE_*` environment variables (ADR-0100 decision 5,
 //! ADR-0116).
 //!
-//! `ackplane-supervisor`'s `config.rs` and `lodestar-mcp`'s
-//! `federation.rs` each already read this exact variable set and build a
-//! signer from it independently. This is the third caller of the identical
-//! pattern (`ackplane-mcp`, ADR-0137 clause 1) and, per this repository's own
-//! reuse discipline ("write it twice, extract on the third"), it is the
-//! shared implementation those two callers extend into rather than a fresh
-//! fork. Migrating them onto this version is separate follow-up work -- see
-//! `gaps.d/three-callers-independently-resolve-the-same-node-identity-env-vars.md`.
+//! `ackplane-supervisor`'s `config.rs`, `lodestar-mcp`'s `federation.rs` and
+//! `ackplane-mcp`'s `node_trust.rs` all resolve this repository's enrolled
+//! node identity from the same variables. This module is the one
+//! implementation they share, so a change to the credential-facility account
+//! scheme, the service name, or the seed encoding reaches every process that
+//! authenticates as this node instead of one of them.
 //!
 //! Deliberately distinct from [`crate::identity`]'s file-based *candidate*
 //! identity: that module answers "what is this repository asking to be
@@ -93,26 +91,86 @@ impl NodeIdentity {
     }
 }
 
+/// Why a node identity could not be resolved.
+///
+/// A bare `None` forced every caller that wanted a useful refusal to
+/// reconstruct the reason itself, which is exactly why `ackplane-supervisor`
+/// grew a parallel resolver with its own missing-variable tracking and
+/// `ackplane-mcp` settled for listing *every* variable rather than the ones
+/// actually absent. Naming the cause here is what lets both drop their copies
+/// without either losing the message quality it already had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NodeIdentityError {
+    /// Required variables that are unset or blank. Reported together rather
+    /// than one per run: an operator configuring a new node otherwise learns
+    /// about the next missing variable only after fixing the previous one.
+    Missing(Vec<&'static str>),
+    /// `NODE_SIGNING_KEY_SEED_ENV` was set but is not a 64-character hex
+    /// encoding of a 32-byte Ed25519 seed. Distinct from `Missing`: the
+    /// operator configured the override and got it wrong, which is a
+    /// different fix from not configuring it at all.
+    MalformedSeed,
+}
+
+impl std::fmt::Display for NodeIdentityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(names) => write!(
+                formatter,
+                "this node's enrolled identity is not declared: {} is not set. \
+                 Enrol this node first (`register-me`), then declare it here.",
+                names.join(", ")
+            ),
+            Self::MalformedSeed => write!(
+                formatter,
+                "{NODE_SIGNING_KEY_SEED_ENV} must be 64 hex characters (a 32-byte Ed25519 \
+                 seed). Unset it to use the OS credential facility instead."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for NodeIdentityError {}
+
 /// Read this repository's enrolled node identity from the explicit
 /// environment variables every colocated process already reads
-/// (`ackplane-supervisor`, `lodestar-mcp`). `None` if any required variable
-/// is unset, blank, or malformed -- the caller decides what that means.
-pub fn resolve_node_identity<F>(environment: &F) -> Option<NodeIdentity>
+/// (`ackplane-supervisor`, `lodestar-mcp`, `ackplane-mcp`).
+///
+/// Every missing required variable is reported together, so a caller can
+/// name all of them in one refusal. The caller still decides what a failure
+/// *means* -- refusing to serve, running unfederated, or reporting a
+/// configuration error -- this only decides what the environment says.
+pub fn resolve_node_identity<F>(environment: &F) -> Result<NodeIdentity, NodeIdentityError>
 where
     F: Fn(&str) -> Option<String>,
 {
-    let tenant_id = non_empty(environment(TENANT_ID_ENV))?;
-    let repository_id = non_empty(environment(REPOSITORY_ID_ENV))?;
-    let node_id = non_empty(environment(NODE_ID_ENV))?;
-    let signing_key_id = non_empty(environment(SIGNING_KEY_ID_ENV))?;
+    let mut missing = Vec::new();
+    let mut require = |name: &'static str| match non_empty(environment(name)) {
+        Some(value) => value,
+        None => {
+            missing.push(name);
+            String::new()
+        }
+    };
+
+    let tenant_id = require(TENANT_ID_ENV);
+    let repository_id = require(REPOSITORY_ID_ENV);
+    let node_id = require(NODE_ID_ENV);
+    let signing_key_id = require(SIGNING_KEY_ID_ENV);
+    if !missing.is_empty() {
+        return Err(NodeIdentityError::Missing(missing));
+    }
+
     let signer_source = match non_empty(environment(NODE_SIGNING_KEY_SEED_ENV)) {
-        Some(hex) => NodeSignerSource::Seed(Box::new(decode_seed(&hex)?)),
+        Some(hex) => NodeSignerSource::Seed(Box::new(
+            decode_seed(&hex).ok_or(NodeIdentityError::MalformedSeed)?,
+        )),
         None => NodeSignerSource::CredentialFacility {
             service: CREDENTIAL_FACILITY_SERVICE.to_string(),
             account: credential_facility_account(&tenant_id, &repository_id, &node_id),
         },
     };
-    Some(NodeIdentity {
+    Ok(NodeIdentity {
         tenant_id,
         repository_id,
         node_id,
@@ -158,30 +216,72 @@ mod tests {
     }
 
     #[test]
-    fn nothing_configured_resolves_to_nothing() {
-        assert!(resolve_node_identity(&env(&[])).is_none());
+    fn nothing_configured_names_every_missing_variable() {
+        // Regression: this returned a bare `None`, so a caller wanting to
+        // tell the operator what to fix had to re-derive the list itself --
+        // which is how the supervisor ended up with a parallel resolver.
+        assert_eq!(
+            resolve_node_identity(&env(&[])),
+            Err(NodeIdentityError::Missing(NODE_IDENTITY_ENV_VARS.to_vec()))
+        );
     }
 
     #[test]
-    fn a_missing_required_variable_resolves_to_nothing() {
-        assert!(resolve_node_identity(&env(&[
-            (TENANT_ID_ENV, "tenant-1"),
-            (REPOSITORY_ID_ENV, "repository-1"),
-            (NODE_ID_ENV, "node-1"),
-            // SIGNING_KEY_ID_ENV deliberately absent
-        ]))
-        .is_none());
+    fn a_missing_required_variable_is_named_and_the_others_are_not() {
+        assert_eq!(
+            resolve_node_identity(&env(&[
+                (TENANT_ID_ENV, "tenant-1"),
+                (REPOSITORY_ID_ENV, "repository-1"),
+                (NODE_ID_ENV, "node-1"),
+                // SIGNING_KEY_ID_ENV deliberately absent
+            ])),
+            Err(NodeIdentityError::Missing(vec![SIGNING_KEY_ID_ENV]))
+        );
     }
 
     #[test]
     fn a_blank_required_variable_is_treated_as_unset() {
-        assert!(resolve_node_identity(&env(&[
-            (TENANT_ID_ENV, "tenant-1"),
-            (REPOSITORY_ID_ENV, "repository-1"),
-            (NODE_ID_ENV, "node-1"),
-            (SIGNING_KEY_ID_ENV, "   "),
-        ]))
-        .is_none());
+        assert_eq!(
+            resolve_node_identity(&env(&[
+                (TENANT_ID_ENV, "tenant-1"),
+                (REPOSITORY_ID_ENV, "repository-1"),
+                (NODE_ID_ENV, "node-1"),
+                (SIGNING_KEY_ID_ENV, "   "),
+            ])),
+            Err(NodeIdentityError::Missing(vec![SIGNING_KEY_ID_ENV]))
+        );
+    }
+
+    /// A malformed seed is a different operator fix from an undeclared one,
+    /// so it must not be collapsed into "something is missing".
+    #[test]
+    fn a_malformed_seed_is_reported_as_malformed_not_missing() {
+        assert_eq!(
+            resolve_node_identity(&env(&[
+                (TENANT_ID_ENV, "tenant-1"),
+                (REPOSITORY_ID_ENV, "repository-1"),
+                (NODE_ID_ENV, "node-1"),
+                (SIGNING_KEY_ID_ENV, "signing-key-1"),
+                (NODE_SIGNING_KEY_SEED_ENV, "not-hex"),
+            ])),
+            Err(NodeIdentityError::MalformedSeed)
+        );
+    }
+
+    /// An absent required variable is reported before a malformed seed: an
+    /// operator who has not finished declaring the identity is not yet in a
+    /// position to act on a complaint about the optional override.
+    #[test]
+    fn a_missing_variable_is_reported_ahead_of_a_malformed_seed() {
+        assert_eq!(
+            resolve_node_identity(&env(&[
+                (TENANT_ID_ENV, "tenant-1"),
+                (REPOSITORY_ID_ENV, "repository-1"),
+                (NODE_ID_ENV, "node-1"),
+                (NODE_SIGNING_KEY_SEED_ENV, "not-hex"),
+            ])),
+            Err(NodeIdentityError::Missing(vec![SIGNING_KEY_ID_ENV]))
+        );
     }
 
     #[test]
@@ -216,17 +316,5 @@ mod tests {
         let signer = identity.signer().expect("a seed signer builds without I/O");
         assert_eq!(signer.node_id(), "node-1");
         assert_eq!(signer.signing_key_id(), "signing-key-1");
-    }
-
-    #[test]
-    fn a_malformed_seed_resolves_to_nothing_rather_than_a_broken_signer() {
-        assert!(resolve_node_identity(&env(&[
-            (TENANT_ID_ENV, "tenant-1"),
-            (REPOSITORY_ID_ENV, "repository-1"),
-            (NODE_ID_ENV, "node-1"),
-            (SIGNING_KEY_ID_ENV, "signing-key-1"),
-            (NODE_SIGNING_KEY_SEED_ENV, "not hex"),
-        ]))
-        .is_none());
     }
 }

@@ -196,10 +196,10 @@ pub struct BridgeEvidenceStore {
 
 impl BridgeEvidenceStore {
     pub async fn connect(
-        database_url: &str,
+        pool: &ackplane_server::db_pool::PgPool,
     ) -> Result<Self, Box<dyn Error + Send + Sync + 'static>> {
         Ok(Self {
-            store: EvidenceStore::connect(database_url).await?,
+            store: EvidenceStore::connect(pool).await?,
         })
     }
 
