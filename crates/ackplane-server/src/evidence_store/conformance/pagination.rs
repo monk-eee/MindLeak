@@ -18,7 +18,8 @@ impl EvidenceStore {
             return Err(ConformanceStoreError::InvalidTaskId);
         }
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
                       finding_count, findings_digest, finding_codes, review_state, reported_checked_at, evaluated_by, \
@@ -59,9 +60,10 @@ impl EvidenceStore {
             .ok_or(ConformanceStoreError::InvalidEvidenceId)?;
         let agent_id = filter.agent_id;
         let review_state = filter.review_state.map(ConformanceReviewState::as_i16);
+        let connection = self.connection().await?;
         let rows = match cursor {
             Some(cursor) => {
-                self.client
+                connection
                     .query(
                         "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
                             finding_count, findings_digest, finding_codes, review_state, reported_checked_at, evaluated_by, \
@@ -87,7 +89,7 @@ impl EvidenceStore {
                     .await?
             }
             None => {
-                self.client
+                connection
                     .query(
                         "SELECT conformance_id, tenant_id, repository_id, task_id, evidence_id, verdict, \
                             finding_count, findings_digest, finding_codes, review_state, reported_checked_at, evaluated_by, \
