@@ -11,14 +11,15 @@
 //! state to manage between calls.
 
 use ackplane_client::{
-    authenticate, decode_seed, ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult,
-    ClaimOperation, ClaimRecoverRequest, ClaimReleaseRequest, ClaimRenewRequest, ClaimSigner,
-    CredentialFacilitySigner, SeedSigner,
+    authenticate, node_identity, ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest,
+    ClaimLeaseResult, ClaimOperation, ClaimRecoverRequest, ClaimReleaseRequest, ClaimRenewRequest,
+    ClaimSigner, CredentialFacilitySigner, SeedSigner,
 };
 use lodestar_core::{
     FederatedClaimAuthority, FederatedClaimGrant, FederatedClaimOutcome,
     FederatedClaimRecoverRequest, LodestarError,
 };
+use node_identity::NodeSignerSource;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 /// Explicit, injected identity and endpoint configuration for a federated
@@ -45,68 +46,50 @@ pub enum SignerSource {
     CredentialFacility { service: String, account: String },
 }
 
-const TENANT_ID_ENV: &str = "MINDLEAK_ACKPLANE_TENANT_ID";
-const REPOSITORY_ID_ENV: &str = "MINDLEAK_ACKPLANE_REPOSITORY_ID";
-const NODE_ID_ENV: &str = "MINDLEAK_ACKPLANE_NODE_ID";
-const SIGNING_KEY_ID_ENV: &str = "MINDLEAK_ACKPLANE_SIGNING_KEY_ID";
-/// The interim, explicit-configuration key source override (a hex-encoded
-/// 32-byte Ed25519 seed), the same posture already accepted here for
-/// `MINDLEAK_LLM_API_KEY`. Optional: unset resolves to the OS credential
-/// facility instead (ADR-0100 decision 5's default seam). See
-/// `gaps.d/the-node-signing-key-has-no-credential-facility-yet.md`. Never
-/// logged.
-const NODE_SIGNING_KEY_SEED_ENV: &str = "MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED";
-/// The service name every node's signing seed is stored under in the OS
-/// credential facility; the account name is derived per node so one shared
-/// service can hold every enrolled node's seed without collision.
-const CREDENTIAL_FACILITY_SERVICE: &str = "mindleak-ackplane-node-signing-key";
-
 /// Read this repository's federated claim identity from explicit environment
 /// variables. `None` if any required variable is unset, blank, or
 /// malformed -- the caller decides what that means (this binary: refuse to
 /// serve rather than guess).
+///
+/// The shared `MINDLEAK_ACKPLANE_TENANT_ID`/`_REPOSITORY_ID`/`_NODE_ID`/
+/// `_SIGNING_KEY_ID`/`_NODE_SIGNING_KEY_SEED` resolution and signer-source
+/// selection is [`node_identity::resolve_node_identity`]'s job, not
+/// reimplemented here (see that module's own doc comment on why it is the
+/// shared place to extend) -- this function only adds the one field
+/// specific to a federation connection, `endpoint`.
 pub fn resolve_identity<F>(environment: F) -> Option<FederationIdentity>
 where
     F: Fn(&str) -> Option<String>,
 {
-    let tenant_id = non_empty(environment(TENANT_ID_ENV))?;
-    let repository_id = non_empty(environment(REPOSITORY_ID_ENV))?;
-    let node_id = non_empty(environment(NODE_ID_ENV))?;
-    let signer_source = match non_empty(environment(NODE_SIGNING_KEY_SEED_ENV)) {
-        Some(hex) => SignerSource::Seed(decode_seed(&hex)?),
-        None => SignerSource::CredentialFacility {
-            service: CREDENTIAL_FACILITY_SERVICE.to_string(),
-            account: credential_facility_account(&tenant_id, &repository_id, &node_id),
-        },
-    };
+    let endpoint = non_empty(environment(ackplane_core::ACKPLANE_ENDPOINT_ENV))?;
+    let identity = node_identity::resolve_node_identity(&environment)?;
     Some(FederationIdentity {
-        endpoint: non_empty(environment(ackplane_core::ACKPLANE_ENDPOINT_ENV))?,
-        tenant_id,
-        repository_id,
-        node_id,
-        signing_key_id: non_empty(environment(SIGNING_KEY_ID_ENV))?,
-        signer_source,
+        endpoint,
+        tenant_id: identity.tenant_id,
+        repository_id: identity.repository_id,
+        node_id: identity.node_id,
+        signing_key_id: identity.signing_key_id,
+        signer_source: match identity.signer_source {
+            NodeSignerSource::Seed(seed) => SignerSource::Seed(*seed),
+            NodeSignerSource::CredentialFacility { service, account } => {
+                SignerSource::CredentialFacility { service, account }
+            }
+        },
     })
-}
-
-/// The account name a node's seed is stored under in the credential
-/// facility: unique per tenant/repository/node so one shared service name
-/// never collides across enrolled repositories or nodes on the same host.
-fn credential_facility_account(tenant_id: &str, repository_id: &str, node_id: &str) -> String {
-    format!("{tenant_id}:{repository_id}:{node_id}")
 }
 
 /// Every configuration variable [`resolve_identity`] always requires, for a
 /// refusal message that names what is missing rather than only that
-/// something is. `NODE_SIGNING_KEY_SEED_ENV` is a documented optional
-/// override and is deliberately not listed here: its absence is the default
-/// path (the OS credential facility), not an incomplete configuration.
+/// something is. `node_identity`'s own `NODE_SIGNING_KEY_SEED_ENV` is a
+/// documented optional override and is deliberately not listed here: its
+/// absence is the default path (the OS credential facility), not an
+/// incomplete configuration.
 pub const IDENTITY_ENV_VARS: &[&str] = &[
     ackplane_core::ACKPLANE_ENDPOINT_ENV,
-    TENANT_ID_ENV,
-    REPOSITORY_ID_ENV,
-    NODE_ID_ENV,
-    SIGNING_KEY_ID_ENV,
+    node_identity::TENANT_ID_ENV,
+    node_identity::REPOSITORY_ID_ENV,
+    node_identity::NODE_ID_ENV,
+    node_identity::SIGNING_KEY_ID_ENV,
 ];
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -388,15 +371,92 @@ mod tests {
     use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 
-    use super::{AckplaneClaimAuthority, FederationIdentity, SignerSource};
+    use super::{
+        resolve_identity, AckplaneClaimAuthority, FederationIdentity, SignerSource,
+        IDENTITY_ENV_VARS,
+    };
 
     const SIGNING_KEY_ID: &str = "lodestar-mcp-federation-test-key";
     const NODE_ID: &str = "lodestar-mcp-federation-test-node";
     const TENANT_ID: &str = "lodestar-mcp-federation-test-tenant";
     const REPOSITORY_ID: &str = "lodestar-mcp-federation-test-repository";
+    const ENDPOINT: &str = "http://127.0.0.1:8443";
 
     fn seed() -> [u8; 32] {
         [23; 32]
+    }
+
+    fn env(pairs: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |name: &str| {
+            owned
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
+    fn seed_hex() -> &'static str {
+        "1717171717171717171717171717171717171717171717171717171717171717"
+            .get(0..64)
+            .unwrap()
+    }
+
+    #[test]
+    fn nothing_configured_resolves_to_nothing() {
+        assert!(resolve_identity(env(&[])).is_none());
+    }
+
+    #[test]
+    fn a_missing_endpoint_resolves_to_nothing_even_with_a_full_node_identity() {
+        assert!(resolve_identity(env(&[
+            (IDENTITY_ENV_VARS[1], TENANT_ID),
+            (IDENTITY_ENV_VARS[2], REPOSITORY_ID),
+            (IDENTITY_ENV_VARS[3], NODE_ID),
+            (IDENTITY_ENV_VARS[4], SIGNING_KEY_ID),
+        ]))
+        .is_none());
+    }
+
+    #[test]
+    fn a_full_declaration_with_no_seed_selects_the_credential_facility() {
+        let identity = resolve_identity(env(&[
+            (IDENTITY_ENV_VARS[0], ENDPOINT),
+            (IDENTITY_ENV_VARS[1], TENANT_ID),
+            (IDENTITY_ENV_VARS[2], REPOSITORY_ID),
+            (IDENTITY_ENV_VARS[3], NODE_ID),
+            (IDENTITY_ENV_VARS[4], SIGNING_KEY_ID),
+        ]))
+        .expect("every required variable is set");
+        assert_eq!(identity.endpoint, ENDPOINT);
+        assert_eq!(identity.tenant_id, TENANT_ID);
+        assert_eq!(identity.repository_id, REPOSITORY_ID);
+        assert_eq!(identity.node_id, NODE_ID);
+        assert_eq!(identity.signing_key_id, SIGNING_KEY_ID);
+        assert!(matches!(
+            identity.signer_source,
+            SignerSource::CredentialFacility { .. }
+        ));
+    }
+
+    #[test]
+    fn a_declared_seed_selects_a_seed_signer_delegated_from_node_identity() {
+        let identity = resolve_identity(env(&[
+            (IDENTITY_ENV_VARS[0], ENDPOINT),
+            (IDENTITY_ENV_VARS[1], TENANT_ID),
+            (IDENTITY_ENV_VARS[2], REPOSITORY_ID),
+            (IDENTITY_ENV_VARS[3], NODE_ID),
+            (IDENTITY_ENV_VARS[4], SIGNING_KEY_ID),
+            (
+                ackplane_client::node_identity::NODE_SIGNING_KEY_SEED_ENV,
+                seed_hex(),
+            ),
+        ]))
+        .expect("every required variable is set");
+        assert!(matches!(identity.signer_source, SignerSource::Seed(_)));
     }
 
     fn unique_task_id() -> String {
