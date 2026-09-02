@@ -106,6 +106,22 @@ pub trait FederatedClaimAuthority: Send + Sync {
         &self,
         request: &FederatedClaimRecoverRequest,
     ) -> crate::Result<FederatedClaimOutcome>;
+
+    /// Park a claimed task, clearing its lease while keeping the owner's
+    /// exclusive hold over it (ADR-0096 clause completion). The durable
+    /// question text stays local (ADR-0020's task_qa thread) -- this seam
+    /// only arbitrates the claim-state transition, `true` iff the task was
+    /// genuinely parked.
+    fn park(&self, task_id: &str, owner: &str) -> crate::Result<bool>;
+
+    /// Answer a parked task, granting the exact parking owner a fresh lease
+    /// (ADR-0096 clause completion) -- the counterpart to [`Self::park`].
+    fn answer(
+        &self,
+        task_id: &str,
+        owner: &str,
+        lease_secs: i64,
+    ) -> crate::Result<FederatedClaimOutcome>;
 }
 
 /// Everything [`FederatedClaimAuthority::recover`] needs, bundled to keep the
