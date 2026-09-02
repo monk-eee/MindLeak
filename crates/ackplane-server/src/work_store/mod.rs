@@ -23,6 +23,8 @@ const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
 const WORK_TASK_COMMAND_EXECUTION_MIGRATION: &str =
     include_str!("../../migrations/0039_work_task_command_execution.sql");
+const WORK_EVENT_POSITIONS_MIGRATION: &str =
+    include_str!("../../migrations/0065_work_event_positions.sql");
 
 #[derive(Debug, Error)]
 pub enum WorkStoreError {
@@ -72,6 +74,14 @@ impl WorkStore {
             WORK_TASK_COMMAND_EXECUTION_MIGRATION,
         )
         .await?;
+        // ADR-0120 decision 3's ordered event stream: allocate positions for
+        // history and record on the projection which event built it.
+        crate::migration_lock::migrate_locked(
+            &mut client,
+            crate::migration_lock::key::WORK_EVENT_POSITIONS,
+            WORK_EVENT_POSITIONS_MIGRATION,
+        )
+        .await?;
         Ok(Self { pool: pool.clone() })
     }
 
@@ -98,12 +108,14 @@ impl WorkStore {
         // event and its projection update to land in one transaction.
         let mut connection = self.connection().await?;
         let transaction = connection.transaction().await?;
+        let stream_position =
+            allocate_stream_position(&transaction, &task.tenant_id, &task.repository_id).await?;
         let inserted = transaction
             .execute(
                 "INSERT INTO work_tasks (tenant_id, repository_id, task_id, title, acceptance, \
                     goal_id, state, declared_paths, declared_symbols, source_digest, \
-                    published_by, version, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$12) \
+                    published_by, version, source_event_position, created_at, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$13) \
                  ON CONFLICT (tenant_id, repository_id, task_id) DO NOTHING",
                 &[
                     &task.tenant_id,
@@ -117,6 +129,7 @@ impl WorkStore {
                     &task.declared_symbols,
                     &digest,
                     &task.published_by,
+                    &stream_position,
                     &now,
                 ],
             )
@@ -131,8 +144,9 @@ impl WorkStore {
         transaction
             .execute(
                 "INSERT INTO work_task_history (tenant_id, repository_id, event_id, task_id, \
-                    event_kind, from_state, to_state, actor_id, source_digest, recorded_at) \
-                 VALUES ($1,$2,$3,$4,1,NULL,$5,$6,$7,$8)",
+                    event_kind, from_state, to_state, actor_id, source_digest, stream_position, \
+                    recorded_at) \
+                 VALUES ($1,$2,$3,$4,1,NULL,$5,$6,$7,$8,$9)",
                 &[
                     &task.tenant_id,
                     &task.repository_id,
@@ -141,6 +155,7 @@ impl WorkStore {
                     &WorkTaskState::Open.as_i16(),
                     &task.published_by,
                     &digest,
+                    &stream_position,
                     &now,
                 ],
             )
@@ -161,6 +176,7 @@ impl WorkStore {
             declared_symbols: task.declared_symbols.clone(),
             published_by: task.published_by.clone(),
             version: 1,
+            source_event_position: Some(stream_position),
             route_reference: None,
             created_at: now,
             updated_at: now,
@@ -183,6 +199,7 @@ impl WorkStore {
             declared_symbols: row.get("declared_symbols"),
             published_by: row.get("published_by"),
             version: row.get("version"),
+            source_event_position: row.get("source_event_position"),
             route_reference: row.get("route_reference"),
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
@@ -259,11 +276,12 @@ impl WorkStore {
         let task = Self::row_to_task(&task_row)?;
         let history_rows = self
             .connection()
-                .await?
+            .await?
             .query(
-                "SELECT event_id, from_state, to_state, actor_id, recorded_at FROM work_task_history \
+                "SELECT event_id, from_state, to_state, actor_id, stream_position, recorded_at \
+                 FROM work_task_history \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
-                 ORDER BY recorded_at DESC, event_id DESC",
+                 ORDER BY stream_position DESC",
                 &[&tenant_id, &repository_id, &task_id],
             )
             .await?;
@@ -273,6 +291,7 @@ impl WorkStore {
             history.push(WorkTaskEvent {
                 event_id: row.get("event_id"),
                 task_id: task_id.to_owned(),
+                stream_position: row.get("stream_position"),
                 from_state: from_state.map(WorkTaskState::from_i16).transpose()?,
                 to_state: WorkTaskState::from_i16(row.get("to_state"))?,
                 actor_id: row.get("actor_id"),
@@ -312,11 +331,47 @@ impl WorkStore {
     }
 }
 
+/// Hands out the next slot in a repository's Work stream, inside the caller's
+/// transaction (ADR-0120 decision 3).
+///
+/// The `ON CONFLICT DO UPDATE` takes a row lock on that repository's head for
+/// the rest of the transaction, so two concurrent creators in the same
+/// repository serialize here rather than both reading the same head and
+/// claiming the same position. That is the whole point of an allocated
+/// position: it is what makes a gap in the sequence mean "an event is
+/// missing". Serializing per repository is also why the head is keyed by
+/// `(tenant_id, repository_id)` and not globally — unrelated repositories
+/// never wait on each other.
+///
+/// A caller that then fails rolls the allocation back with everything else, so
+/// a refused creation leaves no hole.
+///
+/// Returns the raw driver error rather than a `WorkStoreError` so that
+/// `work_command_store`, whose lifecycle events share this same stream, can use
+/// it through its own error type without either module depending on the
+/// other's.
+pub(crate) async fn allocate_stream_position(
+    transaction: &tokio_postgres::Transaction<'_>,
+    tenant_id: &str,
+    repository_id: &str,
+) -> Result<i64, tokio_postgres::Error> {
+    let row = transaction
+        .query_one(
+            "INSERT INTO work_stream_heads (tenant_id, repository_id, stream_position) \
+             VALUES ($1,$2,1) \
+             ON CONFLICT (tenant_id, repository_id) \
+             DO UPDATE SET stream_position = work_stream_heads.stream_position + 1 \
+             RETURNING stream_position",
+            &[&tenant_id, &repository_id],
+        )
+        .await?;
+    Ok(row.get("stream_position"))
+}
+
 mod doctor;
 mod ingress;
 mod model;
 mod publication;
-
 pub use doctor::{FleetUnansweredWait, WorkDoctorFinding};
 pub(crate) use ingress::WorkTaskCreationOutcome;
 pub(in crate::work_store) use model::source_digest;
@@ -454,5 +509,131 @@ mod tests {
             .expect("task detail query");
 
         assert_eq!(detail, None);
+    }
+
+    /// ADR-0120 decision 3: the stream is dense from 1 within a repository, and
+    /// each task's projection points at the event that created it. Both halves
+    /// matter — a position nothing records is not a position anyone can compare
+    /// against, which is what left `lagging` unstateable.
+    #[tokio::test]
+    async fn positions_are_dense_per_repository_and_recorded_on_the_projection() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let repository_id = unique_id("repo");
+        let store = WorkStore::connect(&pool).await.expect("connect");
+
+        let mut created = Vec::new();
+        for index in 0..3 {
+            let task_id = unique_id("task");
+            let task = store
+                .create_task(
+                    &new_task(&tenant_id, &repository_id, &task_id, "Ship the thing"),
+                    &unique_id("event"),
+                    SystemTime::now(),
+                )
+                .await
+                .expect("create task");
+            assert_eq!(
+                task.source_event_position,
+                Some(index + 1),
+                "a fresh repository's stream starts at 1 and advances by one per event"
+            );
+            created.push(task);
+        }
+
+        for task in &created {
+            let detail = store
+                .task_detail(&tenant_id, &repository_id, &task.task_id)
+                .await
+                .expect("task detail")
+                .expect("task exists");
+            assert_eq!(
+                detail.history[0].stream_position,
+                task.source_event_position.unwrap(),
+                "the projection must name the position of the event that built it"
+            );
+        }
+    }
+
+    /// The head is keyed by `(tenant_id, repository_id)`, so an unrelated
+    /// repository never inherits another's position. A globally-keyed head
+    /// would still look correct in a single-repository test.
+    #[tokio::test]
+    async fn each_repository_numbers_its_own_stream_from_one() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let first_repository = unique_id("repo");
+        let second_repository = unique_id("repo");
+        let store = WorkStore::connect(&pool).await.expect("connect");
+
+        let first = store
+            .create_task(
+                &new_task(&tenant_id, &first_repository, &unique_id("task"), "First"),
+                &unique_id("event"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("create in first repository");
+        let second = store
+            .create_task(
+                &new_task(&tenant_id, &second_repository, &unique_id("task"), "Second"),
+                &unique_id("event"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("create in second repository");
+
+        assert_eq!(first.source_event_position, Some(1));
+        assert_eq!(
+            second.source_event_position,
+            Some(1),
+            "a second repository starts its own stream, it does not continue the first's"
+        );
+    }
+
+    /// A refused creation must not burn a position. The allocation happens
+    /// inside the same transaction as the insert that fails, so the rollback
+    /// takes it with it; if it did not, the next successful event would leave a
+    /// gap that reads as "an event is missing".
+    #[tokio::test]
+    async fn a_refused_creation_leaves_no_gap_in_the_stream() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let repository_id = unique_id("repo");
+        let store = WorkStore::connect(&pool).await.expect("connect");
+        let duplicate = new_task(&tenant_id, &repository_id, &unique_id("task"), "First");
+        let first = store
+            .create_task(&duplicate, &unique_id("event"), SystemTime::now())
+            .await
+            .expect("create task once");
+        assert_eq!(first.source_event_position, Some(1));
+
+        let refused = store
+            .create_task(&duplicate, &unique_id("event"), SystemTime::now())
+            .await;
+        assert!(matches!(refused, Err(WorkStoreError::TaskConflict { .. })));
+
+        let next = store
+            .create_task(
+                &new_task(&tenant_id, &repository_id, &unique_id("task"), "Second"),
+                &unique_id("event"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("create the next task");
+        assert_eq!(
+            next.source_event_position,
+            Some(2),
+            "the refused creation rolled its allocation back, so the stream stays dense"
+        );
     }
 }

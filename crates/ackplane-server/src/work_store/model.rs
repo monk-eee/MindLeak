@@ -79,6 +79,11 @@ pub struct WorkTask {
     /// decision 5). Starts at 1 and increments once per applied Work-command
     /// effect; never decreases, never resets.
     pub version: i64,
+    /// The position of the event this projection row was last built from
+    /// (ADR-0120 decision 3). `None` means "never projected" — which is a
+    /// different fact from position zero, the same distinction
+    /// `0002_projection.sql` draws for the ledger projection.
+    pub source_event_position: Option<i64>,
     /// The bounded route or assignment reference `RouteWork` last recorded
     /// (ADR-0125 decision 1). `None` until routed.
     pub route_reference: Option<String>,
@@ -125,6 +130,11 @@ pub struct WorkTaskWait {
 pub struct WorkTaskEvent {
     pub event_id: String,
     pub task_id: String,
+    /// This event's slot in its repository's Work stream (ADR-0120 decision
+    /// 3). Dense and gap-free from 1, so a reader can tell "I have every event
+    /// up to here" from the positions alone — which `recorded_at` could never
+    /// support, being a clock reading that ties.
+    pub stream_position: i64,
     pub from_state: Option<WorkTaskState>,
     pub to_state: WorkTaskState,
     pub actor_id: String,

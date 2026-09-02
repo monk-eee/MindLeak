@@ -274,6 +274,15 @@ fn event_digest(command_id: &str, event_kind: i16, to_state: i16) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
+/// Appends one lifecycle event to the repository's Work stream and points the
+/// task's projection at it.
+///
+/// A Work command's effect is an event like any other (ADR-0120 decision 3),
+/// so it takes the next position from the same per-repository head that
+/// creation does. Stamping `source_event_position` here rather than in each of
+/// the eight command paths that update `work_tasks` means the projection cannot
+/// drift from the event that produced it: there is one write site, and every
+/// path that appends an event goes through it.
 async fn append_task_event(
     transaction: &Transaction<'_>,
     command: &WorkCommand,
@@ -283,11 +292,18 @@ async fn append_task_event(
     to_state: i16,
     now: SystemTime,
 ) -> Result<(), WorkCommandStoreError> {
+    let stream_position = crate::work_store::allocate_stream_position(
+        transaction,
+        &command.tenant_id,
+        &command.repository_id,
+    )
+    .await?;
     transaction
         .execute(
             "INSERT INTO work_task_history (tenant_id, repository_id, event_id, task_id, \
-                 event_kind, from_state, to_state, actor_id, source_digest, recorded_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                 event_kind, from_state, to_state, actor_id, source_digest, stream_position, \
+                 recorded_at) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
             &[
                 &command.tenant_id,
                 &command.repository_id,
@@ -298,7 +314,20 @@ async fn append_task_event(
                 &to_state,
                 &command.issuing_principal_id,
                 &event_digest(&command.command_id, event_kind, to_state),
+                &stream_position,
                 &now,
+            ],
+        )
+        .await?;
+    transaction
+        .execute(
+            "UPDATE work_tasks SET source_event_position = $4 \
+             WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
+            &[
+                &command.tenant_id,
+                &command.repository_id,
+                &task_id,
+                &stream_position,
             ],
         )
         .await?;

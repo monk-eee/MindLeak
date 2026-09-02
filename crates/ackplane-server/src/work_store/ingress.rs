@@ -32,12 +32,14 @@ impl WorkStore {
             return Ok(outcome);
         }
 
+        let stream_position =
+            allocate_stream_position(&transaction, &task.tenant_id, &task.repository_id).await?;
         let inserted = transaction
             .query_opt(
                 "INSERT INTO work_tasks (tenant_id, repository_id, task_id, title, acceptance, \
                     goal_id, state, declared_paths, declared_symbols, source_digest, \
-                    published_by, version, created_at, updated_at) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$12) \
+                    published_by, version, source_event_position, created_at, updated_at) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12,$13,$13) \
                  ON CONFLICT (tenant_id, repository_id, task_id) DO NOTHING \
                  RETURNING *",
                 &[
@@ -52,6 +54,7 @@ impl WorkStore {
                     &task.declared_symbols,
                     &digest,
                     &task.published_by,
+                    &stream_position,
                     &now,
                 ],
             )
@@ -68,8 +71,9 @@ impl WorkStore {
         transaction
             .execute(
                 "INSERT INTO work_task_history (tenant_id, repository_id, event_id, task_id, \
-                    event_kind, from_state, to_state, actor_id, source_digest, recorded_at) \
-                 VALUES ($1,$2,$3,$4,1,NULL,$5,$6,$7,$8)",
+                    event_kind, from_state, to_state, actor_id, source_digest, stream_position, \
+                    recorded_at) \
+                 VALUES ($1,$2,$3,$4,1,NULL,$5,$6,$7,$8,$9)",
                 &[
                     &task.tenant_id,
                     &task.repository_id,
@@ -78,6 +82,7 @@ impl WorkStore {
                     &WorkTaskState::Open.as_i16(),
                     &task.published_by,
                     &digest,
+                    &stream_position,
                     &now,
                 ],
             )
@@ -233,6 +238,68 @@ mod tests {
                 WorkTaskState::Open,
                 task.published_by,
             )
+        );
+    }
+
+    /// An idempotent replay must return the original event's position and must
+    /// not advance the stream head. `record_node_task` checks for the existing
+    /// creation before it allocates, so a replay never takes a slot; if it did,
+    /// every retry would burn a position and the stream would develop gaps that
+    /// read as missing events.
+    #[tokio::test]
+    async fn an_idempotent_replay_reuses_the_original_position_without_advancing_the_stream() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
+            return;
+        };
+        let tenant_id = unique_id("tenant");
+        let repository_id = unique_id("repository");
+        let task = NewWorkTask {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: unique_id("task"),
+            title: "Replay the same creation".to_string(),
+            acceptance: "The replay reuses the first event's position.".to_string(),
+            goal_id: None,
+            declared_paths: Vec::new(),
+            declared_symbols: Vec::new(),
+            published_by: unique_id("node"),
+        };
+        let creation_event_id = unique_id("creation-event");
+        let store = WorkStore::connect(&pool).await.expect("connect");
+
+        let first = store
+            .record_node_task(&task, &creation_event_id, SystemTime::now())
+            .await
+            .expect("the first creation persists");
+        let replay = store
+            .record_node_task(&task, &creation_event_id, SystemTime::now())
+            .await
+            .expect("the identical creation replays");
+
+        assert!(!first.idempotent_replay);
+        assert!(replay.idempotent_replay);
+        assert_eq!(first.task.source_event_position, Some(1));
+        assert_eq!(
+            replay.task.source_event_position, first.task.source_event_position,
+            "a replay reports the original position, not a newly allocated one"
+        );
+
+        let next = store
+            .record_node_task(
+                &NewWorkTask {
+                    task_id: unique_id("task"),
+                    ..task.clone()
+                },
+                &unique_id("creation-event"),
+                SystemTime::now(),
+            )
+            .await
+            .expect("a genuinely new creation persists");
+        assert_eq!(
+            next.task.source_event_position,
+            Some(2),
+            "the replay consumed no position, so the next real event takes 2"
         );
     }
 
