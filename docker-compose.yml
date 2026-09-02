@@ -31,8 +31,10 @@ services:
     # agent validating their own change goes looking for a cause inside it.
     #
     # This is a development-stack value only. It is not a production tuning
-    # claim, and it is not a substitute for bounding connections in the code
-    # (see gaps.d/the-postgres-connection-ceiling-fails-the-suite-misleadingly.md).
+    # claim; see docs/POSTGRES-CONNECTION-BUDGET.md for that, and
+    # crates/ackplane-server/src/db_pool.rs for the bounded pool + backpressure
+    # that make a per-process connection budget an enforced fact rather than
+    # a hope.
     command: ["postgres", "-c", "max_connections=500"]
     environment:
       # Development-only credentials (clause 6). Never used outside this

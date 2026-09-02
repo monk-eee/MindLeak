@@ -35,7 +35,7 @@ impl LiveFeedStore {
     }
 
     async fn connection(&self) -> Result<PgConnection, LiveFeedStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     pub async fn publish(

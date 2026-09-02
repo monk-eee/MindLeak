@@ -141,7 +141,7 @@ impl LedgerStore {
     }
 
     async fn connection(&self) -> Result<PgConnection, AppendError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// Resolve the signing key an envelope claims, judged as of acceptance.
@@ -152,7 +152,7 @@ impl LedgerStore {
         &self,
         binding: &crate::signing_keys::EnvelopeBinding<'_>,
     ) -> Result<crate::signing_keys::KeyResolution, crate::signing_keys::SigningKeyError> {
-        let connection = self.pool.get().await?;
+        let connection = crate::db_pool::checkout(&self.pool).await?;
         crate::signing_keys::resolve(&connection, binding).await
     }
 
