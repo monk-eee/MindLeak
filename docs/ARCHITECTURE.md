@@ -730,7 +730,17 @@ are migrated onto it one at a time and each is complete in its own commit
 store and no interim shim. A store that holds a transaction checks its
 connection out once and keeps it for the whole transaction (decision 4),
 which is what keeps the lock-contention tests proving what they already
-prove.
+prove. Every store's own `connection()` helper checks a connection out
+through `db_pool::checkout`, not `pool.get()` directly: once as many callers
+are already queued as the pool has slots, `checkout` refuses immediately with
+the identical `PoolExhausted` a caller already waiting there would eventually
+get anyway, rather than adding it to a queue that can only end the same way
+after paying the full configured timeout. `docs/POSTGRES-CONNECTION-BUDGET.md`
+gives the corresponding `ACKPLANE_DB_POOL_MAX_SIZE` sizing guidance for a
+production topology, bounding the connection budget in code rather than in a
+development-only Postgres `max_connections` value -- the production
+deployment story ADR-0088 names as still owed, scoped here to the connection
+budget alone, not the rest of that story.
 completing, not on `ackplane` itself running. `BridgeConfig::resolve` refuses
 any non-loopback listen address until a production authentication verifier
 exists (ADR-0094), so the process always binds `127.0.0.1` inside its

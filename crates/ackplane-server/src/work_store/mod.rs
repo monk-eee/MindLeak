@@ -92,7 +92,7 @@ impl WorkStore {
     /// requires the Work event and its projection update to land in one
     /// transaction, so both must run on the same connection.
     pub(in crate::work_store) async fn connection(&self) -> Result<PgConnection, WorkStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// Records the initial event and the current-state projection in one

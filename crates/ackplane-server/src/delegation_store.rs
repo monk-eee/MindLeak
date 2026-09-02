@@ -101,7 +101,7 @@ impl DelegationStore {
     }
 
     pub(super) async fn connection(&self) -> Result<PgConnection, DelegationStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// Records a human-approved bounded grant after the caller has already

@@ -80,6 +80,48 @@ pub fn build_pool(database_url: &str, default_max_size: usize) -> Result<PgPool,
     Ok(config.create_pool(Some(Runtime::Tokio1), NoTls)?)
 }
 
+/// Check out one pooled connection, refusing immediately once as many
+/// callers are already queued as the pool has slots, rather than joining a
+/// wait list that can only ever end in the same timeout every caller ahead
+/// of it is already waiting for (bounding the production connection budget,
+/// ADR-0143 follow-on).
+///
+/// Every store's own `connection()` helper should call this instead of
+/// `pool.get()` directly — it is the one place this decision belongs, not a
+/// second copy pasted into each store.
+///
+/// Returns the identical error type `pool.get()` itself eventually returns
+/// (`PoolError::Timeout(TimeoutType::Wait)`), synthesized immediately instead
+/// of after `timeouts.wait` elapses, so every existing store's
+/// `#[from] deadpool_postgres::PoolError` conversion and every
+/// `PoolExhausted` → `SERVICE_UNAVAILABLE` / `Status::unavailable` mapping
+/// already in this codebase benefits with no change of its own.
+///
+/// **Why fail fast rather than let the queue grow.** A caller that joins an
+/// already-saturated queue can only ever get the pool's own timeout error,
+/// just later — it pays the full `timeouts.wait` delay to learn something
+/// this check already knows for free from `Pool::status()`. Under sustained
+/// overload that delay compounds for every caller behind it, which is worse
+/// for the system than an immediate, honest refusal.
+pub async fn checkout(pool: &PgPool) -> Result<PgConnection, deadpool_postgres::PoolError> {
+    if queue_saturated(&pool.status()) {
+        return Err(deadpool_postgres::PoolError::Timeout(
+            deadpool_postgres::TimeoutType::Wait,
+        ));
+    }
+    pool.get().await
+}
+
+/// The pool has as many callers already waiting as it has slots: joining
+/// that queue cannot succeed before at least one of them is served, and
+/// every one of them is already paying for that same wait.
+///
+/// A pure function over `Status` (not `checkout` itself) so the boundary
+/// condition is unit-testable without a real pool or any concurrency.
+fn queue_saturated(status: &deadpool_postgres::Status) -> bool {
+    status.waiting >= status.max_size
+}
+
 /// Parse an optional override, refusing anything that is not a positive
 /// integer rather than silently falling back to the default.
 ///
@@ -191,5 +233,118 @@ mod tests {
             .expect_err("an unparseable url must not produce a pool");
 
         assert!(matches!(error, PoolBuildError::Create(_)), "got {error}");
+    }
+
+    /// The boundary `checkout` refuses at: as many callers already waiting
+    /// as the pool has slots. Exercised directly against `Status` so the
+    /// admission decision is proven without a real pool, a connection, or
+    /// any concurrency -- `checkout`'s own end-to-end fast-fail behavior
+    /// under genuine contention is proven separately, against a real
+    /// database, below.
+    #[test]
+    fn the_queue_is_saturated_once_waiting_reaches_max_size() {
+        let status = deadpool_postgres::Status {
+            max_size: 4,
+            size: 4,
+            available: 0,
+            waiting: 4,
+        };
+        assert!(queue_saturated(&status));
+    }
+
+    #[test]
+    fn the_queue_is_not_saturated_below_max_size() {
+        let status = deadpool_postgres::Status {
+            max_size: 4,
+            size: 4,
+            available: 0,
+            waiting: 3,
+        };
+        assert!(!queue_saturated(&status));
+    }
+
+    /// A fresh pool with nobody waiting must never refuse a first caller --
+    /// `checkout` exists to fail fast once real contention is already
+    /// queued, not to add a new way for an otherwise-idle pool to refuse.
+    #[test]
+    fn an_idle_pool_is_never_queue_saturated() {
+        let status = deadpool_postgres::Status {
+            max_size: 4,
+            size: 0,
+            available: 0,
+            waiting: 0,
+        };
+        assert!(!queue_saturated(&status));
+    }
+
+    /// Regression-shaped proof that `checkout` actually fails fast once the
+    /// wait queue is as deep as the pool itself, rather than joining it and
+    /// paying the same full configured wait timeout every caller already
+    /// ahead of it is paying.
+    ///
+    /// THE BUG THIS PREVENTS. `queue_saturated` alone proves the boundary
+    /// condition, but not that `checkout` actually consults it before
+    /// calling `pool.get()` -- a `checkout` that computed the right answer
+    /// and then ignored it would still pass every other test here. Needs a
+    /// real, reachable Postgres: deadpool creates connections lazily, so the
+    /// syntactically-valid-but-unreachable url every other test in this
+    /// module uses never actually produces a connection to hold, and holding
+    /// one is the whole point of this test.
+    #[tokio::test]
+    async fn checkout_fails_fast_once_the_queue_is_already_as_deep_as_the_pool() {
+        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let pool = build_pool(&database_url, 1).expect("the gated test database url builds a pool");
+
+        // Hold the pool's only slot for the rest of the test.
+        let _held = pool
+            .get()
+            .await
+            .expect("the only slot should check out with nobody else contending for it");
+
+        // A genuine waiter: this task's own `checkout` call passes the
+        // (still-idle) admission check and then blocks for real inside
+        // `pool.get()`, since the only slot is held above.
+        let waiting_pool = pool.clone();
+        let waiter = tokio::spawn(async move {
+            let _ = checkout(&waiting_pool).await;
+        });
+
+        // `Status` is eventually consistent (deadpool's own doc comment on
+        // `Status`), not synchronous with the spawn call above, so poll for
+        // the waiter to actually register rather than asserting immediately.
+        let mut attempts = 0;
+        while pool.status().waiting == 0 && attempts < 100 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            attempts += 1;
+        }
+        assert_eq!(
+            pool.status().waiting,
+            1,
+            "the spawned task should be genuinely queued before this test proceeds"
+        );
+
+        let started = std::time::Instant::now();
+        let result = checkout(&pool).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(
+                result,
+                Err(deadpool_postgres::PoolError::Timeout(
+                    deadpool_postgres::TimeoutType::Wait
+                ))
+            ),
+            "expected an immediate Timeout(Wait), got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "checkout took {elapsed:?} -- expected a near-instant refusal, not a real wait \
+             for ACKPLANE_DB_POOL_TIMEOUT_MS (default 5000ms) to elapse"
+        );
+
+        waiter.abort();
     }
 }

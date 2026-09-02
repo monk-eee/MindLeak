@@ -72,7 +72,7 @@ impl HumanDecisionStore {
     /// of that transaction, which is the one case where holding a pooled
     /// connection across `.await` points is correct rather than accidental.
     async fn connection(&self) -> Result<PgConnection, HumanDecisionStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// Records a durable escalation request after the caller has already

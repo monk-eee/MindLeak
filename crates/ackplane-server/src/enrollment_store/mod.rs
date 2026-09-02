@@ -219,7 +219,7 @@ impl EnrollmentStore {
     }
 
     async fn connection(&self) -> Result<PgConnection, EnrollmentStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 }
 

@@ -63,7 +63,7 @@ impl SupervisorStore {
     }
 
     async fn connection(&self) -> Result<PgConnection, SupervisorStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// Registers an immutable capability declaration. A byte-identical retry

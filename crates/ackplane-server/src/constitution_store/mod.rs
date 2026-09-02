@@ -142,7 +142,7 @@ impl ConstitutionStore {
     }
 
     async fn connection(&self) -> Result<PgConnection, ConstitutionStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// Resolve the signing key a constitution request's authentication
