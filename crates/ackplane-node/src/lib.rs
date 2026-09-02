@@ -6,15 +6,18 @@
 //! or persist the private key themselves — they speak to this crate's narrow
 //! `NodeSigner` capability instead.
 //!
-//! This slice ships the `NodeSigner` contract and a development-only software
-//! provider (ADR-0100 decision 5's explicit dev carve-out). OS-backed
-//! providers (Windows CNG, macOS Keychain/Secure Enclave, Linux PKCS#11/TPM)
-//! are deliberately out of scope here and land as separate, narrow follow-on
-//! slices.
+//! This crate also ships a repository-scoped local IPC endpoint (`ipc`,
+//! ADR-0100 decision 4): a Windows named pipe or a Unix-domain socket that
+//! accepts only the closed `NodeSigner` operations above, never a TCP
+//! listener and never a reusable bearer token. OS-backed providers (Windows
+//! CNG, macOS Keychain/Secure Enclave, Linux PKCS#11/TPM), enrolment/restart
+//! recovery, and key rotation are separate, narrow follow-on slices.
 
 mod process_lock;
 mod provider;
 mod signer;
+
+pub mod ipc;
 
 pub use process_lock::{LockError, NodeProcessLock};
 pub use provider::software::SoftwareProvider;
