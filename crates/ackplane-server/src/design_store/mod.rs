@@ -626,9 +626,10 @@ mod tests {
         let task_id = unique_id("task");
         let pool = crate::db_pool::build_pool(&database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
             .expect("the test database url should build a pool");
-        let mut work_store = crate::work_store::WorkStore::connect(&database_url)
-            .await
-            .unwrap();
+        let work_store =
+            crate::work_store::WorkStore::connect(&crate::test_support::gated_test_pool())
+                .await
+                .unwrap();
         work_store
             .create_task(
                 &crate::work_store::NewWorkTask {

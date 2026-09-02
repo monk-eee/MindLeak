@@ -79,7 +79,7 @@ async fn start_server(database_url: &str) -> TestServer {
     let ledger = LedgerStore::connect(&pool)
         .await
         .expect("the gated test database should accept ledger migrations");
-    let work_store = WorkStore::connect(database_url)
+    let work_store = WorkStore::connect(&pool)
         .await
         .expect("the gated test database should accept Work migrations");
 

@@ -15,13 +15,16 @@ impl WorkStore {
     /// `creation_event_id` is derived from the authenticated node's creation
     /// key and is never allowed to replay changed task content.
     pub(crate) async fn record_node_task(
-        &mut self,
+        &self,
         task: &NewWorkTask,
         creation_event_id: &str,
         now: SystemTime,
     ) -> Result<WorkTaskCreationOutcome, WorkStoreError> {
         let digest = source_digest(task);
-        let transaction = self.client.transaction().await?;
+        // One connection, held until commit: ADR-0120 decision 3 requires the
+        // event and its projection update to land in one transaction.
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         if let Some(outcome) =
             existing_creation(&transaction, task, creation_event_id, &digest).await?
         {
@@ -164,7 +167,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_identical_node_creations_record_once_and_replay_once() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
@@ -183,10 +186,10 @@ mod tests {
         };
         let creation_event_id = unique_id("creation-event");
         let now = SystemTime::now();
-        let mut first = WorkStore::connect(&database_url)
+        let first = WorkStore::connect(&pool)
             .await
             .expect("the gated test database should accept Work migrations");
-        let mut second = WorkStore::connect(&database_url)
+        let second = WorkStore::connect(&pool)
             .await
             .expect("the gated test database should accept a second Work connection");
 
@@ -206,7 +209,7 @@ mod tests {
         assert_eq!(replay_flags, vec![false, true]);
         assert_eq!(outcomes[0].task, outcomes[1].task);
 
-        let reader = WorkStore::connect(&database_url)
+        let reader = WorkStore::connect(&pool)
             .await
             .expect("the test can read the persisted Work record");
         let detail = reader
@@ -235,7 +238,7 @@ mod tests {
 
     #[tokio::test]
     async fn changed_content_under_one_creation_event_is_a_conflict_without_overwriting_work() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
@@ -253,7 +256,7 @@ mod tests {
             published_by: unique_id("node"),
         };
         let creation_event_id = unique_id("creation-event");
-        let mut store = WorkStore::connect(&database_url)
+        let store = WorkStore::connect(&pool)
             .await
             .expect("the gated test database should accept Work migrations");
         let created = store

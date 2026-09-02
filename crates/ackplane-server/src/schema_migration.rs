@@ -72,7 +72,7 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     LiveFeedStore::connect(&pool)
         .await
         .map_err(|error| format!("live feed schema failed: {error}"))?;
-    WorkStore::connect(database_url)
+    WorkStore::connect(&pool)
         .await
         .map_err(|error| format!("work schema failed: {error}"))?;
     HumanDecisionStore::connect(&pool)

@@ -16,9 +16,9 @@
 
 use std::time::SystemTime;
 
+use crate::db_pool::{PgConnection, PgPool};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio_postgres::Client;
 
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
@@ -156,6 +156,8 @@ pub struct WorkTaskDetail {
 pub enum WorkStoreError {
     #[error("work store database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("work store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("unknown work task state: {value}")]
     UnknownState { value: i16 },
     #[error("task {tenant_id}/{repository_id}/{task_id} already exists")]
@@ -194,18 +196,15 @@ fn append_digest_part(hasher: &mut Sha256, value: &[u8]) {
 
 /// Read-write access to a tenant's Industrial Work namespace.
 pub struct WorkStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl WorkStore {
-    pub async fn connect(database_url: &str) -> Result<Self, WorkStoreError> {
-        let (mut client, connection) =
-            tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane work store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be exactly
+    /// the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, WorkStoreError> {
+        let mut client = pool.get().await?;
         crate::migration_lock::migrate_locked(
             &mut client,
             crate::migration_lock::key::CLAIM_DELEGATION,
@@ -227,19 +226,32 @@ impl WorkStore {
             WORK_TASK_COMMAND_EXECUTION_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the life
+    /// of that transaction — which is load-bearing here: ADR-0120 decision 3
+    /// requires the Work event and its projection update to land in one
+    /// transaction, so both must run on the same connection.
+    pub(in crate::work_store) async fn connection(&self) -> Result<PgConnection, WorkStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Records the initial event and the current-state projection in one
     /// transaction (ADR-0120 decision 3).
     pub async fn create_task(
-        &mut self,
+        &self,
         task: &NewWorkTask,
         event_id: &str,
         now: SystemTime,
     ) -> Result<WorkTask, WorkStoreError> {
         let digest = source_digest(task);
-        let transaction = self.client.transaction().await?;
+        // One connection, held until commit: ADR-0120 decision 3 requires the
+        // event and its projection update to land in one transaction.
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let inserted = transaction
             .execute(
                 "INSERT INTO work_tasks (tenant_id, repository_id, task_id, title, acceptance, \
@@ -342,9 +354,12 @@ impl WorkStore {
         page_size: i64,
     ) -> Result<WorkTaskPage, WorkStoreError> {
         let offset = (page - 1) * page_size;
+        // One checkout for either branch: both arms are the same read with a
+        // different filter, so taking two connections would be accidental.
+        let connection = self.connection().await?;
         let rows = match state {
             Some(state) => {
-                self.client
+                connection
                     .query(
                         "SELECT *, COUNT(*) OVER()::BIGINT AS total_count FROM work_tasks \
                          WHERE tenant_id = $1 AND repository_id = $2 AND state = $3 \
@@ -360,7 +375,7 @@ impl WorkStore {
                     .await?
             }
             None => {
-                self.client
+                connection
                     .query(
                         "SELECT *, COUNT(*) OVER()::BIGINT AS total_count FROM work_tasks \
                          WHERE tenant_id = $1 AND repository_id = $2 \
@@ -385,7 +400,8 @@ impl WorkStore {
         task_id: &str,
     ) -> Result<Option<WorkTaskDetail>, WorkStoreError> {
         let Some(task_row) = self
-            .client
+            .connection()
+                .await?
             .query_opt(
                 "SELECT * FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
                 &[&tenant_id, &repository_id, &task_id],
@@ -396,7 +412,8 @@ impl WorkStore {
         };
         let task = Self::row_to_task(&task_row)?;
         let history_rows = self
-            .client
+            .connection()
+                .await?
             .query(
                 "SELECT event_id, from_state, to_state, actor_id, recorded_at FROM work_task_history \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
@@ -417,7 +434,8 @@ impl WorkStore {
             });
         }
         let wait_rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT wait_id, question, audience, asked_by, asked_at, answered_by, answer, \
                     answered_at FROM work_task_waits \
@@ -479,14 +497,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_created_task_appears_in_the_list_as_open() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let now = SystemTime::now();
         store
             .create_task(
@@ -516,14 +534,14 @@ mod tests {
 
     #[tokio::test]
     async fn creating_the_same_task_twice_is_a_conflict() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let task = new_task(&tenant_id, &repository_id, &task_id, "Ship the thing");
         store
             .create_task(&task, &unique_id("event"), SystemTime::now())
@@ -539,14 +557,14 @@ mod tests {
 
     #[tokio::test]
     async fn task_detail_includes_the_creation_event() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let event_id = unique_id("event");
         store
             .create_task(
@@ -573,11 +591,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_task_that_does_not_exist_has_no_detail() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
-        let store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
 
         let detail = store
             .task_detail(&unique_id("tenant"), &unique_id("repo"), &unique_id("task"))

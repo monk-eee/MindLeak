@@ -88,14 +88,13 @@ async fn raw_client(database_url: &str) -> tokio_postgres::Client {
 /// migrations apply) and returns the store still connected for later
 /// `task_detail` reads.
 async fn seed_task(
-    database_url: &str,
     tenant_id: &str,
     repository_id: &str,
     task_id: &str,
     suffix: &str,
     now: SystemTime,
 ) -> WorkStore {
-    let mut work_store = WorkStore::connect(database_url)
+    let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("the work store should connect");
     work_store
@@ -921,7 +920,7 @@ async fn seed_wait(
 
 #[tokio::test]
 async fn confirming_create_work_applies_and_creates_the_task() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -951,7 +950,7 @@ async fn confirming_create_work_applies_and_creates_the_task() {
         &suffix,
         vec![WorkCommandKind::CreateWork],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -984,7 +983,7 @@ async fn confirming_create_work_applies_and_creates_the_task() {
     assert!(!idempotent_replay);
     assert_eq!(receipt.outcome, WorkCommandOutcome::Applied);
 
-    let work_store = WorkStore::connect(&database_url)
+    let work_store = WorkStore::connect(&pool)
         .await
         .expect("the work store should connect");
     let detail = work_store
@@ -998,7 +997,7 @@ async fn confirming_create_work_applies_and_creates_the_task() {
 
 #[tokio::test]
 async fn confirming_create_work_against_an_existing_task_id_conflicts() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1007,15 +1006,7 @@ async fn confirming_create_work_against_an_existing_task_id_conflicts() {
     let repository_id = format!("repository-{suffix}");
     let task_id = format!("task-{suffix}");
     let now = SystemTime::now();
-    seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     let payload = WorkCommandPayload::CreateWork(CreateWorkPayload {
         task_id: task_id.clone(),
         title: format!("Title {suffix}"),
@@ -1037,7 +1028,7 @@ async fn confirming_create_work_against_an_existing_task_id_conflicts() {
         &suffix,
         vec![WorkCommandKind::CreateWork],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1068,7 +1059,7 @@ async fn confirming_create_work_against_an_existing_task_id_conflicts() {
 
 #[tokio::test]
 async fn confirming_route_work_applies_and_bumps_the_task_version() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1077,15 +1068,7 @@ async fn confirming_route_work_applies_and_bumps_the_task_version() {
     let repository_id = format!("repository-{suffix}");
     let task_id = format!("task-{suffix}");
     let now = SystemTime::now();
-    let work_store = seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    let work_store = seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     let payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
         route_reference: format!("route-{suffix}"),
     });
@@ -1104,7 +1087,7 @@ async fn confirming_route_work_applies_and_bumps_the_task_version() {
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1142,7 +1125,7 @@ async fn confirming_route_work_applies_and_bumps_the_task_version() {
 
 #[tokio::test]
 async fn confirming_route_work_against_a_stale_version_conflicts() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1151,15 +1134,7 @@ async fn confirming_route_work_against_a_stale_version_conflicts() {
     let repository_id = format!("repository-{suffix}");
     let task_id = format!("task-{suffix}");
     let now = SystemTime::now();
-    seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     let payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
         route_reference: format!("route-{suffix}"),
     });
@@ -1180,7 +1155,7 @@ async fn confirming_route_work_against_a_stale_version_conflicts() {
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1221,15 +1196,7 @@ async fn confirming_release_lease_applies_and_reopens_a_claimed_task() {
     let task_id = format!("task-{suffix}");
     let owner_id = format!("owner-{suffix}");
     let now = SystemTime::now();
-    let work_store = seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    let work_store = seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     set_task_claimed(
         &database_url,
         &tenant_id,
@@ -1306,7 +1273,7 @@ async fn confirming_release_lease_applies_and_reopens_a_claimed_task() {
 
 #[tokio::test]
 async fn confirming_release_lease_without_a_claim_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1316,15 +1283,7 @@ async fn confirming_release_lease_without_a_claim_is_refused() {
     let task_id = format!("task-{suffix}");
     let owner_id = format!("owner-{suffix}");
     let now = SystemTime::now();
-    seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     let payload = WorkCommandPayload::ReleaseLease(ReleaseLeasePayload {
         expected_owner_id: owner_id,
         expected_lease_expires_at: now,
@@ -1344,7 +1303,7 @@ async fn confirming_release_lease_without_a_claim_is_refused() {
         &suffix,
         vec![WorkCommandKind::ReleaseLease],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1385,15 +1344,7 @@ async fn confirming_release_lease_against_a_changed_owner_conflicts() {
     let task_id = format!("task-{suffix}");
     let real_owner_id = format!("owner-{suffix}");
     let now = SystemTime::now();
-    seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     set_task_claimed(
         &database_url,
         &tenant_id,
@@ -1472,15 +1423,7 @@ async fn confirming_answer_wait_applies_and_records_the_answer() {
     let task_id = format!("task-{suffix}");
     let wait_id = format!("wait-{suffix}");
     let now = SystemTime::now();
-    let work_store = seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    let work_store = seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     seed_wait(
         &database_url,
         &tenant_id,
@@ -1564,15 +1507,7 @@ async fn confirming_answer_wait_against_an_already_answered_wait_conflicts() {
     let task_id = format!("task-{suffix}");
     let wait_id = format!("wait-{suffix}");
     let now = SystemTime::now();
-    seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     seed_wait(
         &database_url,
         &tenant_id,
@@ -1633,7 +1568,7 @@ async fn confirming_answer_wait_against_an_already_answered_wait_conflicts() {
 
 #[tokio::test]
 async fn confirming_submit_review_applies_and_moves_the_task_to_in_review() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1642,15 +1577,7 @@ async fn confirming_submit_review_applies_and_moves_the_task_to_in_review() {
     let repository_id = format!("repository-{suffix}");
     let task_id = format!("task-{suffix}");
     let now = SystemTime::now();
-    let work_store = seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    let work_store = seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     let payload = WorkCommandPayload::SubmitReview(SubmitReviewPayload {
         disposition: ReviewDisposition::Accept,
         rationale: "The acceptance criteria are all satisfied.".to_owned(),
@@ -1670,7 +1597,7 @@ async fn confirming_submit_review_applies_and_moves_the_task_to_in_review() {
         &suffix,
         vec![WorkCommandKind::SubmitReview],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1707,7 +1634,7 @@ async fn confirming_submit_review_applies_and_moves_the_task_to_in_review() {
 
 #[tokio::test]
 async fn confirming_the_same_command_twice_replays_without_re_applying_the_effect() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1716,15 +1643,7 @@ async fn confirming_the_same_command_twice_replays_without_re_applying_the_effec
     let repository_id = format!("repository-{suffix}");
     let task_id = format!("task-{suffix}");
     let now = SystemTime::now();
-    let work_store = seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    let work_store = seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     let payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
         route_reference: format!("route-{suffix}"),
     });
@@ -1743,7 +1662,7 @@ async fn confirming_the_same_command_twice_replays_without_re_applying_the_effec
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1805,7 +1724,7 @@ async fn confirming_the_same_command_twice_replays_without_re_applying_the_effec
 
 #[tokio::test]
 async fn confirming_an_expired_command_reports_expired_without_applying_the_effect() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1814,15 +1733,7 @@ async fn confirming_an_expired_command_reports_expired_without_applying_the_effe
     let repository_id = format!("repository-{suffix}");
     let task_id = format!("task-{suffix}");
     let now = SystemTime::now();
-    let work_store = seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    let work_store = seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     let payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
         route_reference: format!("route-{suffix}"),
     });
@@ -1841,7 +1752,7 @@ async fn confirming_an_expired_command_reports_expired_without_applying_the_effe
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -1878,7 +1789,7 @@ async fn confirming_an_expired_command_reports_expired_without_applying_the_effe
 
 #[tokio::test]
 async fn confirming_a_changed_payload_is_refused_as_a_digest_mismatch() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
@@ -1887,15 +1798,7 @@ async fn confirming_a_changed_payload_is_refused_as_a_digest_mismatch() {
     let repository_id = format!("repository-{suffix}");
     let task_id = format!("task-{suffix}");
     let now = SystemTime::now();
-    let work_store = seed_task(
-        &database_url,
-        &tenant_id,
-        &repository_id,
-        &task_id,
-        &suffix,
-        now,
-    )
-    .await;
+    let work_store = seed_task(&tenant_id, &repository_id, &task_id, &suffix, now).await;
     let submitted_payload = WorkCommandPayload::RouteWork(RouteWorkPayload {
         route_reference: format!("route-{suffix}"),
     });
@@ -1917,7 +1820,7 @@ async fn confirming_a_changed_payload_is_refused_as_a_digest_mismatch() {
         &suffix,
         vec![WorkCommandKind::RouteWork],
     );
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
