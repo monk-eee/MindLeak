@@ -142,7 +142,12 @@ async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
 /// profile this ADR-0142 test suite replaces, which never reached the store
 /// at all. Seed the real task these fixtures target before submitting.
 async fn seed_task(database_url: &str, tenant_id: &str, repository_id: &str, task_id: &str) {
-    let mut work_store = ackplane_server::work_store::WorkStore::connect(database_url)
+    let seed_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let work_store = ackplane_server::work_store::WorkStore::connect(&seed_pool)
         .await
         .expect("connect Work store");
     work_store

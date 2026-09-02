@@ -114,8 +114,13 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
     let work = Arc::new(
-        WorkStore::connect(database_url)
+        WorkStore::connect(&db_pool)
             .await
             .expect("connect Work store"),
     );

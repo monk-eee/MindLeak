@@ -324,7 +324,7 @@ pub(super) mod tests {
                     .expect("connect Telemetry store"),
             ),
             work: Arc::new(
-                WorkStore::connect(database_url)
+                WorkStore::connect(&db_pool)
                     .await
                     .expect("connect Work store"),
             ),
