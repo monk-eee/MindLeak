@@ -13,14 +13,28 @@
 // in one week (keys 19 and 27) before this tool existed, always discovered
 // by hand via ad hoc `git grep` plus a manual `psql` query.
 //
+// A key can also be held under the *wrong content*: `migrate_locked` records
+// a SHA-256 of each migration's text beside its key, so a migration that was
+// applied and then edited -- exactly what ADR-0063 forbids -- refuses at
+// runtime with a digest mismatch. Measured 2026-09-02: key 60 in
+// `ackplane_test` held the pre-split bundled `0060_design_constitution_
+// display_label.sql` (b0f93563) while committed source had since split it in
+// two, so every `ConstitutionStore::connect` refused and a full test run
+// reported 58 failures across five unrelated subsystems. This tool reported
+// CLEAN throughout, for two independent reasons now both fixed: it compared
+// keys but never content, and it only ever looked at `ackplane` -- not
+// `ackplane_test`, the database ADR-0133 gave every `cargo test` run.
+//
 // This reports the same comparison as a repeatable command instead:
 //   - two committed constants naming the same key (a static defect: no live
 //     database needed to see it)
 //   - a committed constant with no matching migrations/*.sql file, or vice
 //     versa (also static)
-//   - keys the *live* shared database has applied that this branch's own
-//     source never declared (the actual defect above -- needs Postgres
-//     reachable; skipped, not failed, when it is not)
+//   - keys a *live* database has applied that this branch's own source never
+//     declared (the actual defect above -- needs Postgres reachable;
+//     skipped, not failed, when it is not)
+//   - keys a live database applied under content that no longer matches the
+//     committed migration now carrying that key (the rewrite above)
 //
 // Usage:
 //   node scripts/migration-audit.mjs [--check] [--container <name>]
@@ -34,6 +48,7 @@
 // getting wrong.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -41,6 +56,14 @@ import { fileURLToPath } from "node:url";
 
 const KEY_CONST_PATTERN = /pub\(crate\) const (\w+): i64 = (-?\d+);/g;
 const MIGRATION_FILE_PATTERN = /^0*(\d+)_.+\.sql$/;
+
+/**
+ * Every database a migration key can be burned in. `ackplane` is what the
+ * running services use; `ackplane_test` is what every `cargo test` run uses
+ * (ADR-0133). Auditing only the first is why the key-60 rewrite above went
+ * unreported: the damage was entirely in the second.
+ */
+const LIVE_DATABASES = ["ackplane", "ackplane_test"];
 
 /**
  * Every named migration key declared in migration_lock.rs's `key` module.
@@ -127,12 +150,41 @@ export function nextAvailableKey(keys, fileNumbers, appliedKeys = []) {
 }
 
 /**
- * The keys a live database's own ledger has recorded as applied, or `null`
- * when none could be reached. Soft failure by design: this check only ever
- * adds information, and must never block on infrastructure a caller may not
- * have running (CI never will; a fresh clone may not either).
+ * The SHA-256 `migration_lock::content_digest` records for a migration: a
+ * plain hash of the SQL text, with no normalisation. Mirrored here rather
+ * than approximated, because a digest computed any other way would disagree
+ * with the ledger on every row and report the whole database as damaged.
  */
-export function appliedKeysFromLiveDatabase(run, container, user, database) {
+export function contentDigest(sql) {
+  return createHash("sha256").update(Buffer.from(sql, "utf8")).digest("hex");
+}
+
+/** Committed migration text keyed by migration number, with its digest. */
+export function committedDigests(migrations) {
+  const byKey = new Map();
+  for (const { key, name, sql } of migrations) {
+    byKey.set(key, { name, digest: contentDigest(sql) });
+  }
+  return byKey;
+}
+
+/**
+ * Every key a live database's ledger has recorded, with the content digest
+ * stored beside it, or `null` when the database could not be reached. Soft
+ * failure by design: this check only ever adds information, and must never
+ * block on infrastructure a caller may not have running (CI never will; a
+ * fresh clone may not either).
+ *
+ * `coalesce` renders a pre-digest-column row as an empty string rather than
+ * relying on how psql prints NULL, so "no digest recorded" stays
+ * distinguishable from "the empty digest".
+ */
+export function appliedMigrationsFromLiveDatabase(
+  run,
+  container,
+  user,
+  database,
+) {
   let output;
   try {
     output = run([
@@ -146,7 +198,7 @@ export function appliedKeysFromLiveDatabase(run, container, user, database) {
       "-t",
       "-A",
       "-c",
-      "SELECT migration_key FROM ackplane_schema_migrations ORDER BY migration_key",
+      "SELECT migration_key, coalesce(content_digest, '') FROM ackplane_schema_migrations ORDER BY migration_key",
     ]);
   } catch {
     return null;
@@ -155,7 +207,48 @@ export function appliedKeysFromLiveDatabase(run, container, user, database) {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .map(Number);
+    .map((line) => {
+      const separator = line.indexOf("|");
+      return {
+        key: Number(line.slice(0, separator)),
+        digest: line.slice(separator + 1) || null,
+      };
+    });
+}
+
+/**
+ * Keys applied under content that is not what the committed migration now
+ * carrying that key says. The runtime guard refuses these, but only once
+ * someone's own connect() happens to hit the key -- surfacing as a wall of
+ * failures in whatever subsystem asked first, naming a diff that is usually
+ * innocent.
+ *
+ * A row with no digest is skipped, never reported: `migrate_locked` adopts
+ * those rather than refusing, so flagging them would fire on every database
+ * old enough to predate the column.
+ */
+export function digestMismatches(appliedRows, committedByKey) {
+  return appliedRows
+    .filter((row) => row.digest)
+    .map((row) => ({ row, committed: committedByKey.get(row.key) }))
+    .filter(
+      ({ row, committed }) => committed && committed.digest !== row.digest,
+    )
+    .map(({ row, committed }) => ({
+      key: row.key,
+      name: committed.name,
+      applied: row.digest,
+      committed: committed.digest,
+    }))
+    .sort((a, b) => a.key - b.key);
+}
+
+/** Applied keys recorded before `migrate_locked` gained its digest column. */
+export function legacyDigestRows(appliedRows) {
+  return appliedRows
+    .filter((row) => !row.digest)
+    .map((row) => row.key)
+    .sort((a, b) => a - b);
 }
 
 function migrationsDir(repoRoot) {
@@ -188,20 +281,34 @@ async function main() {
   );
   const source = fs.readFileSync(lockFilePath(repoRoot), "utf8");
   const keys = committedKeys(source);
-  const fileNumbers = committedFileNumbers(
-    fs.readdirSync(migrationsDir(repoRoot)),
+  const migrationFilenames = fs.readdirSync(migrationsDir(repoRoot));
+  const fileNumbers = committedFileNumbers(migrationFilenames);
+  const committedByKey = committedDigests(
+    migrationFilenames
+      .map((name) => ({ name, match: MIGRATION_FILE_PATTERN.exec(name) }))
+      .filter(({ match }) => match)
+      .map(({ name, match }) => ({
+        key: Number(match[1]),
+        name,
+        sql: fs.readFileSync(path.join(migrationsDir(repoRoot), name), "utf8"),
+      })),
   );
   const run = (args) => execFileSync("docker", args, { encoding: "utf8" });
-  const applied = appliedKeysFromLiveDatabase(
-    run,
-    container,
-    "ackplane",
-    "ackplane",
-  );
+  const live = LIVE_DATABASES.map((database) => ({
+    database,
+    rows: appliedMigrationsFromLiveDatabase(
+      run,
+      container,
+      "ackplane",
+      database,
+    ),
+  }));
+  const applied = live.flatMap(({ rows }) => rows ?? []).map((row) => row.key);
+  const reachable = live.some(({ rows }) => rows !== null);
 
   if (next) {
-    console.log(nextAvailableKey(keys, fileNumbers, applied ?? []));
-    if (applied === null) {
+    console.log(nextAvailableKey(keys, fileNumbers, applied));
+    if (!reachable) {
       console.error(
         `(no live database reachable via container "${container}"; based on committed source only)`,
       );
@@ -235,22 +342,60 @@ async function main() {
   console.log(
     "\n=== keys the live database has applied but this branch's source never declared ===",
   );
-  if (applied === null) {
-    console.log(
-      `  skipped: no live database reachable via container "${container}"`,
+  for (const { database, rows } of live) {
+    if (rows === null) {
+      console.log(
+        `  ${database}: skipped, not reachable via container "${container}"`,
+      );
+      continue;
+    }
+    const orphaned = appliedKeysNotInSource(
+      rows.map((row) => row.key),
+      keys,
     );
-  } else {
-    const orphaned = appliedKeysNotInSource(applied, keys);
-    if (orphaned.length === 0) console.log("  none");
+    if (orphaned.length === 0) {
+      console.log(`  ${database}: none`);
+      continue;
+    }
     for (const key of orphaned) {
       console.log(
-        `  ${key}  <- reached the shared database from work nobody committed`,
+        `  ${database}: ${key}  <- reached this database from work nobody committed`,
       );
     }
   }
 
   console.log(
-    `\nsummary: ${duplicates.length} duplicate key value(s), ${missingFiles.length} constant(s) with no file, ${missingKeys.length} file(s) with no constant`,
+    "\n=== keys applied under different content than the committed migration ===",
+  );
+  let mismatchCount = 0;
+  for (const { database, rows } of live) {
+    if (rows === null) {
+      console.log(
+        `  ${database}: skipped, not reachable via container "${container}"`,
+      );
+      continue;
+    }
+    const mismatches = digestMismatches(rows, committedByKey);
+    mismatchCount += mismatches.length;
+    const legacy = legacyDigestRows(rows);
+    if (mismatches.length === 0) {
+      console.log(
+        `  ${database}: none${legacy.length ? ` (${legacy.length} pre-digest row(s) adopted on next run, not a mismatch)` : ""}`,
+      );
+      continue;
+    }
+    for (const { key, name, applied: appliedDigest, committed } of mismatches) {
+      console.log(`  ${database}: key ${key} (${name})`);
+      console.log(`      applied   ${appliedDigest}`);
+      console.log(`      committed ${committed}`);
+      console.log(
+        "      every connect() that reaches this key now refuses. The migration was edited after it applied (ADR-0063); repair the ledger row or renumber.",
+      );
+    }
+  }
+
+  console.log(
+    `\nsummary: ${duplicates.length} duplicate key value(s), ${missingFiles.length} constant(s) with no file, ${missingKeys.length} file(s) with no constant, ${mismatchCount} key(s) applied under different content`,
   );
   if (
     check &&
