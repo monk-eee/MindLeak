@@ -3,13 +3,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  appliedKeysFromLiveDatabase,
   appliedKeysNotInSource,
+  appliedMigrationsFromLiveDatabase,
+  committedDigests,
   committedFileNumbers,
   committedKeys,
+  contentDigest,
+  digestMismatches,
   duplicateKeyValues,
   filesMissingKeys,
   keysMissingFiles,
+  legacyDigestRows,
   nextAvailableKey,
 } from "./migration-audit.mjs";
 
@@ -128,16 +132,16 @@ test("nextAvailableKey defaults to 1 for a repository with no migrations yet", (
   assert.equal(nextAvailableKey([], []), 1);
 });
 
-test("appliedKeysFromLiveDatabase queries the named container with the expected psql invocation", () => {
+test("appliedMigrationsFromLiveDatabase queries the named container with the expected psql invocation", () => {
   let calledWith;
-  const applied = appliedKeysFromLiveDatabase(
+  const applied = appliedMigrationsFromLiveDatabase(
     (args) => {
       calledWith = args;
-      return "1\n2\n19\n\n";
+      return "1|aaaa\n2|bbbb\n19|\n\n";
     },
     "ackplane-postgres-1",
     "ackplane",
-    "ackplane",
+    "ackplane_test",
   );
 
   assert.deepEqual(calledWith, [
@@ -147,17 +151,21 @@ test("appliedKeysFromLiveDatabase queries the named container with the expected 
     "-U",
     "ackplane",
     "-d",
-    "ackplane",
+    "ackplane_test",
     "-t",
     "-A",
     "-c",
-    "SELECT migration_key FROM ackplane_schema_migrations ORDER BY migration_key",
+    "SELECT migration_key, coalesce(content_digest, '') FROM ackplane_schema_migrations ORDER BY migration_key",
   ]);
-  assert.deepEqual(applied, [1, 2, 19]);
+  assert.deepEqual(applied, [
+    { key: 1, digest: "aaaa" },
+    { key: 2, digest: "bbbb" },
+    { key: 19, digest: null },
+  ]);
 });
 
-test("appliedKeysFromLiveDatabase returns null, not a throw, when no database is reachable", () => {
-  const applied = appliedKeysFromLiveDatabase(
+test("appliedMigrationsFromLiveDatabase returns null, not a throw, when no database is reachable", () => {
+  const applied = appliedMigrationsFromLiveDatabase(
     () => {
       throw new Error("no such container: ackplane-postgres-1");
     },
@@ -166,4 +174,85 @@ test("appliedKeysFromLiveDatabase returns null, not a throw, when no database is
     "ackplane",
   );
   assert.equal(applied, null);
+});
+
+test("contentDigest is the plain sha256 of the migration text, unnormalised", () => {
+  // Pinned to a fixed value rather than recomputed: the point of this
+  // function is agreeing byte-for-byte with migration_lock::content_digest,
+  // so a test that hashes the input the same way the code does would pass
+  // through any change to the algorithm.
+  assert.equal(
+    contentDigest("ALTER TABLE t ADD COLUMN c TEXT;\n"),
+    "eb019769251a06240e3dc48892d8069ac093e8ad7324cb6dc28d90b169a8a2c5",
+  );
+  // No normalisation: migration_lock hashes exactly the text it was handed,
+  // so a trailing newline is a different migration.
+  assert.notEqual(contentDigest("a"), contentDigest("a\n"));
+});
+
+test("digestMismatches names a key applied under content the committed migration no longer carries", () => {
+  // The exact live state measured 2026-09-02: key 60 held the pre-split
+  // bundled migration while committed source had since split it in two.
+  const committed = committedDigests([
+    {
+      key: 60,
+      name: "0060_constitution_proposals_display_label.sql",
+      sql: "split",
+    },
+  ]);
+  const mismatches = digestMismatches(
+    [{ key: 60, digest: contentDigest("bundled") }],
+    committed,
+  );
+  assert.deepEqual(mismatches, [
+    {
+      key: 60,
+      name: "0060_constitution_proposals_display_label.sql",
+      applied: contentDigest("bundled"),
+      committed: contentDigest("split"),
+    },
+  ]);
+});
+
+test("digestMismatches reports nothing when the applied content still matches", () => {
+  const committed = committedDigests([
+    { key: 60, name: "0060_x.sql", sql: "same" },
+  ]);
+  assert.deepEqual(
+    digestMismatches([{ key: 60, digest: contentDigest("same") }], committed),
+    [],
+  );
+});
+
+test("digestMismatches ignores a pre-digest row rather than calling it a mismatch", () => {
+  // migrate_locked adopts a NULL-digest row instead of refusing, so treating
+  // one as damage would fire on every database older than the column and
+  // train people to ignore the whole section.
+  const committed = committedDigests([
+    { key: 60, name: "0060_x.sql", sql: "anything" },
+  ]);
+  assert.deepEqual(
+    digestMismatches([{ key: 60, digest: null }], committed),
+    [],
+  );
+});
+
+test("digestMismatches leaves an undeclared key to the orphaned-key section", () => {
+  // Key 59 is applied in ackplane_test with no committed constant at all.
+  // Reporting it here too would double-count one defect under two headings.
+  assert.deepEqual(
+    digestMismatches([{ key: 59, digest: "whatever" }], committedDigests([])),
+    [],
+  );
+});
+
+test("legacyDigestRows names only the rows written before the digest column existed", () => {
+  assert.deepEqual(
+    legacyDigestRows([
+      { key: 3, digest: null },
+      { key: 1, digest: "aaaa" },
+      { key: 2, digest: null },
+    ]),
+    [2, 3],
+  );
 });
