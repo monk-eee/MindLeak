@@ -81,6 +81,24 @@ pub async fn migrate_all(database_url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Marks `database_url`'s target shared (ADR unnumbered: the migration-apply
+/// gate that closes gaps.d/unaccepted-work-migration-reaches-shared-db.md):
+/// a one-time, explicit provisioning action for whoever stands up a shared
+/// or persistent Postgres instance. After this, every `migrate_locked` call
+/// against it refuses without an explicit `ACKPLANE_MIGRATE_REVIEWED`
+/// acknowledgement. Exposed as `ackplane-migrate --mark-shared`.
+pub async fn mark_database_shared(database_url: &str) -> Result<(), String> {
+    let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
+        .await
+        .map_err(|error| format!("connecting to mark the database shared failed: {error}"))?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    crate::migration_lock::mark_shared_database(&client)
+        .await
+        .map_err(|error| format!("marking the database shared failed: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     const SOURCE: &str = include_str!("schema_migration.rs");
