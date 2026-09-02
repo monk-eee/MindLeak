@@ -4,7 +4,10 @@
 use crate::dialogue::{self, DraftedBy, QuestionDraft};
 use crate::error::ModelFailureReason;
 use crate::llm::{ModelCallProvenance, ModelCallSource};
-use crate::{now_unix, ClaimOverlap, HumanQuestion, Lodestar, LodestarError, Result, TaskQa};
+use crate::{
+    now_unix, ClaimOverlap, FederatedClaimOutcome, HumanQuestion, Lodestar, LodestarError, Result,
+    TaskQa,
+};
 
 impl Lodestar {
     /// Propose the questions this task's owner could put to peers whose live
@@ -118,6 +121,14 @@ impl Lodestar {
     /// move to `needs_input` that keeps the owner + evidence window but clears
     /// the live lease. `audience` addresses it at a peer agent rather than a
     /// human (ADR-0046). Answer it with `answer_question`.
+    ///
+    /// Routes through a federated repository's Ackplane claim CAS when
+    /// [`with_federated_claim_authority`](Self::with_federated_claim_authority)
+    /// was called (ADR-0096 clause completion): Ackplane is the sole
+    /// authority over the claim-state transition, so no local CAS decision
+    /// runs before or after the remote request. The question text itself
+    /// stays local either way (ADR-0020's task_qa thread) -- Ackplane never
+    /// becomes a mode of the local plane's own dialogue.
     pub fn ask_question(
         &self,
         id: &str,
@@ -126,6 +137,28 @@ impl Lodestar {
         audience: Option<&str>,
     ) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
+        // Mirrors `LodestarStore::ask_question`'s own normalization: blank
+        // addresses a human, never nothing. Duplicated (not called through)
+        // because the federated path below must apply this rule *before*
+        // asking Ackplane to park anything -- `ParkClaim`'s wire contract
+        // carries no audience field at all (the question stays local), so
+        // Ackplane has no way to refuse a self-addressed question itself.
+        let audience = audience
+            .map(str::trim)
+            .filter(|addressee| !addressee.is_empty());
+        if audience == Some(agent) {
+            return Err(LodestarError::Invalid(format!(
+                "task {id}: an agent cannot address a question to itself"
+            )));
+        }
+        if let Some(authority) = &self.federated_claim_authority {
+            let parked = authority.park(id, agent)?;
+            if parked {
+                self.store
+                    .apply_federated_park(id, agent, question, audience, now_unix())?;
+            }
+            return Ok(parked);
+        }
         self.store
             .ask_question(id, agent, question, audience, now_unix())
     }
@@ -151,6 +184,15 @@ impl Lodestar {
 
     /// Answer a `needs_input` task (ADR-0020): records the durable answer and
     /// returns the task to `claimed` under the same owner with a fresh lease.
+    ///
+    /// Routes through a federated repository's Ackplane claim CAS when
+    /// [`with_federated_claim_authority`](Self::with_federated_claim_authority)
+    /// was called (ADR-0096 clause completion). Unlike the local path,
+    /// `author` need not be the task's owner -- ADR-0046's whole point is a
+    /// peer answering a question addressed to it, not to itself -- so this
+    /// reads the currently-parked owner from the local cache and asks
+    /// Ackplane to grant *that* owner the fresh lease, regardless of which
+    /// agent supplied the answer text.
     pub fn answer_question(
         &self,
         id: &str,
@@ -158,6 +200,23 @@ impl Lodestar {
         author: &str,
         lease_secs: i64,
     ) -> Result<bool> {
+        if let Some(authority) = &self.federated_claim_authority {
+            let task = self
+                .store
+                .get_task(id)?
+                .ok_or_else(|| LodestarError::NotFound(id.to_string()))?;
+            let Some(owner) = task.owner else {
+                return Ok(false);
+            };
+            return match authority.answer(id, &owner, lease_secs)? {
+                FederatedClaimOutcome::Granted(grant) => {
+                    self.store
+                        .apply_federated_answer(id, author, answer, &grant, now_unix())?;
+                    Ok(true)
+                }
+                FederatedClaimOutcome::Rejected { .. } => Ok(false),
+            };
+        }
         self.store
             .answer_question(id, answer, author, lease_secs, now_unix())
     }

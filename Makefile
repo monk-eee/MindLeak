@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit queue queue-watch sweep board-health control-coverage stranded-report migration-audit status reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit binding-audit queue queue-watch sweep board-health control-coverage stranded-report migration-audit status reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -62,6 +62,9 @@ design-audit: ## Report drift between the ADR files and the design ledger (needs
 
 merge-audit: ## Report merged branches whose commits never reached main
 	node scripts/merge-audit.mjs
+
+binding-audit: ## Report goal/code binding defects; ARGS=--check to fail on them, --repair to fix a split
+	node scripts/binding-audit.mjs $(ARGS)
 
 queue: ## Show the delivery queue and update the branch whose turn it is (ADR-0062)
 	node scripts/delivery-queue.mjs

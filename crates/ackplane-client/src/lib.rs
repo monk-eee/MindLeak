@@ -55,12 +55,13 @@ pub use node_identity::{
 };
 
 pub use ackplane_protocol::v1::{
-    ActiveClaimSummary, ActiveClaimsRequest, ActiveClaimsResult, ClaimLeaseOutcome,
-    ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest, ClaimReleaseRequest,
-    ClaimReleaseResult, ClaimRenewRequest, EnrollmentState, EnrollmentStatusAuthentication,
-    EnrollmentStatusRequest, EnrollmentStatusResult, ListWorkTasksRequest, ListWorkTasksResult,
-    WorkBoardDoctorRequest, WorkBoardDoctorResult, WorkClaimsOnlySummary, WorkDoctorFindingSummary,
-    WorkPublicationSummary, WorkTaskDetailRequest, WorkTaskDetailResult, WorkTaskSummary,
+    ActiveClaimSummary, ActiveClaimsRequest, ActiveClaimsResult, ClaimAnswerRequest,
+    ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult, ClaimParkRequest, ClaimParkResult,
+    ClaimRecoverRequest, ClaimReleaseRequest, ClaimReleaseResult, ClaimRenewRequest,
+    EnrollmentState, EnrollmentStatusAuthentication, EnrollmentStatusRequest,
+    EnrollmentStatusResult, ListWorkTasksRequest, ListWorkTasksResult, WorkBoardDoctorRequest,
+    WorkBoardDoctorResult, WorkClaimsOnlySummary, WorkDoctorFindingSummary, WorkPublicationSummary,
+    WorkTaskDetailRequest, WorkTaskDetailResult, WorkTaskSummary,
 };
 
 /// How long a connection attempt is given before it counts as unreachable.
@@ -189,6 +190,25 @@ impl ClaimClient {
         request: ActiveClaimsRequest,
     ) -> Result<ActiveClaimsResult, ClientError> {
         Ok(self.inner.list_active_claims(request).await?.into_inner())
+    }
+
+    /// Park a claimed task, clearing its lease while keeping the owner's
+    /// exclusive hold (`ClaimDelegationService.ParkClaim`, ADR-0096 clause
+    /// completion).
+    pub async fn park_claim(
+        &mut self,
+        request: ClaimParkRequest,
+    ) -> Result<ClaimParkResult, ClientError> {
+        Ok(self.inner.park_claim(request).await?.into_inner())
+    }
+
+    /// Answer a parked task, granting the parking owner a fresh lease
+    /// (`ClaimDelegationService.AnswerClaim`, ADR-0096 clause completion).
+    pub async fn answer_claim(
+        &mut self,
+        request: ClaimAnswerRequest,
+    ) -> Result<ClaimLeaseResult, ClientError> {
+        Ok(self.inner.answer_claim(request).await?.into_inner())
     }
 }
 
