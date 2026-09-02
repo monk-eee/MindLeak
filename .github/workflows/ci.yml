@@ -50,6 +50,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  # migrate_locked hashes a migration's whole file, so editing one that has
+  # already applied leaves its key held under content no committed source
+  # matches, and every connect() reaching it then refuses. Measured 2026-09-02:
+  # a split of an already-applied 0060 cost 58 test failures across five
+  # unrelated subsystems, none of which named the cause.
+  #
+  # Unlike merge-audit this runs on pull requests too, because the whole point
+  # is to refuse the edit before it lands rather than to report it afterwards.
+  # fetch-depth: 0 so origin/main is resolvable; without it the check reports
+  # that it cannot answer, and says so rather than passing quietly.
+  migration-audit:
+    name: Migrations already applied are not edited
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Audit
+        run: node scripts/migration-audit.mjs --check
+
   rust:
     name: Rust (fmt · clippy · test)
     runs-on: ${{ matrix.os }}
