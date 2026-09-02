@@ -172,16 +172,26 @@ mod tests {
     use super::*;
     use crate::provider::software::SoftwareProvider;
 
+    /// Windows named pipe names are global to the session (unlike the Unix
+    /// path, which is scoped by `dir`), so tests must not reuse a literal
+    /// repository id -- two tests binding the same pipe name in parallel
+    /// collide with `PermissionDenied`. Deriving it from the tempdir's own
+    /// unique name keeps each test's endpoint distinct.
+    fn unique_repo_id(dir: &tempfile::TempDir) -> String {
+        format!("repo-{}", dir.path().file_name().unwrap().to_string_lossy())
+    }
+
     #[test]
     fn a_correctly_scoped_client_receives_an_identity_response() {
         let dir = tempfile::tempdir().unwrap();
-        let signer = SoftwareProvider::generate("tenant-a", "repo-a", "node-a");
-        let listener = NodeIpcListener::bind("repo-a", dir.path()).unwrap();
+        let repo_id = unique_repo_id(&dir);
+        let signer = SoftwareProvider::generate("tenant-a", &repo_id, "node-a");
+        let listener = NodeIpcListener::bind(&repo_id, dir.path()).unwrap();
 
         let server = std::thread::spawn(move || listener.accept_one(&signer));
 
         let response =
-            connect_and_send("repo-a", dir.path(), "repo-a", NodeRequestBody::Identity).unwrap();
+            connect_and_send(&repo_id, dir.path(), &repo_id, NodeRequestBody::Identity).unwrap();
 
         server.join().unwrap().unwrap();
         assert!(matches!(response, NodeResponseBody::Identity(_)));
@@ -190,16 +200,17 @@ mod tests {
     #[test]
     fn a_request_declaring_a_different_repository_id_is_refused() {
         let dir = tempfile::tempdir().unwrap();
-        let signer = SoftwareProvider::generate("tenant-a", "repo-a", "node-a");
-        let listener = NodeIpcListener::bind("repo-a", dir.path()).unwrap();
+        let repo_id = unique_repo_id(&dir);
+        let signer = SoftwareProvider::generate("tenant-a", &repo_id, "node-a");
+        let listener = NodeIpcListener::bind(&repo_id, dir.path()).unwrap();
 
         let server = std::thread::spawn(move || listener.accept_one(&signer));
 
-        // Connects to the real "repo-a" endpoint but declares a different
-        // repository id inside the envelope -- the protocol-level check,
-        // independent of which physical endpoint was reachable at all.
+        // Connects to the real endpoint but declares a different repository
+        // id inside the envelope -- the protocol-level check, independent of
+        // which physical endpoint was reachable at all.
         let response =
-            connect_and_send("repo-a", dir.path(), "repo-b", NodeRequestBody::Identity).unwrap();
+            connect_and_send(&repo_id, dir.path(), "repo-b", NodeRequestBody::Identity).unwrap();
 
         server.join().unwrap().unwrap();
         assert!(matches!(response, NodeResponseBody::Refused { .. }));
