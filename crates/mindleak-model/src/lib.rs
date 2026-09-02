@@ -6,8 +6,12 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
+pub mod discrimination;
+mod node_type;
 #[cfg(feature = "test-support")]
 pub mod test_support;
+
+pub use node_type::NodeType;
 
 /// Stable reason a configured model call could not produce a usable result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

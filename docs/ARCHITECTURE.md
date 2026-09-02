@@ -41,6 +41,17 @@ provenance, on-demand health results, and typed `ureq` failure classification
 clients, prompts, budgets, cancellation, and persistence behavior while sharing
 one vocabulary that cannot drift between their MCP results.
 
+It also carries `NodeType` and the recall discrimination contract
+(`kind_prior`, `distinctive_cut`, `DISTINCTIVE_MIN_FIELD`, `DISTINCTIVE_SIGMA`,
+ADR-0140 decisions 3/5): narrow, pure, storage-agnostic ranking logic with no
+dependency on `mindleak-core` itself, extending the ADR-0136 decision 6
+precedent of factoring identical cross-plane logic into one small shared crate
+rather than a second, independently-written copy. `mindleak-core::model`
+re-exports `NodeType` and `mindleak-core::embed` consumes the discrimination
+functions from here; a future Ackplane recall pipeline (ADR-0140 slice 3) is
+expected to depend on this crate the same way, without ever depending on
+`mindleak-core` or `lodestar-core` (ADR-0082).
+
 ### `mindleak-storage` (library)
 
 Shared platform-independent repository identity, user-local database resolution,
