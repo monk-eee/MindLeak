@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Audit ackplane-server's Postgres migration-key ledger.
 //
-// `migrate_locked` (crates/ackplane-server/src/migration_lock.rs) serialises
+// `migrate_locked` (crates/ackplane-server/src/migration_lock/mod.rs) serialises
 // schema migrations under an advisory lock keyed by a bare integer, tracked
 // in a shared table (`ackplane_schema_migrations`) that persists across
 // however many concurrent branches' local dev testing touches it. Two
@@ -72,15 +72,19 @@ const DEFAULT_BASE_REF = "origin/main";
 const LIVE_DATABASES = ["ackplane", "ackplane_test"];
 
 /**
- * Every named migration key declared in migration_lock.rs's `key` module.
- * `GLOBAL_SCHEMA` is excluded: it names the lock namespace every migration
- * takes first, not a migration of its own, so it never has a matching file.
+ * Every named migration key declared in migration_lock's `key` module
+ * (`crates/ackplane-server/src/migration_lock/key.rs`). `GLOBAL_SCHEMA` is
+ * excluded: it names the lock namespace every migration takes first, not a
+ * migration of its own, so it never has a matching file.
+ * `SHARED_DATABASE_MARKER` is excluded for the same reason: it flags a
+ * database as shared (see `migration_lock::mark_shared_database`), it is not
+ * itself a schema migration, so it too never has a matching file.
  */
 export function committedKeys(source) {
   const found = [];
   for (const match of source.matchAll(KEY_CONST_PATTERN)) {
     const [, name, value] = match;
-    if (name === "GLOBAL_SCHEMA") continue;
+    if (name === "GLOBAL_SCHEMA" || name === "SHARED_DATABASE_MARKER") continue;
     found.push({ name, key: Number(value) });
   }
   return found;
@@ -306,12 +310,17 @@ function migrationsDir(repoRoot) {
 }
 
 function lockFilePath(repoRoot) {
+  // migration_lock.rs was split into a directory module
+  // (crates/ackplane-server/src/migration_lock/{mod,key}.rs) when the
+  // shared-database migration gate pushed it over the module-length
+  // ratchet; the key constants this audit parses now live in key.rs.
   return path.join(
     repoRoot,
     "crates",
     "ackplane-server",
     "src",
-    "migration_lock.rs",
+    "migration_lock",
+    "key.rs",
   );
 }
 
