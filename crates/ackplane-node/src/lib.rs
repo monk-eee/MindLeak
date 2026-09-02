@@ -9,16 +9,19 @@
 //! This crate also ships a repository-scoped local IPC endpoint (`ipc`,
 //! ADR-0100 decision 4): a Windows named pipe or a Unix-domain socket that
 //! accepts only the closed `NodeSigner` operations above, never a TCP
-//! listener and never a reusable bearer token. OS-backed providers (Windows
-//! CNG, macOS Keychain/Secure Enclave, Linux PKCS#11/TPM), enrolment/restart
-//! recovery, and key rotation are separate, narrow follow-on slices.
+//! listener and never a reusable bearer token; and enrolment + restart
+//! identity recovery (`enrolment`, ADR-0100 decision 7). OS-backed providers
+//! (Windows CNG, macOS Keychain/Secure Enclave, Linux PKCS#11/TPM) and key
+//! rotation are separate, narrow follow-on slices.
 
+mod enrolment;
 mod process_lock;
 mod provider;
 mod signer;
 
 pub mod ipc;
 
+pub use enrolment::{enrol, recover, EnrolmentError, EnrolmentRecord};
 pub use process_lock::{LockError, NodeProcessLock};
 pub use provider::software::SoftwareProvider;
 pub use signer::{KeyHandle, NodeIdentity, NodeSigner, NodeSignerError, Signature, SigningBinding};
