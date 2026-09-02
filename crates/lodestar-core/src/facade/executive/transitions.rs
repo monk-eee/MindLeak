@@ -1,7 +1,7 @@
 //! Task lifecycle transitions: block, reopen, abandon, human-accept, and the
 //! owner-guarded pause/resume pair.
 
-use crate::{now_unix, Lodestar, LodestarError, Result};
+use crate::{now_unix, FederatedClaimOutcome, Lodestar, LodestarError, Result};
 
 impl Lodestar {
     /// Mark a task blocked, optionally on one validated predecessor. A non-empty
@@ -91,15 +91,48 @@ impl Lodestar {
 
     /// Deliberately suspend a claimed task (ADR-0020): owner-guarded move to
     /// `paused`, keeping the owner + evidence window but clearing the live lease.
-    /// A non-empty `reason` lands in the durable thread (ADR-0046).
+    /// A non-empty `reason` lands in the task's durable thread (ADR-0046).
+    ///
+    /// Routes through a federated repository's Ackplane claim CAS when
+    /// [`with_federated_claim_authority`](Self::with_federated_claim_authority)
+    /// was called (ADR-0096 clause completion): the same `ParkClaim` RPC
+    /// `ask_question` uses, since Ackplane arbitrates only the claim-state
+    /// transition (lease cleared, owner's exclusive hold kept) and never
+    /// which local status name -- `needs_input` or `paused` -- represents
+    /// why. The reason stays local (task_qa) either way.
     pub fn pause_task(&self, id: &str, agent: &str, reason: Option<&str>) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
+        if let Some(authority) = &self.federated_claim_authority {
+            let parked = authority.park(id, agent)?;
+            if parked {
+                self.store
+                    .apply_federated_pause(id, agent, reason, now_unix())?;
+            }
+            return Ok(parked);
+        }
         self.store.pause_task(id, agent, reason, now_unix())
     }
 
     /// Resume a paused task under the same owner with a fresh lease (ADR-0020).
+    ///
+    /// Routes through a federated repository's Ackplane claim CAS when
+    /// [`with_federated_claim_authority`](Self::with_federated_claim_authority)
+    /// was called (ADR-0096 clause completion), the same `AnswerClaim` RPC
+    /// `answer_question` uses -- but unlike that one, `resume_task` is
+    /// already owner-guarded locally, so `agent` is asserted as the parking
+    /// owner directly rather than read back from the cache.
     pub fn resume_task(&self, id: &str, agent: &str, lease_secs: i64) -> Result<bool> {
         let agent = self.resolve_agent(agent)?;
+        if let Some(authority) = &self.federated_claim_authority {
+            return match authority.answer(id, agent, lease_secs)? {
+                FederatedClaimOutcome::Granted(grant) => {
+                    self.store
+                        .apply_federated_resume(id, agent, &grant, now_unix())?;
+                    Ok(true)
+                }
+                FederatedClaimOutcome::Rejected { .. } => Ok(false),
+            };
+        }
         self.store.resume_task(id, agent, lease_secs, now_unix())
     }
 }
