@@ -77,6 +77,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ackplane-node"
+version = "0.1.7-alpha"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "ackplane-protocol"
 version = "0.1.7-alpha"
 dependencies = [
