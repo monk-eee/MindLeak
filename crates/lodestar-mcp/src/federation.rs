@@ -11,9 +11,9 @@
 //! state to manage between calls.
 
 use ackplane_client::{
-    authenticate, node_identity, ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest,
-    ClaimLeaseResult, ClaimOperation, ClaimRecoverRequest, ClaimReleaseRequest, ClaimRenewRequest,
-    ClaimSigner, CredentialFacilitySigner, SeedSigner,
+    authenticate, node_identity, ClaimAnswerRequest, ClaimClient, ClaimLeaseOutcome,
+    ClaimLeaseRequest, ClaimLeaseResult, ClaimOperation, ClaimParkRequest, ClaimRecoverRequest,
+    ClaimReleaseRequest, ClaimRenewRequest, ClaimSigner, CredentialFacilitySigner, SeedSigner,
 };
 use lodestar_core::{
     FederatedClaimAuthority, FederatedClaimGrant, FederatedClaimOutcome,
@@ -294,6 +294,69 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             .block_on(async {
                 let mut client = ClaimClient::connect(&identity.endpoint).await?;
                 client.recover_claim(wire_request).await
+            })
+            .map_err(map_client_error)?;
+        outcome_from_result(result)
+    }
+
+    fn park(&self, task_id: &str, owner: &str) -> lodestar_core::Result<bool> {
+        let identity = &self.identity;
+        let signer = self.signer()?;
+        let authentication = authenticate(
+            signer.as_ref(),
+            &identity.tenant_id,
+            &identity.repository_id,
+            task_id,
+            owner,
+            &ClaimOperation::Park,
+        );
+        let request = ClaimParkRequest {
+            tenant_id: identity.tenant_id.clone(),
+            repository_id: identity.repository_id.clone(),
+            task_id: task_id.to_string(),
+            owner_id: owner.to_string(),
+            authentication: Some(authentication),
+        };
+        let result = Self::runtime()?
+            .block_on(async {
+                let mut client = ClaimClient::connect(&identity.endpoint).await?;
+                client.park_claim(request).await
+            })
+            .map_err(map_client_error)?;
+        Ok(result.parked)
+    }
+
+    fn answer(
+        &self,
+        task_id: &str,
+        owner: &str,
+        lease_secs: i64,
+    ) -> lodestar_core::Result<FederatedClaimOutcome> {
+        let identity = &self.identity;
+        let operation = ClaimOperation::Answer {
+            lease_seconds: lease_secs.max(0) as u64,
+        };
+        let signer = self.signer()?;
+        let authentication = authenticate(
+            signer.as_ref(),
+            &identity.tenant_id,
+            &identity.repository_id,
+            task_id,
+            owner,
+            &operation,
+        );
+        let request = ClaimAnswerRequest {
+            tenant_id: identity.tenant_id.clone(),
+            repository_id: identity.repository_id.clone(),
+            task_id: task_id.to_string(),
+            owner_id: owner.to_string(),
+            lease_seconds: lease_secs.max(0) as u64,
+            authentication: Some(authentication),
+        };
+        let result = Self::runtime()?
+            .block_on(async {
+                let mut client = ClaimClient::connect(&identity.endpoint).await?;
+                client.answer_claim(request).await
             })
             .map_err(map_client_error)?;
         outcome_from_result(result)

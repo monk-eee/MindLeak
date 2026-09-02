@@ -9,6 +9,21 @@ pub struct UnembeddedNode {
     pub label: String,
 }
 
+/// One candidate from the ranking pipeline's first stage (ADR-0140
+/// decision 3), carrying the distance PostgreSQL itself measured.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimilarNode {
+    pub node_id: String,
+    pub label: String,
+    pub node_type: String,
+    /// pgvector's `<=>` cosine distance: `0.0` is identical, `1.0`
+    /// orthogonal, `2.0` opposite. Cosine *similarity* -- the raw score
+    /// ADR-0140 decision 4 requires a caller be shown -- is `1.0 - this`.
+    /// Reported as measured rather than pre-converted so stage two ranks
+    /// against PostgreSQL's own number, not a transformation of it.
+    pub cosine_distance: f64,
+}
+
 impl Projector {
     /// Nodes in this repository's projection that have no
     /// `projected_node_embeddings` row for `model` yet -- the same
@@ -81,6 +96,57 @@ impl Projector {
             .await?;
         Ok(())
     }
+
+    /// Stage one of the ranking pipeline (ADR-0140 decision 3): a bounded
+    /// candidate set ordered by pgvector's `<=>` cosine distance, computed
+    /// entirely inside PostgreSQL rather than pulled into application memory
+    /// for a cosine loop over every stored vector -- the exact scaling limit
+    /// `0007_knowledge.sql`'s own comment already names.
+    ///
+    /// This is candidate *retrieval*, not the answer. `kind_prior`,
+    /// `distinctive_cut` and the floor still decide what -- if anything -- is
+    /// reported, and they run over this set in application code. Returning a
+    /// candidate here does not mean it is worth showing anyone.
+    ///
+    /// A `model` nothing was embedded under yields an empty candidate set
+    /// rather than an error (ADR-0140 decision 1), which is what lets a
+    /// caller fall back to the recency/decay path (ADR-0080) instead of
+    /// failing. An empty result is therefore genuinely ambiguous between
+    /// "nothing is similar" and "nothing is embedded under this model";
+    /// [`Self::nodes_missing_embedding`] is what distinguishes them.
+    pub async fn similar_nodes(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        model: &str,
+        query: &[f32],
+        limit: i64,
+    ) -> Result<Vec<SimilarNode>, ProjectionError> {
+        let query = Vector::from(query.to_vec());
+        let connection = self.connection().await?;
+        let rows = connection
+            .query(
+                "SELECT n.node_id, n.label, n.node_type, e.embedding <=> $4 AS cosine_distance \
+                 FROM projected_node_embeddings e \
+                 JOIN projected_nodes n \
+                   ON n.tenant_id = e.tenant_id AND n.repository_id = e.repository_id \
+                      AND n.node_id = e.node_id \
+                 WHERE e.tenant_id = $1 AND e.repository_id = $2 AND e.model = $3 \
+                 ORDER BY e.embedding <=> $4 \
+                 LIMIT $5",
+                &[&tenant_id, &repository_id, &model, &query, &limit],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SimilarNode {
+                node_id: row.get(0),
+                label: row.get(1),
+                node_type: row.get(2),
+                cosine_distance: row.get(3),
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -97,29 +163,55 @@ mod tests {
         repo: &str,
         node_id: &str,
     ) {
-        let fact = StructuralFact {
-            node_id: node_id.to_string(),
-            node_type: "artifact".to_string(),
-            label: node_id.to_string(),
-            edges: vec![],
-        };
-        ledger
-            .append(&structural_fact_envelope(
-                DedupKey {
-                    tenant_id: tenant.to_string(),
-                    repository_id: repo.to_string(),
-                    producer_id: "producer-a".to_string(),
-                    producer_sequence: 1,
-                },
-                b"digest-1",
-                &fact,
-            ))
-            .await
-            .expect("append structural fact");
+        projected_nodes(projector, ledger, tenant, repo, &[node_id]).await;
+    }
+
+    /// Rebuild is a drop-and-replay, and `projected_node_embeddings` cascades
+    /// on delete -- so every node a test needs must be projected in ONE
+    /// rebuild, before any embedding is written, or the embeddings vanish.
+    async fn projected_nodes(
+        projector: &Projector,
+        ledger: &LedgerStore,
+        tenant: &str,
+        repo: &str,
+        node_ids: &[&str],
+    ) {
+        for (index, node_id) in node_ids.iter().enumerate() {
+            let fact = StructuralFact {
+                node_id: (*node_id).to_string(),
+                node_type: "artifact".to_string(),
+                label: (*node_id).to_string(),
+                edges: vec![],
+            };
+            let digest = format!("digest-{index}");
+            ledger
+                .append(&structural_fact_envelope(
+                    DedupKey {
+                        tenant_id: tenant.to_string(),
+                        repository_id: repo.to_string(),
+                        producer_id: "producer-a".to_string(),
+                        producer_sequence: index as i64 + 1,
+                    },
+                    digest.as_bytes(),
+                    &fact,
+                ))
+                .await
+                .expect("append structural fact");
+        }
         projector
             .rebuild(tenant, repo)
             .await
             .expect("rebuild projects the node");
+    }
+
+    /// A 768-dimension vector with the given dimensions set and the rest
+    /// zero, so cosine distances between the fixtures are exactly known.
+    fn sparse_unit(dimensions: &[(usize, f32)]) -> Vec<f32> {
+        let mut vector = vec![0.0_f32; 768];
+        for (index, weight) in dimensions {
+            vector[*index] = *weight;
+        }
+        vector
     }
 
     #[tokio::test]
@@ -285,6 +377,208 @@ mod tests {
             database_error.code(),
             Some(&tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION),
             "got: {error}"
+        );
+    }
+
+    /// Seed three nodes whose cosine distance from `query` is exactly known,
+    /// so a ranking assertion measures the metric rather than insertion order.
+    async fn ranked_fixture(projector: &Projector, ledger: &LedgerStore, tenant: &str, repo: &str) {
+        projected_nodes(
+            projector,
+            ledger,
+            tenant,
+            repo,
+            &["artifact:near.rs", "artifact:mid.rs", "artifact:far.rs"],
+        )
+        .await;
+        for (node_id, embedding) in [
+            ("artifact:near.rs", sparse_unit(&[(0, 1.0)])),
+            ("artifact:mid.rs", sparse_unit(&[(0, 1.0), (1, 1.0)])),
+            ("artifact:far.rs", sparse_unit(&[(1, 1.0)])),
+        ] {
+            projector
+                .upsert_embedding(tenant, repo, node_id, "nomic-embed-text", &embedding)
+                .await
+                .expect("embedding is accepted");
+        }
+    }
+
+    /// The read half of ADR-0140: a query embedding ranks projected nodes by
+    /// pgvector's cosine distance, computed inside PostgreSQL.
+    #[tokio::test]
+    async fn candidates_are_ranked_by_cosine_distance() {
+        let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-a".to_string();
+        ranked_fixture(&projector, &ledger, &tenant, &repo).await;
+
+        let candidates = projector
+            .similar_nodes(
+                &tenant,
+                &repo,
+                "nomic-embed-text",
+                &sparse_unit(&[(0, 1.0)]),
+                10,
+            )
+            .await
+            .expect("query succeeds");
+
+        let ranked: Vec<String> = candidates.iter().map(|c| c.node_id.clone()).collect();
+        assert_eq!(
+            ranked,
+            vec![
+                "artifact:near.rs".to_string(),
+                "artifact:mid.rs".to_string(),
+                "artifact:far.rs".to_string(),
+            ],
+            "got: {candidates:?}"
+        );
+        // The distances themselves, not just their order -- an ordering-only
+        // assertion would still pass if the query ranked by something else
+        // that happened to agree.
+        assert!(
+            candidates[0].cosine_distance.abs() < 1e-5,
+            "identical vectors should measure ~0.0, got: {candidates:?}"
+        );
+        assert!(
+            (candidates[1].cosine_distance - 0.292_893).abs() < 1e-4,
+            "45 degrees apart should measure ~0.2929, got: {candidates:?}"
+        );
+        assert!(
+            (candidates[2].cosine_distance - 1.0).abs() < 1e-5,
+            "orthogonal vectors should measure ~1.0, got: {candidates:?}"
+        );
+        // The join carried the projection's own columns through.
+        assert_eq!(candidates[0].label, "artifact:near.rs");
+        assert_eq!(candidates[0].node_type, "artifact");
+    }
+
+    /// ADR-0140 decision 1: a model a node was never embedded under degrades
+    /// to no candidates rather than erroring, which is what lets a caller
+    /// fall back to the recency/decay path (ADR-0080) instead of failing.
+    #[tokio::test]
+    async fn a_model_nothing_was_embedded_under_yields_no_candidates() {
+        let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-a".to_string();
+        ranked_fixture(&projector, &ledger, &tenant, &repo).await;
+
+        let candidates = projector
+            .similar_nodes(
+                &tenant,
+                &repo,
+                "a-model-never-used-here",
+                &sparse_unit(&[(0, 1.0)]),
+                10,
+            )
+            .await
+            .expect("an unembedded model degrades rather than erroring");
+
+        assert!(candidates.is_empty(), "got: {candidates:?}");
+    }
+
+    /// Stage one is a *bounded* candidate set (ADR-0140 decision 3): the
+    /// limit truncates the ranking, keeping the nearest.
+    #[tokio::test]
+    async fn the_candidate_set_is_bounded_by_the_limit() {
+        let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+        let repo = "repo-a".to_string();
+        ranked_fixture(&projector, &ledger, &tenant, &repo).await;
+
+        let candidates = projector
+            .similar_nodes(
+                &tenant,
+                &repo,
+                "nomic-embed-text",
+                &sparse_unit(&[(0, 1.0)]),
+                2,
+            )
+            .await
+            .expect("query succeeds");
+
+        let ranked: Vec<String> = candidates.iter().map(|c| c.node_id.clone()).collect();
+        assert_eq!(
+            ranked,
+            vec![
+                "artifact:near.rs".to_string(),
+                "artifact:mid.rs".to_string()
+            ],
+            "got: {candidates:?}"
+        );
+    }
+
+    /// Recall is scoped to one repository's projection -- a near-identical
+    /// node in a sibling repository is not a candidate.
+    #[tokio::test]
+    async fn candidates_are_scoped_to_one_repository() {
+        let url = require_test_database!();
+        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
+            .expect("the test database url should build a pool");
+        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
+        let projector = Projector::connect(&pool).await.expect("connect projector");
+        let tenant = format!("t-{}", uuid_ish());
+
+        projected_nodes(
+            &projector,
+            &ledger,
+            &tenant,
+            "repo-a",
+            &["artifact:mine.rs"],
+        )
+        .await;
+        projected_nodes(
+            &projector,
+            &ledger,
+            &tenant,
+            "repo-b",
+            &["artifact:theirs.rs"],
+        )
+        .await;
+        for (repo, node_id) in [
+            ("repo-a", "artifact:mine.rs"),
+            ("repo-b", "artifact:theirs.rs"),
+        ] {
+            projector
+                .upsert_embedding(
+                    &tenant,
+                    repo,
+                    node_id,
+                    "nomic-embed-text",
+                    &sparse_unit(&[(0, 1.0)]),
+                )
+                .await
+                .expect("embedding is accepted");
+        }
+
+        let candidates = projector
+            .similar_nodes(
+                &tenant,
+                "repo-a",
+                "nomic-embed-text",
+                &sparse_unit(&[(0, 1.0)]),
+                10,
+            )
+            .await
+            .expect("query succeeds");
+
+        let ranked: Vec<String> = candidates.iter().map(|c| c.node_id.clone()).collect();
+        assert_eq!(
+            ranked,
+            vec!["artifact:mine.rs".to_string()],
+            "got: {candidates:?}"
         );
     }
 }
