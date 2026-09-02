@@ -14,8 +14,8 @@
 //! ```
 
 use ackplane_client::{
-    ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimOperation, ClaimReleaseRequest,
-    ClaimRenewRequest,
+    ClaimAnswerRequest, ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimOperation,
+    ClaimParkRequest, ClaimReleaseRequest, ClaimRenewRequest,
 };
 use ackplane_protocol::v1::{
     claim_delegation_service_server::ClaimDelegationServiceServer, ClaimAuthentication,
@@ -292,6 +292,210 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
         .expect("delegate_claim should round-trip over the wire");
     assert_eq!(granted_after_release.outcome(), ClaimLeaseOutcome::Granted);
     assert_eq!(granted_after_release.owner_id, "owner-b");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_parked_claim_blocks_delegate_and_only_its_owner_may_answer() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    register_test_key(&database_url).await;
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the test pool builds from the gated database url");
+    let store = ClaimStore::connect(&pool)
+        .await
+        .expect("the gated test database should accept claim migrations");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the authenticated test service should bind loopback");
+    let address = listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        Server::builder()
+            .add_service(ClaimDelegationServiceServer::new(
+                ClaimDelegationService::new(store),
+            ))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("the authenticated test service should run");
+    });
+    let endpoint = format!("http://{address}");
+    let mut client = ClaimClient::connect(&endpoint)
+        .await
+        .expect("the in-process authenticated service should accept the connection");
+
+    let tenant_id = TENANT_ID.to_string();
+    let repository_id = REPOSITORY_ID.to_string();
+    let task_id = unique_task_id();
+
+    let granted = client
+        .delegate_claim(ClaimLeaseRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: task_id.clone(),
+            owner_id: "owner-a".to_string(),
+            branch: "feat/owner-a".to_string(),
+            lease_seconds: 60,
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: vec![],
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-a",
+                &ClaimOperation::Delegate {
+                    branch: "feat/owner-a",
+                    lease_seconds: 60,
+                    paths: &["src/lib.rs".to_string()],
+                    symbols: &[],
+                },
+            )),
+        })
+        .await
+        .expect("delegate_claim should round-trip over the wire");
+    assert_eq!(granted.outcome(), ClaimLeaseOutcome::Granted);
+
+    let parked = client
+        .park_claim(ClaimParkRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: task_id.clone(),
+            owner_id: "owner-a".to_string(),
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-a",
+                &ClaimOperation::Park,
+            )),
+        })
+        .await
+        .expect("park_claim should round-trip over the wire");
+    assert!(parked.parked);
+
+    // The real arbitration: a parked claim keeps its owner's exclusive hold
+    // even though its lease is cleared -- a different owner's delegate must
+    // still be refused, not silently granted because the lease looks
+    // expired.
+    let rejected = client
+        .delegate_claim(ClaimLeaseRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: task_id.clone(),
+            owner_id: "owner-b".to_string(),
+            branch: "feat/owner-b".to_string(),
+            lease_seconds: 60,
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: vec![],
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-b",
+                &ClaimOperation::Delegate {
+                    branch: "feat/owner-b",
+                    lease_seconds: 60,
+                    paths: &["src/lib.rs".to_string()],
+                    symbols: &[],
+                },
+            )),
+        })
+        .await
+        .expect("delegate_claim should round-trip over the wire");
+    assert_eq!(rejected.outcome(), ClaimLeaseOutcome::Rejected);
+
+    // Still active: a parked claim must keep colliding with an overlap
+    // check, exactly like a live-leased one, or its scope would be free for
+    // the taking mid-question.
+    let active = client
+        .list_active_claims(ackplane_client::ActiveClaimsRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+        })
+        .await
+        .expect("list_active_claims should round-trip over the wire");
+    assert!(active.claims.iter().any(|claim| claim.task_id == task_id));
+
+    // Only the parking owner may answer -- a different agent's answer is
+    // refused rather than granting it the resumed lease.
+    let wrong_answerer = client
+        .answer_claim(ClaimAnswerRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: task_id.clone(),
+            owner_id: "owner-b".to_string(),
+            lease_seconds: 60,
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-b",
+                &ClaimOperation::Answer { lease_seconds: 60 },
+            )),
+        })
+        .await
+        .expect("answer_claim should round-trip over the wire");
+    assert_eq!(wrong_answerer.outcome(), ClaimLeaseOutcome::Rejected);
+
+    let answered = client
+        .answer_claim(ClaimAnswerRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: task_id.clone(),
+            owner_id: "owner-a".to_string(),
+            lease_seconds: 60,
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-a",
+                &ClaimOperation::Answer { lease_seconds: 60 },
+            )),
+        })
+        .await
+        .expect("answer_claim should round-trip over the wire");
+    assert_eq!(answered.outcome(), ClaimLeaseOutcome::Granted);
+    assert_eq!(answered.owner_id, "owner-a");
+
+    // Un-parked and live again: delegate should now refuse owner-b for the
+    // ordinary reason (a live lease held by someone else), not because it
+    // is still parked -- proof `answer` genuinely cleared `parked`.
+    let rejected_after_answer = client
+        .delegate_claim(ClaimLeaseRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: task_id.clone(),
+            owner_id: "owner-b".to_string(),
+            branch: "feat/owner-b".to_string(),
+            lease_seconds: 60,
+            paths: vec!["src/lib.rs".to_string()],
+            symbols: vec![],
+            authentication: Some(authentication(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                "owner-b",
+                &ClaimOperation::Delegate {
+                    branch: "feat/owner-b",
+                    lease_seconds: 60,
+                    paths: &["src/lib.rs".to_string()],
+                    symbols: &[],
+                },
+            )),
+        })
+        .await
+        .expect("delegate_claim should round-trip over the wire");
+    assert_eq!(rejected_after_answer.outcome(), ClaimLeaseOutcome::Rejected);
+    assert_eq!(rejected_after_answer.owner_id, "owner-a");
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();

@@ -137,10 +137,14 @@ handoffs), `questions` (ask/answer, pause/resume, waits, and thread notes),
 `conformance` (audit recording and checked transitions), and `query` (board,
 next-task, and existing-work reads). Audited legacy/session recovery remains in
 the already-separate `store/claim_transfer.rs` module. For a federated
-repository (ADR-0096), `claim`/`renew`/`release`/`recover` and `check_claim_overlap`
-route through two injected seams — `FederatedClaimAuthority` and
-`FederatedClaimSource` — instead of deciding locally; `None` (the default) is
-`CoordinationMode::Local`, unchanged. The crate itself stays local and
+repository (ADR-0096), `claim`/`renew`/`release`/`recover`/`ask_question`/
+`answer_question` and `check_claim_overlap` route through two injected seams —
+`FederatedClaimAuthority` and `FederatedClaimSource` — instead of deciding
+locally; `None` (the default) is `CoordinationMode::Local`, unchanged. The
+durable question/answer text itself is never part of that seam — it stays in
+this repository's own `task_qa` thread regardless of coordination mode, since
+only the claim-state transition (park/answer) is Ackplane's to arbitrate. The
+crate itself stays local and
 network-free either way: only whichever binary composes it with a live,
 authenticated `ackplane-client` gives either seam a real implementation.
 Facade behavior is grouped under
@@ -297,8 +301,12 @@ rebuild that would not help.
 
 The repository-side gRPC client for `ClaimDelegationService`
 (`task:727ae37b4f5a`, ADR-0096): `delegate_claim`, `renew_claim`,
-`release_claim`, `recover_claim`, and a bare `probe_reachable` used only for
-mode resolution. It depends on `ackplane-protocol` alone — never
+`release_claim`, `recover_claim`, `park_claim`, `answer_claim` (ADR-0096
+clause completion: park/answer are claim-state transitions Ackplane
+arbitrates exactly like the other four — the durable question/answer text
+stays local, ADR-0020's `task_qa` thread, never sent over the wire), and a
+bare `probe_reachable` used only for mode resolution. It depends on
+`ackplane-protocol` alone — never `ackplane-protocol` alone — never
 `mindleak-core` or `lodestar-core` (ADR-0082 clause 1's boundary runs through
 this crate too: the client sits on the repository side and must not smuggle a
 plane dependency back). `ackplane-core` links it only behind the
@@ -319,8 +327,9 @@ local task cache through `lodestar-core`'s cache-projection APIs. A rejection
 or transport failure never falls back to local arbitration — it resolves to
 the same "lost the CAS" outcome a local claim would (rejection) or an
 `Err` naming the transport failure (unreachable), and either way the local
-row is untouched. The residual gap this closed is narrowed in
-[`gaps.d/no-claim-is-arbitrated-through-ackplane.md`](../gaps.d/no-claim-is-arbitrated-through-ackplane.md).
+row is untouched. Every ownership-affecting call this repository exposes —
+claim, renew, release, recover, park, and answer — is now covered
+(ADR-0096 clause completion).
 The node signing key is sourced from the OS credential facility (Windows
 Credential Manager, macOS Keychain, or Linux Secret Service, via the
 `keyring` crate) by default, per ADR-0085 decision 2 and ADR-0100 decision 5;
