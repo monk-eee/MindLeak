@@ -35,17 +35,20 @@
 //     skipped, not failed, when it is not)
 //   - keys a live database applied under content that no longer matches the
 //     committed migration now carrying that key (the rewrite above)
+//   - a migration file this branch has EDITED that already exists on the
+//     integration branch (static, and the author-time half of the rewrite
+//     above: it is what puts a database into that state in the first place)
 //
 // Usage:
-//   node scripts/migration-audit.mjs [--check] [--container <name>]
+//   node scripts/migration-audit.mjs [--check] [--container <name>] [--base <ref>]
 //   node scripts/migration-audit.mjs --next [--container <name>]
 //
-// --check exits 1 on a static defect (duplicate key, or a constant/file
-// mismatch); the live-only finding never gates, since a fresh CI database
-// can never exhibit it and a persistent dev container is not everyone's
-// setup. --next prints the one key safe to assign, folding in the live
-// database when reachable -- the number this tool exists to save you from
-// getting wrong.
+// --check exits 1 on a static defect (duplicate key, a constant/file
+// mismatch, or an edited landed migration); the live-only findings never
+// gate, since a fresh CI database can never exhibit them and a persistent
+// dev container is not everyone's setup. --next prints the one key safe to
+// assign, folding in the live database when reachable -- the number this
+// tool exists to save you from getting wrong.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -56,6 +59,9 @@ import { fileURLToPath } from "node:url";
 
 const KEY_CONST_PATTERN = /pub\(crate\) const (\w+): i64 = (-?\d+);/g;
 const MIGRATION_FILE_PATTERN = /^0*(\d+)_.+\.sql$/;
+
+/** The ref an edited-landed-migration check compares against by default. */
+const DEFAULT_BASE_REF = "origin/main";
 
 /**
  * Every database a migration key can be burned in. `ackplane` is what the
@@ -251,6 +257,50 @@ export function legacyDigestRows(appliedRows) {
     .sort((a, b) => a - b);
 }
 
+/**
+ * Migration files this branch has modified that already exist on the base
+ * ref, read from `git diff --name-status`.
+ *
+ * Only `M` counts. `A` is a brand-new migration, which is the normal way to
+ * add one; `D` is a different defect with a different remedy; `R` cannot
+ * apply here, since renaming a landed migration is a delete plus an add and
+ * git reports the delete side.
+ */
+export function modifiedLandedMigrations(diffOutput) {
+  return diffOutput
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\s+/))
+    .filter(
+      ([status, file]) =>
+        status === "M" &&
+        file &&
+        MIGRATION_FILE_PATTERN.test(file.split("/").pop()),
+    )
+    .map(([, file]) => file)
+    .sort();
+}
+
+/**
+ * The same question asked of git, or `null` when the base ref is not
+ * available -- a shallow clone must read as "cannot answer", never as "no
+ * damage" and never as damage itself.
+ *
+ * Asks git for the difference rather than comparing file text here: git
+ * already honours .gitattributes, so a checkout whose working copy has CRLF
+ * line endings does not read as a modified migration on Windows.
+ */
+export function editedLandedMigrationsFromGit(run, baseRef, directory) {
+  let output;
+  try {
+    output = run(["diff", "--name-status", baseRef, "--", directory]);
+  } catch {
+    return null;
+  }
+  return modifiedLandedMigrations(output);
+}
+
 function migrationsDir(repoRoot) {
   return path.join(repoRoot, "crates", "ackplane-server", "migrations");
 }
@@ -270,6 +320,11 @@ async function main() {
   const check = argv.includes("--check");
   const next = argv.includes("--next");
   const containerFlag = argv.indexOf("--container");
+  const baseFlag = argv.indexOf("--base");
+  const baseRef =
+    baseFlag !== -1 && argv[baseFlag + 1]
+      ? argv[baseFlag + 1]
+      : DEFAULT_BASE_REF;
   const container =
     containerFlag !== -1 && argv[containerFlag + 1]
       ? argv[containerFlag + 1]
@@ -294,6 +349,8 @@ async function main() {
       })),
   );
   const run = (args) => execFileSync("docker", args, { encoding: "utf8" });
+  const git = (args) =>
+    execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" });
   const live = LIVE_DATABASES.map((database) => ({
     database,
     rows: appliedMigrationsFromLiveDatabase(
@@ -394,12 +451,39 @@ async function main() {
     }
   }
 
+  const edited = editedLandedMigrationsFromGit(
+    git,
+    baseRef,
+    "crates/ackplane-server/migrations",
+  );
   console.log(
-    `\nsummary: ${duplicates.length} duplicate key value(s), ${missingFiles.length} constant(s) with no file, ${missingKeys.length} file(s) with no constant, ${mismatchCount} key(s) applied under different content`,
+    `\n=== migration files this branch edited that already exist on ${baseRef} ===`,
+  );
+  if (edited === null) {
+    console.log(
+      `  skipped: ${baseRef} is not available here (a shallow clone cannot answer this)`,
+    );
+  } else if (edited.length === 0) {
+    console.log("  none");
+  } else {
+    for (const file of edited) {
+      console.log(`  ${file}`);
+    }
+    console.log(
+      "      migrate_locked hashes the whole file, so editing one that has already applied -- a comment is enough -- leaves its key held under content no committed source matches, and every connect() reaching it then refuses. Restore the landed file and add a new migration instead; run --next for its key.",
+    );
+  }
+
+  const editedCount = edited?.length ?? 0;
+  console.log(
+    `\nsummary: ${duplicates.length} duplicate key value(s), ${missingFiles.length} constant(s) with no file, ${missingKeys.length} file(s) with no constant, ${editedCount} edited landed migration(s), ${mismatchCount} key(s) applied under different content`,
   );
   if (
     check &&
-    (duplicates.length > 0 || missingFiles.length > 0 || missingKeys.length > 0)
+    (duplicates.length > 0 ||
+      missingFiles.length > 0 ||
+      missingKeys.length > 0 ||
+      editedCount > 0)
   ) {
     process.exitCode = 1;
   }
