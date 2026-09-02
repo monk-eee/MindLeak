@@ -259,7 +259,7 @@ mod tests {
                 &vec![0.1_f32; 768],
             )
             .await
-            .expect("embedding is accepted");
+            .unwrap_or_else(|e| panic!("upsert_embedding failed for artifact:src/lib.rs: {e}"));
 
         let missing = projector
             .nodes_missing_embedding(&tenant, &repo, "nomic-embed-text", 10)
@@ -290,7 +290,7 @@ mod tests {
                 &vec![0.1_f32; 768],
             )
             .await
-            .expect("embedding is accepted");
+            .unwrap_or_else(|e| panic!("upsert_embedding failed for artifact:src/lib.rs: {e}"));
 
         let missing = projector
             .nodes_missing_embedding(&tenant, &repo, "a-different-model", 10)
@@ -321,7 +321,9 @@ mod tests {
                 &vec![0.1_f32; 768],
             )
             .await
-            .expect("first embedding is accepted");
+            .unwrap_or_else(|e| {
+                panic!("first upsert_embedding failed for artifact:src/lib.rs: {e}")
+            });
         projector
             .upsert_embedding(
                 &tenant,
@@ -331,7 +333,9 @@ mod tests {
                 &vec![0.2_f32; 768],
             )
             .await
-            .expect("second embedding replaces the first");
+            .unwrap_or_else(|e| {
+                panic!("second upsert_embedding (replacement) failed for artifact:src/lib.rs: {e}")
+            });
 
         let row = projector
             .connection()
@@ -399,7 +403,7 @@ mod tests {
             projector
                 .upsert_embedding(tenant, repo, node_id, "nomic-embed-text", &embedding)
                 .await
-                .expect("embedding is accepted");
+                .unwrap_or_else(|e| panic!("upsert_embedding failed for {node_id}: {e}"));
         }
     }
 
@@ -560,7 +564,7 @@ mod tests {
                     &sparse_unit(&[(0, 1.0)]),
                 )
                 .await
-                .expect("embedding is accepted");
+                .unwrap_or_else(|e| panic!("upsert_embedding failed for {repo}/{node_id}: {e}"));
         }
 
         let candidates = projector
