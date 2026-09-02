@@ -22,6 +22,14 @@ use tokio_postgres::Client;
 
 const APPLIED_MIGRATIONS_TABLE: &str = "ackplane_schema_migrations";
 
+/// Set (to any value) to acknowledge that a migration applied against a
+/// database marked shared (see [`mark_shared_database`]) is genuinely
+/// reviewed -- e.g. after confirming its key is committed and collision-free
+/// via `node scripts/migration-audit.mjs`. Never set this to make a refusal
+/// go away without doing that check first; that is exactly the shortcut
+/// this gate exists to close.
+const REVIEW_ACKNOWLEDGEMENT_ENV: &str = "ACKPLANE_MIGRATE_REVIEWED";
+
 /// Every schema migration first takes the global lock, then its own file key.
 /// The global lock prevents deadlocks between different DDL files that touch
 /// related tables; the file key keeps the migration identity explicit for
@@ -225,6 +233,19 @@ pub(crate) mod key {
     /// completion). `migration-audit --next` selected 66 from committed
     /// source; no live discrepancy above 65.
     pub(crate) const DELEGATED_CLAIM_PARKED: i64 = 66;
+    /// Not a real schema migration -- reserved so it can never collide with
+    /// one (every real key above is non-negative, allocated by
+    /// `migration-audit.mjs --next`). Its presence as a row in
+    /// `ackplane_schema_migrations` is a database-level marker: this
+    /// instance has been explicitly designated shared, and `migrate_locked`
+    /// refuses to apply anything against it without an explicit review
+    /// acknowledgement (`ACKPLANE_MIGRATE_REVIEWED`). See
+    /// `mark_shared_database` and
+    /// gaps.d/unaccepted-work-migration-reaches-shared-db.md, which this
+    /// exists to close: nothing previously stopped a branch-local,
+    /// unreviewed migration from reaching a shared database in the first
+    /// place -- only detected the damage afterwards.
+    pub(crate) const SHARED_DATABASE_MARKER: i64 = -2;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and
@@ -251,6 +272,23 @@ pub(crate) async fn migrate_locked(
     lock_key: i64,
     migration_sql: &str,
 ) -> Result<(), tokio_postgres::Error> {
+    let reviewed = std::env::var(REVIEW_ACKNOWLEDGEMENT_ENV).is_ok();
+    migrate_locked_checked(client, lock_key, migration_sql, reviewed).await
+}
+
+/// The reviewed-acknowledgement flag as an explicit parameter rather than an
+/// env var read buried inside the guarded logic, so tests exercise both
+/// branches deterministically instead of mutating process-global
+/// environment state under parallel test execution.
+async fn migrate_locked_checked(
+    client: &mut Client,
+    lock_key: i64,
+    migration_sql: &str,
+    reviewed: bool,
+) -> Result<(), tokio_postgres::Error> {
+    if shared_gate_refuses(is_marked_shared(client).await?, reviewed) {
+        return Err(raise_shared_database_refusal(client, lock_key).await);
+    }
     let transaction = client.transaction().await?;
     transaction
         .execute("SELECT pg_advisory_xact_lock($1)", &[&key::GLOBAL_SCHEMA])
@@ -329,6 +367,99 @@ pub(crate) async fn migrate_locked(
             transaction.commit().await
         }
     }
+}
+
+/// Whether this database has been explicitly designated shared (see
+/// [`mark_shared_database`]). A fresh database, or one with no
+/// `ackplane_schema_migrations` table yet, is never shared by default --
+/// designation is opt-in, applied once by whoever provisions the instance,
+/// never guessed from the connection string
+/// (gaps.d/unaccepted-work-migration-reaches-shared-db.md).
+async fn is_marked_shared(client: &Client) -> Result<bool, tokio_postgres::Error> {
+    let table_exists = client
+        .query_one(
+            "SELECT to_regclass('public.' || $1) IS NOT NULL",
+            &[&APPLIED_MIGRATIONS_TABLE],
+        )
+        .await?
+        .get::<_, bool>(0);
+    if !table_exists {
+        return Ok(false);
+    }
+    let marked = client
+        .query_opt(
+            &format!("SELECT 1 FROM {APPLIED_MIGRATIONS_TABLE} WHERE migration_key = $1"),
+            &[&key::SHARED_DATABASE_MARKER],
+        )
+        .await?
+        .is_some();
+    Ok(marked)
+}
+
+/// Marks this database shared: a one-time, explicit provisioning action for
+/// whoever stands up a shared or persistent Postgres instance (as opposed to
+/// an ephemeral local or CI container), never something `migrate_locked`
+/// itself decides. Exposed to operators via `ackplane-migrate --mark-shared`.
+///
+/// Deliberately not exercised by a live-database test against
+/// `ACKPLANE_TEST_DATABASE_URL`: that database is this fleet's own shared
+/// development instance, reused concurrently by many agents' test runs
+/// (gaps.d/unaccepted-work-migration-reaches-shared-db.md's own subject), so
+/// even a briefly-inserted marker row risks refusing an unrelated concurrent
+/// migration attempt for a reason that has nothing to do with it. Its SQL
+/// mirrors `migrate_locked`'s own already-tested
+/// `CREATE TABLE IF NOT EXISTS`/idempotent-insert pattern; `shared_gate_refuses`
+/// below carries the actual decision logic this task's acceptance depends on,
+/// and that is fully unit-tested without touching any live database.
+pub(crate) async fn mark_shared_database(client: &Client) -> Result<(), tokio_postgres::Error> {
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE IF NOT EXISTS {APPLIED_MIGRATIONS_TABLE} (\
+                 migration_key BIGINT PRIMARY KEY,\
+                 applied_at TIMESTAMPTZ NOT NULL DEFAULT now()\
+             );\
+             ALTER TABLE {APPLIED_MIGRATIONS_TABLE} \
+                 ADD COLUMN IF NOT EXISTS content_digest TEXT"
+        ))
+        .await?;
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {APPLIED_MIGRATIONS_TABLE} (migration_key) VALUES ($1) \
+                 ON CONFLICT (migration_key) DO NOTHING"
+            ),
+            &[&key::SHARED_DATABASE_MARKER],
+        )
+        .await?;
+    Ok(())
+}
+
+/// The actual gating decision, pulled out as a pure function so it can be
+/// unit-tested exhaustively without a database at all: refuse only when the
+/// database is marked shared AND nobody has acknowledged review.
+fn shared_gate_refuses(marked_shared: bool, reviewed: bool) -> bool {
+    marked_shared && !reviewed
+}
+
+/// The refusal raised when a database marked shared has no review
+/// acknowledgement for this migration attempt. Mirrors [`raise_collision`]'s
+/// shape (a real `tokio_postgres::Error` via `RAISE EXCEPTION`, not a second
+/// error type) and names the exact remedy rather than just the fact of
+/// refusal.
+async fn raise_shared_database_refusal(client: &Client, lock_key: i64) -> tokio_postgres::Error {
+    let message = format!(
+        "this database is marked shared (gaps.d/unaccepted-work-migration-reaches-shared-db.md); \
+         refusing to apply migration key {lock_key} without an explicit review acknowledgement. \
+         Set {REVIEW_ACKNOWLEDGEMENT_ENV}=1 only after confirming this migration's key is \
+         committed and collision-free, e.g. via node scripts/migration-audit.mjs."
+    );
+    client
+        .batch_execute(&format!(
+            "DO $do$ BEGIN RAISE EXCEPTION '%', $msg${message}$msg$ \
+             USING ERRCODE = 'raise_exception'; END $do$"
+        ))
+        .await
+        .expect_err("RAISE EXCEPTION always errors")
 }
 
 /// A stable fingerprint of a migration's SQL, for telling two migrations that
@@ -726,5 +857,47 @@ mod tests {
         );
 
         holder_txn.commit().await.unwrap();
+    }
+
+    /// The decision logic this task exists to add, tested exhaustively
+    /// without a database: refuse only when marked shared AND unacknowledged.
+    #[test]
+    fn shared_gate_only_refuses_an_unacknowledged_marked_database() {
+        assert!(!super::shared_gate_refuses(false, false));
+        assert!(!super::shared_gate_refuses(false, true));
+        assert!(super::shared_gate_refuses(true, false));
+        assert!(!super::shared_gate_refuses(true, true));
+    }
+
+    /// The default, unmarked state (what every database starts in, and what
+    /// the shared `ACKPLANE_TEST_DATABASE_URL` this test suite runs against
+    /// stays in, since nothing here ever calls `mark_shared_database` against
+    /// it -- see that function's own doc comment for why) applies migrations
+    /// exactly as before the gate was added, regardless of the review flag.
+    #[tokio::test]
+    async fn an_unmarked_database_applies_migrations_regardless_of_the_review_flag() {
+        let Some(client) = test_client().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+
+        assert!(
+            !super::is_marked_shared(&client).await.unwrap(),
+            "the shared test database must never be left marked shared by this suite"
+        );
+
+        let mut client = client;
+        for reviewed in [false, true] {
+            let key = test_migration_key();
+            let table = format!("unmarked_gate_{}", -key);
+            let sql = format!("CREATE TABLE {table} (id INT)");
+
+            super::migrate_locked_checked(&mut client, key, &sql, reviewed)
+                .await
+                .unwrap();
+
+            assert!(table_exists(&client, &table).await);
+            cleanup(&client, key, &[table]).await;
+        }
     }
 }
