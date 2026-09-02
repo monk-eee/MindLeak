@@ -10,6 +10,9 @@ description = "Repository-side identity owner: a non-exporting signer companion 
 [dependencies]
 ed25519-dalek = { version = "2.1", features = ["zeroize"] }
 getrandom = "0.2"
+interprocess = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 zeroize = "1"
