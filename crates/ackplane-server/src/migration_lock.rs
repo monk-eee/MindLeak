@@ -219,6 +219,8 @@ pub(crate) mod key {
     /// this one was deferred while `design_store.rs` carried a live
     /// ADR-0143 pool-migration claim).
     pub(crate) const INDUSTRIAL_DESIGNS_DISPLAY_LABEL: i64 = 64;
+    /// `migrations/0065_work_event_positions.sql`
+    pub(crate) const WORK_EVENT_POSITIONS: i64 = 65;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

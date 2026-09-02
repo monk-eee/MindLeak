@@ -20,6 +20,8 @@ const DIRECTIVES_MIGRATION: &str =
 const SUPERVISOR_SESSION_MIGRATION: &str =
     include_str!("../../migrations/0024_supervisor_session_projection.sql");
 const AGENT_DIRECTIVES_MIGRATION: &str = include_str!("../../migrations/0030_directives.sql");
+const WORK_EVENT_POSITIONS_MIGRATION: &str =
+    include_str!("../../migrations/0065_work_event_positions.sql");
 
 mod execute;
 mod model;
@@ -62,6 +64,15 @@ impl WorkCommandStore {
             &mut client,
             migration_lock::key::WORK_TASK_COMMAND_EXECUTION,
             EXECUTION_MIGRATION,
+        )
+        .await?;
+        // This store appends lifecycle events to the same per-repository Work
+        // stream `WorkStore` creates into, so it owns migrating the positions
+        // it writes -- it can legitimately connect before `WorkStore` does.
+        migration_lock::migrate_locked(
+            &mut client,
+            migration_lock::key::WORK_EVENT_POSITIONS,
+            WORK_EVENT_POSITIONS_MIGRATION,
         )
         .await?;
         // Supervisor-directed commands (Assign/Steer/Pause/Resume/Drain)
