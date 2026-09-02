@@ -36,7 +36,7 @@ impl ClaimStore {
         let result = loop {
             let existing = transaction
                 .query_opt(
-                    "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols \
+                    "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, parked \
                      FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
                     &[&request.tenant_id, &request.repository_id, &request.task_id],
                 )
@@ -51,8 +51,29 @@ impl ClaimStore {
                     let previous_lapses: i64 = row.get(4);
                     let paths: Vec<String> = row.get(5);
                     let symbols: Vec<String> = row.get(6);
+                    let parked: bool = row.get(7);
                     let claim_lapses = u64::try_from(previous_lapses)
                         .map_err(|_| ClaimStoreError::InvalidLapseCount)?;
+                    // A parked claim keeps its owner's exclusive hold on this
+                    // scope regardless of lease expiry (ADR-0096 clause
+                    // completion): it deliberately cleared its lease, which
+                    // is not the same fact as having lapsed. Only `answer`
+                    // may return it to circulation, never `delegate` -- not
+                    // even for the parking owner, matching how the local
+                    // `needs_input` status also refuses a second
+                    // `claim_task`.
+                    if parked {
+                        break ClaimLeaseResult {
+                            outcome: ClaimLeaseOutcome::Rejected,
+                            owner_id,
+                            branch,
+                            claim_started_at,
+                            lease_expires_at: previous_expiry,
+                            claim_lapses,
+                            paths,
+                            symbols,
+                        };
+                    }
                     if owner_id != request.owner_id && previous_expiry >= now {
                         break ClaimLeaseResult {
                             outcome: ClaimLeaseOutcome::Rejected,
@@ -311,7 +332,7 @@ impl ClaimStore {
         let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
-                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols \
+                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, parked \
                  FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
                 &[&request.tenant_id, &request.repository_id, &request.task_id],
             )
@@ -326,9 +347,15 @@ impl ClaimStore {
                 let previous_lapses: i64 = row.get(4);
                 let existing_paths: Vec<String> = row.get(5);
                 let existing_symbols: Vec<String> = row.get(6);
+                let parked: bool = row.get(7);
                 let claim_lapses = u64::try_from(previous_lapses)
                     .map_err(|_| ClaimStoreError::InvalidLapseCount)?;
-                if existing_owner != request.expected_owner || previous_expiry >= now {
+                // A parked claim is not a recoverable one (same reasoning as
+                // `delegate`): its owner deliberately cleared the lease
+                // pending an answer, which `answer` alone may resolve.
+                // Recovering it would let a different agent take over a
+                // task its rightful owner is mid-question on.
+                if parked || existing_owner != request.expected_owner || previous_expiry >= now {
                     ClaimLeaseResult {
                         outcome: ClaimLeaseOutcome::Rejected,
                         owner_id: existing_owner,

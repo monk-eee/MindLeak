@@ -7,9 +7,11 @@ use thiserror::Error;
 use crate::db_pool::{PgConnection, PgPool};
 
 mod lease;
+mod park;
 
 const MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
 const NONCE_MIGRATION: &str = include_str!("../../migrations/0006_claim_authentication_nonces.sql");
+const PARKED_MIGRATION: &str = include_str!("../../migrations/0066_delegated_claim_parked.sql");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimLeaseRequest {
@@ -106,6 +108,12 @@ impl ClaimStore {
             NONCE_MIGRATION,
         )
         .await?;
+        crate::migration_lock::migrate_locked(
+            &mut connection,
+            crate::migration_lock::key::DELEGATED_CLAIM_PARKED,
+            PARKED_MIGRATION,
+        )
+        .await?;
         Ok(Self { pool: pool.clone() })
     }
 
@@ -159,6 +167,12 @@ impl ClaimStore {
     /// claim at all. Read-only: unlike `delegate`/`release`/`renew`/`recover`,
     /// this never writes `delegated_claim_history`, because listing a claim
     /// changes nothing about it.
+    ///
+    /// A parked claim has no live lease (`park` clears it, matching the
+    /// local `needs_input` transition) but its scope is still exclusively
+    /// held pending an answer, so it counts as active here exactly like a
+    /// live-leased one -- otherwise a park would silently free the same
+    /// files for someone else's `delegate` to take mid-question.
     pub async fn list_active(
         &self,
         tenant_id: &str,
@@ -171,7 +185,8 @@ impl ClaimStore {
             .query(
                 "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
                  FROM delegated_claims \
-                 WHERE tenant_id = $1 AND repository_id = $2 AND lease_expires_at >= $3 \
+                 WHERE tenant_id = $1 AND repository_id = $2 \
+                   AND (lease_expires_at >= $3 OR parked) \
                  ORDER BY task_id ASC",
                 &[&tenant_id, &repository_id, &now],
             )
@@ -444,6 +459,144 @@ mod tests {
             .await
             .unwrap();
         assert!(!released, "releasing an already-expired lease is a no-op");
+    }
+
+    #[tokio::test]
+    async fn a_parked_claim_blocks_delegate_and_recover_until_its_owner_answers() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-park-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let store = ClaimStore::connect(&pool).await.unwrap();
+
+        store.delegate(&first, now).await.unwrap();
+
+        let parked = store
+            .park(
+                &tenant_id,
+                "repository",
+                task_id,
+                "owner-one",
+                now + Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        assert!(parked, "the current owner must be able to park its claim");
+
+        // Parking again before an answer is refused: a second park could
+        // silently overwrite who is actually waiting on the reply.
+        let parked_again = store
+            .park(
+                &tenant_id,
+                "repository",
+                task_id,
+                "owner-one",
+                now + Duration::from_secs(2),
+            )
+            .await
+            .unwrap();
+        assert!(!parked_again, "parking an already-parked claim is refused");
+
+        // A different owner cannot delegate over a parked claim, even though
+        // the underlying lease was cleared and would otherwise read as
+        // expired.
+        let blocked = store
+            .delegate(
+                &request(&tenant_id, task_id, "owner-two"),
+                now + Duration::from_secs(3),
+            )
+            .await
+            .unwrap();
+        assert_eq!(blocked.outcome, ClaimLeaseOutcome::Rejected);
+        assert_eq!(blocked.owner_id, "owner-one");
+
+        // Nor can a rescuer recover it: only `answer` may resolve a park.
+        let recover_blocked = store
+            .recover(
+                &recover_request(&tenant_id, task_id, "owner-one", "owner-two", "rescuing"),
+                now + Duration::from_secs(4),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recover_blocked.outcome, ClaimLeaseOutcome::Rejected);
+
+        // A different agent's answer is refused: only the parking owner may
+        // resume.
+        let wrong_answerer = store
+            .answer(
+                &tenant_id,
+                "repository",
+                task_id,
+                "owner-two",
+                Duration::from_secs(60),
+                now + Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_answerer.outcome, ClaimLeaseOutcome::Rejected);
+
+        let answered = store
+            .answer(
+                &tenant_id,
+                "repository",
+                task_id,
+                "owner-one",
+                Duration::from_secs(60),
+                now + Duration::from_secs(6),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answered.outcome, ClaimLeaseOutcome::Granted);
+        assert_eq!(answered.owner_id, "owner-one");
+        assert_eq!(answered.paths, first.paths, "scope survives the round trip");
+
+        // Un-parked and live again: a different owner is now refused for the
+        // ordinary reason (a live lease), not because it is still parked.
+        let live_again = store
+            .delegate(
+                &request(&tenant_id, task_id, "owner-two"),
+                now + Duration::from_secs(7),
+            )
+            .await
+            .unwrap();
+        assert_eq!(live_again.outcome, ClaimLeaseOutcome::Rejected);
+        assert_eq!(live_again.owner_id, "owner-one");
+    }
+
+    #[tokio::test]
+    async fn answering_a_never_parked_claim_is_refused() {
+        let Some(pool) = crate::test_support::test_pool() else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant_id = format!("claim-answer-unparked-{}", crate::test_support::uuid_ish());
+        let task_id = "task";
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let first = request(&tenant_id, task_id, "owner-one");
+        let store = ClaimStore::connect(&pool).await.unwrap();
+
+        store.delegate(&first, now).await.unwrap();
+
+        let rejected = store
+            .answer(
+                &tenant_id,
+                "repository",
+                task_id,
+                "owner-one",
+                Duration::from_secs(60),
+                now + Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rejected.outcome,
+            ClaimLeaseOutcome::Rejected,
+            "a live, never-parked claim has nothing for answer to resolve"
+        );
     }
 
     #[tokio::test]
