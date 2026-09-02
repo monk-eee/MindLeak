@@ -153,6 +153,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0145](0145-recovery-rehearsal-is-real-restore-execution-is-single-tenant-only.md) | Recovery rehearsal is real; production recovery execution is single-tenant only | Accepted |
 | [0146](0146-a-supervisor-declares-its-own-frame-sequence.md) | A supervisor declares its own frame sequence; the server only echoes what it accepted | Accepted |
 | [0147](0147-a-claim-reports-the-branchs-existing-governed-files.md) | A claim reports the branch's existing governed files, not only its own declared scope | Accepted |
+| [0148](0148-an-enrolled-node-computes-projection-embeddings.md) | An enrolled node computes projection embeddings; Ackplane stores and ranks them | Accepted |
 
 ## Writing a new ADR
 
