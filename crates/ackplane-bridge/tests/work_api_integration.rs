@@ -113,8 +113,13 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
 }
 
 async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
+    let db_pool = ackplane_server::db_pool::build_pool(
+        database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
     let work = Arc::new(
-        WorkStore::connect(database_url)
+        WorkStore::connect(&db_pool)
             .await
             .expect("connect Work store"),
     );
@@ -153,7 +158,12 @@ async fn work_list_and_board_doctor_report_a_real_task_and_an_orphan_claim() {
     let repository_id = format!("repository-{unique}");
     enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
 
-    let mut work_store = WorkStore::connect(&database_url)
+    let fixture_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let work_store = WorkStore::connect(&fixture_pool)
         .await
         .expect("connect Work store for fixtures");
     let task_id = format!("task-{unique}");

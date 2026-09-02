@@ -225,7 +225,7 @@ async fn main() {
             return;
         }
     };
-    let work_store = match WorkStore::connect(config.database_url()).await {
+    let work_store = match WorkStore::connect(&db_pool).await {
         Ok(work) => Arc::new(work),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's Work domain: {error}");

@@ -649,7 +649,9 @@ mod tests {
         };
         let fixture = build_fixture(&database_url).await;
         let task_id = unique_id("task");
-        let mut work_store = WorkStore::connect(&database_url).await.unwrap();
+        let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .unwrap();
         work_store
             .create_task(
                 &NewWorkTask {

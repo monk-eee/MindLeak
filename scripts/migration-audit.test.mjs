@@ -11,9 +11,11 @@ import {
   contentDigest,
   digestMismatches,
   duplicateKeyValues,
+  editedLandedMigrationsFromGit,
   filesMissingKeys,
   keysMissingFiles,
   legacyDigestRows,
+  modifiedLandedMigrations,
   nextAvailableKey,
 } from "./migration-audit.mjs";
 
@@ -254,5 +256,82 @@ test("legacyDigestRows names only the rows written before the digest column exis
       { key: 2, digest: null },
     ]),
     [2, 3],
+  );
+});
+
+test("modifiedLandedMigrations names a migration edited after it landed", () => {
+  // The author-time shape of the key-60 incident: 0060 already existed on
+  // main and a later commit rewrote it.
+  assert.deepEqual(
+    modifiedLandedMigrations(
+      "M\tcrates/ackplane-server/migrations/0060_constitution_proposals_display_label.sql\n",
+    ),
+    [
+      "crates/ackplane-server/migrations/0060_constitution_proposals_display_label.sql",
+    ],
+  );
+});
+
+test("modifiedLandedMigrations ignores a brand-new migration", () => {
+  // Adding one is the normal way to change the schema, and is precisely the
+  // remedy this check tells you to use -- flagging it would make the guard
+  // fire on every correct change and get switched off.
+  assert.deepEqual(
+    modifiedLandedMigrations(
+      "A\tcrates/ackplane-server/migrations/0065_new_thing.sql\n",
+    ),
+    [],
+  );
+});
+
+test("modifiedLandedMigrations ignores a deleted migration and a non-migration file", () => {
+  assert.deepEqual(
+    modifiedLandedMigrations(
+      [
+        "D\tcrates/ackplane-server/migrations/0059_gone.sql",
+        "M\tcrates/ackplane-server/migrations/README.md",
+        "",
+      ].join("\n"),
+    ),
+    [],
+  );
+});
+
+test("editedLandedMigrationsFromGit asks git for the difference rather than comparing text itself", () => {
+  let calledWith;
+  const edited = editedLandedMigrationsFromGit(
+    (args) => {
+      calledWith = args;
+      return "M\tcrates/ackplane-server/migrations/0060_x.sql\n";
+    },
+    "origin/main",
+    "crates/ackplane-server/migrations",
+  );
+
+  // Delegating to git is what keeps a Windows checkout whose working copy has
+  // CRLF endings from reading as a modified migration.
+  assert.deepEqual(calledWith, [
+    "diff",
+    "--name-status",
+    "origin/main",
+    "--",
+    "crates/ackplane-server/migrations",
+  ]);
+  assert.deepEqual(edited, ["crates/ackplane-server/migrations/0060_x.sql"]);
+});
+
+test("editedLandedMigrationsFromGit returns null, not a throw or a false all-clear, for an unavailable base ref", () => {
+  // A shallow clone cannot answer this. Reporting [] would assert "nothing
+  // was edited", which is a different and much more confident claim than
+  // "this cannot be checked here".
+  assert.equal(
+    editedLandedMigrationsFromGit(
+      () => {
+        throw new Error("fatal: bad revision 'origin/main'");
+      },
+      "origin/main",
+      "crates/ackplane-server/migrations",
+    ),
+    null,
   );
 });

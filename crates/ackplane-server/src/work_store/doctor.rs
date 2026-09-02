@@ -67,7 +67,8 @@ impl WorkStore {
         }
 
         let task_rows = self
-            .client
+            .connection()
+                .await?
             .query(
                 "SELECT task_id, title, goal_id, state, owner_id, lease_expires_at, declared_paths \
                  FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2 ORDER BY task_id",
@@ -153,7 +154,8 @@ impl WorkStore {
             .checked_sub(unanswered_wait_threshold)
             .unwrap_or(SystemTime::UNIX_EPOCH);
         let wait_rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT w.wait_id, w.task_id, w.question, w.asked_at FROM work_task_waits w \
                  INNER JOIN work_tasks t \
@@ -193,7 +195,8 @@ impl WorkStore {
             .checked_sub(unanswered_wait_threshold)
             .unwrap_or(SystemTime::UNIX_EPOCH);
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT w.repository_id, w.task_id, w.wait_id, w.question, w.asked_at \
                  FROM work_task_waits w \
@@ -237,6 +240,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::unique_id;
+    use tokio_postgres::Client;
 
     async fn raw_client(database_url: &str) -> Client {
         let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
@@ -271,13 +275,13 @@ mod tests {
 
     #[tokio::test]
     async fn board_doctor_is_clean_for_one_well_formed_open_task() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         store
             .create_task(
                 &new_task(
@@ -314,7 +318,9 @@ mod tests {
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .expect("connect");
         let raw = raw_client(&database_url).await;
         let now = SystemTime::now();
         let lease_expires_at = truncate_to_micros(now + Duration::from_secs(600));
@@ -350,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn board_doctor_finds_two_open_tasks_sharing_a_title_under_the_same_goal() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
@@ -359,7 +365,7 @@ mod tests {
         let goal_id = unique_id("goal");
         let first_task_id = unique_id("task");
         let second_task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let mut first = new_task(
             &tenant_id,
             &repository_id,
@@ -406,13 +412,13 @@ mod tests {
 
     #[tokio::test]
     async fn board_doctor_ignores_a_shared_title_when_the_goal_differs() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let mut first = new_task(&tenant_id, &repository_id, &unique_id("task"), "Same title");
         first.goal_id = Some(unique_id("goal"));
         let mut second = new_task(&tenant_id, &repository_id, &unique_id("task"), "Same title");
@@ -448,7 +454,9 @@ mod tests {
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .expect("connect");
         store
             .create_task(
                 &new_task(&tenant_id, &repository_id, &task_id, "Ship the thing"),
@@ -497,7 +505,9 @@ mod tests {
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
         let wait_id = unique_id("wait");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .expect("connect");
         store
             .create_task(
                 &new_task(&tenant_id, &repository_id, &task_id, "Ship the thing"),
@@ -546,7 +556,9 @@ mod tests {
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .expect("connect");
         store
             .create_task(
                 &new_task(&tenant_id, &repository_id, &task_id, "Ship the thing"),
@@ -579,7 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn board_doctor_finds_two_open_tasks_declaring_the_same_path() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
@@ -587,7 +599,7 @@ mod tests {
         let repository_id = unique_id("repo");
         let first_task_id = unique_id("task");
         let second_task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let mut first = new_task(&tenant_id, &repository_id, &first_task_id, "First task");
         first.declared_paths = vec!["src/shared.rs".to_owned()];
         let mut second = new_task(&tenant_id, &repository_id, &second_task_id, "Second task");
@@ -630,7 +642,9 @@ mod tests {
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .expect("connect");
         store
             .create_task(
                 &new_task(&tenant_id, &repository_id, &task_id, "Ship the thing"),
@@ -669,7 +683,9 @@ mod tests {
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .expect("connect");
         store
             .create_task(
                 &new_task(&tenant_id, &repository_id, &task_id, "Ship the thing"),
@@ -719,7 +735,9 @@ mod tests {
         let second_repository_id = unique_id("repo");
         let other_tenant_id = unique_id("tenant");
         let other_repository_id = unique_id("repo");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .expect("connect");
         let raw = raw_client(&database_url).await;
 
         let older_task_id = unique_id("task");

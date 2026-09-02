@@ -49,7 +49,7 @@ struct Fixture {
 /// Registers one enrolled supervisor session (with `capabilities`) and seeds
 /// one claimed Work task, so a confirmed directive has both a real target to
 /// address and a real task to (not) mutate.
-async fn fixture(database_url: &str, capabilities: Vec<SupervisorDirectiveCapability>) -> Fixture {
+async fn fixture(capabilities: Vec<SupervisorDirectiveCapability>) -> Fixture {
     let suffix = unique_id("work-command-directive");
     let tenant_id = format!("tenant-{suffix}");
     let repository_id = format!("repository-{suffix}");
@@ -97,7 +97,7 @@ async fn fixture(database_url: &str, capabilities: Vec<SupervisorDirectiveCapabi
         .await
         .expect("record directive target session");
 
-    let mut work_store = WorkStore::connect(database_url)
+    let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("connect work store");
     work_store
@@ -299,7 +299,7 @@ async fn confirming_pause_issues_a_matching_directive_without_moving_the_task() 
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
-    let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Pause]).await;
+    let fixture = fixture(vec![SupervisorDirectiveCapability::Pause]).await;
     let now = SystemTime::now();
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
@@ -359,7 +359,7 @@ async fn confirming_pause_issues_a_matching_directive_without_moving_the_task() 
     assert_eq!(directive.required_capability, "pause.v1");
 
     // Acceptance point 2 (continued): work_tasks itself has not moved yet.
-    let work_store = WorkStore::connect(&database_url)
+    let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("connect work store");
     let detail = work_store
@@ -372,17 +372,17 @@ async fn confirming_pause_issues_a_matching_directive_without_moving_the_task() 
 
 #[tokio::test]
 async fn confirming_pause_against_a_supervisor_missing_the_capability_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
     // Registered, but only with Resume -- not Pause.
-    let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Resume]).await;
+    let fixture = fixture(vec![SupervisorDirectiveCapability::Resume]).await;
     let now = SystemTime::now();
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -415,18 +415,18 @@ async fn confirming_pause_against_a_supervisor_missing_the_capability_is_refused
 
 #[tokio::test]
 async fn confirming_pause_against_an_unknown_supervisor_session_is_refused() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
-    let mut fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Pause]).await;
+    let mut fixture = fixture(vec![SupervisorDirectiveCapability::Pause]).await;
     // Address a session that was never registered.
     fixture.session_id = format!("unregistered-{}", fixture.suffix);
     let now = SystemTime::now();
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -458,18 +458,18 @@ async fn confirming_pause_against_an_unknown_supervisor_session_is_refused() {
 
 #[tokio::test]
 async fn an_expired_supervisor_directed_command_never_issues_a_directive() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
-    let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Pause]).await;
+    let fixture = fixture(vec![SupervisorDirectiveCapability::Pause]).await;
     let now = SystemTime::now();
     let (mut command, payload) = pause_command(&fixture, now);
     // Submit while still valid, but confirm after the command's own expiry.
     command.expires_at = now + Duration::from_secs(1);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
 
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service
@@ -510,7 +510,7 @@ async fn the_supervisors_applied_receipt_pauses_the_task_and_is_idempotent() {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
-    let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Pause]).await;
+    let fixture = fixture(vec![SupervisorDirectiveCapability::Pause]).await;
     let now = SystemTime::now();
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
@@ -570,7 +570,7 @@ async fn the_supervisors_applied_receipt_pauses_the_task_and_is_idempotent() {
     assert_eq!(applied.receipt.outcome, WorkCommandOutcome::Applied);
     assert!(!applied.idempotent_replay);
 
-    let work_store = WorkStore::connect(&database_url)
+    let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("connect work store");
     let detail = work_store
@@ -614,7 +614,7 @@ async fn an_applied_drain_receipt_cannot_reopen_a_terminal_task() {
             "abandoned",
         ),
     ] {
-        let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Drain]).await;
+        let fixture = fixture(vec![SupervisorDirectiveCapability::Drain]).await;
         let now = SystemTime::now();
         let (command, payload) = drain_command(&fixture, now);
         let authorization = authorization_for(&fixture, vec![WorkCommandKind::Drain]);
@@ -684,7 +684,7 @@ async fn an_applied_drain_receipt_cannot_reopen_a_terminal_task() {
             .await
             .expect("another path should be able to reach a terminal state");
 
-        let work_store = WorkStore::connect(&database_url)
+        let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect work store");
         let before = work_store
@@ -738,7 +738,7 @@ async fn a_refused_supervisor_receipt_leaves_the_task_state_unchanged() {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
-    let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Pause]).await;
+    let fixture = fixture(vec![SupervisorDirectiveCapability::Pause]).await;
     let now = SystemTime::now();
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
@@ -804,7 +804,7 @@ async fn a_refused_supervisor_receipt_leaves_the_task_state_unchanged() {
         "the worker process exited before checkpointing"
     );
 
-    let work_store = WorkStore::connect(&database_url)
+    let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
         .await
         .expect("connect work store");
     let detail = work_store
@@ -821,7 +821,7 @@ async fn an_accepted_directive_receipt_never_appends_a_work_command_receipt() {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
-    let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Pause]).await;
+    let fixture = fixture(vec![SupervisorDirectiveCapability::Pause]).await;
     let now = SystemTime::now();
     let (command, payload) = pause_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Pause]);
@@ -883,16 +883,16 @@ async fn an_accepted_directive_receipt_never_appends_a_work_command_receipt() {
 
 #[tokio::test]
 async fn resume_targets_the_named_supervisor_session_independent_of_the_current_claim() {
-    let Some(database_url) = database_url() else {
+    let Some(pool) = crate::test_support::test_pool() else {
         eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
         return;
     };
-    let fixture = fixture(&database_url, vec![SupervisorDirectiveCapability::Resume]).await;
+    let fixture = fixture(vec![SupervisorDirectiveCapability::Resume]).await;
     let now = SystemTime::now();
     let (command, payload) = resume_command(&fixture, now);
     let authorization = authorization_for(&fixture, vec![WorkCommandKind::Resume]);
 
-    let service = WorkCommandService::connect(&crate::test_support::gated_test_pool())
+    let service = WorkCommandService::connect(&pool)
         .await
         .expect("the command service should connect");
     let submitted = service

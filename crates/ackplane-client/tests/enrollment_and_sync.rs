@@ -70,7 +70,7 @@ async fn a_fresh_node_authenticates_then_syncs_and_publishes_native_work() {
     let ledger = LedgerStore::connect(&pool)
         .await
         .expect("the gated test database should accept ledger migrations");
-    let work_store = WorkStore::connect(&database_url)
+    let work_store = WorkStore::connect(&pool)
         .await
         .expect("the gated test database should accept Work migrations");
 
@@ -403,7 +403,12 @@ async fn a_fresh_node_authenticates_then_syncs_and_publishes_native_work() {
     assert!(!follow_up_receipt.idempotent_replay);
     assert_ne!(follow_up_receipt.work_id, work_id);
 
-    let work_reader = WorkStore::connect(&database_url)
+    let reader_pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .expect("the gated test database url builds a pool");
+    let work_reader = WorkStore::connect(&reader_pool)
         .await
         .expect("the test can read the native Work record");
     let detail = work_reader

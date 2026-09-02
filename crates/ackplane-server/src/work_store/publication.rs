@@ -31,7 +31,8 @@ impl WorkStore {
         now: SystemTime,
     ) -> Result<WorkPublication, WorkStoreError> {
         let has_work_tasks = self
-            .client
+            .connection()
+            .await?
             .query_one(
                 "SELECT EXISTS(\
                      SELECT 1 FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2\
@@ -58,7 +59,8 @@ impl WorkStore {
         max_rows: i64,
     ) -> Result<(i64, Vec<ClaimsOnlyWork>), WorkStoreError> {
         let rows = self
-            .client
+            .connection()
+                .await?
             .query(
                 "SELECT dc.task_id, dc.owner_id, dc.branch, dc.lease_expires_at, dc.paths, dc.symbols, \
                         COUNT(*) OVER()::BIGINT AS total_count \
@@ -99,7 +101,8 @@ impl WorkStore {
         now: SystemTime,
     ) -> Result<HashSet<(String, String)>, WorkStoreError> {
         let rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT dc.repository_id, dc.task_id \
                  FROM delegated_claims dc \
@@ -181,7 +184,7 @@ mod tests {
         let orphan_task_id = format!("task-orphan-{unique}");
         let other_task_id = format!("task-other-{unique}");
         let now = SystemTime::now();
-        let mut work = WorkStore::connect(&database_url)
+        let work = WorkStore::connect(&crate::test_support::gated_test_pool())
             .await
             .expect("connect work store");
         work.create_task(
