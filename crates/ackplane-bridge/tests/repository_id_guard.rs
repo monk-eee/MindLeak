@@ -113,7 +113,10 @@ const KNOWLEDGE_API_RS: &str = include_str!("../src/knowledge_api.rs");
 const LIVE_FEED_RS: &str = include_str!("../src/live_feed.rs");
 const SUPERVISOR_API_RS: &str = include_str!("../src/supervisor_api.rs");
 const SUPERVISOR_API_DASHBOARD_RS: &str = include_str!("../src/supervisor_api/dashboard.rs");
-const WORK_API_RS: &str = include_str!("../src/work_api.rs");
+const WORK_API_RS: &str = include_str!("../src/work_api/mod.rs");
+const WORK_API_LISTING_RS: &str = include_str!("../src/work_api/listing.rs");
+const WORK_API_DETAIL_RS: &str = include_str!("../src/work_api/detail.rs");
+const WORK_API_DOCTOR_RS: &str = include_str!("../src/work_api/doctor.rs");
 const SHARED_ASSETS_RS: &str = include_str!("../src/shared_assets.rs");
 
 /// `FleetStore::connect` is the connection constructor, not a query or
@@ -211,6 +214,9 @@ const HANDLER_SOURCES: &[&str] = &[
     SUPERVISOR_API_RS,
     SUPERVISOR_API_DASHBOARD_RS,
     WORK_API_RS,
+    WORK_API_LISTING_RS,
+    WORK_API_DETAIL_RS,
+    WORK_API_DOCTOR_RS,
     SHARED_ASSETS_RS,
 ];
 
@@ -223,7 +229,9 @@ const HANDLER_SOURCES: &[&str] = &[
 /// own router does that -- so they belong in `HANDLER_SOURCES` only, not here.
 /// `design_api`'s `listing`/`mutations` submodules are the same shape --
 /// `design_api/mod.rs`'s own `design_routes()` is still the only place any
-/// `.route(...)` call for this domain is registered.
+/// `.route(...)` call for this domain is registered. `work_api`'s
+/// `listing`/`detail`/`doctor` submodules are the same shape again --
+/// `work_api/mod.rs`'s own `work_routes()` registers every Work route.
 const ROUTE_SOURCES: &[&str] = &[
     MAIN_RS,
     ADMINISTRATION_RS,

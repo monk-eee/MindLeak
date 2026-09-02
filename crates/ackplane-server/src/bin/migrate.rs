@@ -13,6 +13,7 @@
 use std::process::ExitCode;
 
 const DATABASE_URL_ENV: &str = "ACKPLANE_DATABASE_URL";
+const MARK_SHARED_FLAG: &str = "--mark-shared";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -20,6 +21,10 @@ async fn main() -> ExitCode {
         eprintln!("ackplane-migrate: {DATABASE_URL_ENV} is not set");
         return ExitCode::FAILURE;
     };
+
+    if std::env::args().any(|arg| arg == MARK_SHARED_FLAG) {
+        return mark_shared(&database_url).await;
+    }
 
     if let Err(error) = migrate(&database_url).await {
         eprintln!("ackplane-migrate: {error}");
@@ -30,6 +35,26 @@ async fn main() -> ExitCode {
         "ackplane-migrate: ledger, enrollment, claim, projection, knowledge, evidence, \
          constitution, telemetry, delegation, directive, supervisor, live feed, and work schemas \
          are up to date"
+    );
+    ExitCode::SUCCESS
+}
+
+/// A one-time, explicit provisioning action for whoever stands up a shared
+/// or persistent Postgres instance (as opposed to an ephemeral local or CI
+/// container): after this, every migration attempt against it refuses
+/// unless `ACKPLANE_MIGRATE_REVIEWED` is set, closing
+/// gaps.d/unaccepted-work-migration-reaches-shared-db.md's "nothing stops a
+/// branch-local experiment applying a key to shared state in the first
+/// place" gap.
+async fn mark_shared(database_url: &str) -> ExitCode {
+    if let Err(error) = ackplane_server::schema_migration::mark_database_shared(database_url).await
+    {
+        eprintln!("ackplane-migrate --mark-shared: {error}");
+        return ExitCode::FAILURE;
+    }
+    println!(
+        "ackplane-migrate: this database is now marked shared; every future migration \
+         attempt against it requires ACKPLANE_MIGRATE_REVIEWED=1"
     );
     ExitCode::SUCCESS
 }

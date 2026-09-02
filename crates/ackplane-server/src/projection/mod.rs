@@ -195,9 +195,11 @@ impl Projector {
 
 mod embeddings;
 mod neighborhood;
+mod ranking;
 mod rebuild;
 
-pub use embeddings::UnembeddedNode;
+pub use embeddings::{SimilarNode, UnembeddedNode};
+pub use ranking::{rank, RankedNode};
 pub use rebuild::run_projection_worker;
 
 #[cfg(test)]

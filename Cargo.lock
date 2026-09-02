@@ -115,6 +115,7 @@ dependencies = [
  "deadpool-postgres",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "mindleak-model",
  "pgvector",
  "prost",
  "serde",

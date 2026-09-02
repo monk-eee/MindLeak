@@ -20,6 +20,15 @@ ackplane-protocol = { path = "../ackplane-protocol" }
 ackplane-client = { path = "../ackplane-client" }
 ed25519-dalek = "2.1"
 getrandom = "0.2"
+# The one MindLeak crate this may depend on, and deliberately not a plane one.
+# ADR-0140 decision 5 put the recall discrimination contract (`kind_prior`,
+# `distinctive_cut`) here precisely so Ackplane's pgvector recall and
+# `mindleak-core::embed` rank through the same code instead of two copies that
+# drift. `mindleak-model` holds model types and pure functions with no storage,
+# so this creates no edge onto `mindleak-core` or `lodestar-core` and Ackplane
+# stays a separate deployable rather than a mode of either plane (ADR-0082
+# clause 1, extending ADR-0136 decision 6's shared-crate precedent).
+mindleak-model = { path = "../mindleak-model" }
 pgvector = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
