@@ -22,210 +22,15 @@ use tokio_postgres::Client;
 
 const APPLIED_MIGRATIONS_TABLE: &str = "ackplane_schema_migrations";
 
-/// Every schema migration first takes the global lock, then its own file key.
-/// The global lock prevents deadlocks between different DDL files that touch
-/// related tables; the file key keeps the migration identity explicit for
-/// diagnostics and preserves the established migration-number convention.
-pub(crate) mod key {
-    /// Every migration takes this lock before its own numbered lock.
-    pub(crate) const GLOBAL_SCHEMA: i64 = 0;
-    /// `migrations/0001_ledger.sql`
-    pub(crate) const LEDGER: i64 = 1;
-    /// `migrations/0002_projection.sql`
-    pub(crate) const PROJECTION: i64 = 2;
-    /// `migrations/0003_enrollment.sql`
-    pub(crate) const ENROLLMENT: i64 = 3;
-    /// `migrations/0004_signing_keys.sql`
-    pub(crate) const SIGNING_KEYS: i64 = 4;
-    /// `migrations/0005_claim_delegation.sql`
-    pub(crate) const CLAIM_DELEGATION: i64 = 5;
-    /// `migrations/0006_claim_authentication_nonces.sql`
-    pub(crate) const CLAIM_AUTHENTICATION_NONCES: i64 = 6;
-    /// `migrations/0007_knowledge.sql`
-    pub(crate) const KNOWLEDGE: i64 = 7;
-    /// `migrations/0008_knowledge_authentication_nonces.sql`
-    pub(crate) const KNOWLEDGE_AUTHENTICATION_NONCES: i64 = 8;
-    /// `migrations/0009_constitution.sql`
-    pub(crate) const CONSTITUTION: i64 = 9;
-    /// `migrations/0010_constitution_authentication_nonces.sql`
-    pub(crate) const CONSTITUTION_AUTHENTICATION_NONCES: i64 = 10;
-    /// `migrations/0011_knowledge_recorded_by.sql`
-    pub(crate) const KNOWLEDGE_RECORDED_BY: i64 = 11;
-    /// `migrations/0012_knowledge_reconfirmations.sql`
-    pub(crate) const KNOWLEDGE_RECONFIRMATIONS: i64 = 12;
-    /// `migrations/0013_knowledge_reach.sql`
-    pub(crate) const KNOWLEDGE_REACH: i64 = 13;
-    /// `migrations/0014_evidence.sql`
-    pub(crate) const EVIDENCE: i64 = 14;
-    /// `migrations/0015_evidence_conformance.sql`
-    pub(crate) const EVIDENCE_CONFORMANCE: i64 = 15;
-    /// `migrations/0016_telemetry.sql`
-    pub(crate) const TELEMETRY: i64 = 16;
-    /// `migrations/0017_telemetry_authentication_nonces.sql`
-    pub(crate) const TELEMETRY_AUTHENTICATION_NONCES: i64 = 17;
-    /// `migrations/0018_evidence_review_filter.sql`
-    pub(crate) const EVIDENCE_REVIEW_FILTER: i64 = 18;
-    /// `migrations/0020_context_packets.sql`
-    pub(crate) const CONTEXT_PACKETS: i64 = 20;
-    /// `migrations/0022_human_delegation.sql`
-    pub(crate) const HUMAN_DELEGATION: i64 = 22;
-    /// `migrations/0023_human_delegation_event_payloads.sql`
-    pub(crate) const HUMAN_DELEGATION_EVENT_PAYLOADS: i64 = 23;
-    /// `migrations/0024_supervisor_session_projection.sql`
-    pub(crate) const SUPERVISOR_SESSION_PROJECTION: i64 = 24;
-    /// `migrations/0025_enrollment_status_authentication_nonces.sql`
-    pub(crate) const ENROLLMENT_STATUS_AUTHENTICATION_NONCES: i64 = 25;
-    /// `migrations/0026_constitution_publication_history.sql`
-    pub(crate) const CONSTITUTION_PUBLICATION_HISTORY: i64 = 26;
-    /// `migrations/0027_industrial_designs.sql`
-    pub(crate) const INDUSTRIAL_DESIGNS: i64 = 27;
-    /// `migrations/0028_work.sql`. Key 27 was deliberately skipped while
-    /// this was drafted: the shared development database already had it
-    /// recorded as applied by concurrent, then-not-yet-committed work
-    /// (observed against `ackplane_schema_migrations` while investigating
-    /// ADR-0120's own migration-identity gap) -- it landed as
-    /// `INDUSTRIAL_DESIGNS` above.
-    pub(crate) const WORK: i64 = 28;
-    /// `migrations/0029_live_feed.sql`. Renumbered from 27 to 29: 27 was
-    /// this file's own next-available slot when drafted, but collided with
-    /// `INDUSTRIAL_DESIGNS`/`WORK` (27/28) landing concurrently.
-    pub(crate) const LIVE_FEED: i64 = 29;
-    /// `migrations/0030_directives.sql`
-    pub(crate) const DIRECTIVES: i64 = 30;
-    /// `migrations/0031_industrial_design_work_reference.sql`. Key 30 was
-    /// already recorded as applied in the shared development database by
-    /// concurrent, then-not-yet-committed work at the time this was drafted.
-    pub(crate) const INDUSTRIAL_DESIGN_WORK_REFERENCE: i64 = 31;
-    /// `migrations/0032_industrial_design_materializations.sql`
-    pub(crate) const INDUSTRIAL_DESIGN_MATERIALIZATIONS: i64 = 32;
-    /// `migrations/0033_knowledge_active_page_index.sql`
-    pub(crate) const KNOWLEDGE_ACTIVE_PAGE_INDEX: i64 = 33;
-    /// `migrations/0034_knowledge_lifecycle.sql`
-    pub(crate) const KNOWLEDGE_LIFECYCLE: i64 = 34;
-    /// `migrations/0035_knowledge_supersession_and_evidence.sql`
-    pub(crate) const KNOWLEDGE_SUPERSESSION_AND_EVIDENCE: i64 = 35;
-    /// `migrations/0036_knowledge_revalidation_policy.sql`
-    pub(crate) const KNOWLEDGE_REVALIDATION_POLICY: i64 = 36;
-    /// `migrations/0037_work_commands.sql`
-    pub(crate) const WORK_COMMANDS: i64 = 37;
-    /// `migrations/0038_constitution_proposals.sql`. 36 and 37 were live in
-    /// the shared development database and/or a concurrent unmerged branch
-    /// (`feat/work-command-ledger`, PR #733, `0037_work_commands.sql`) at
-    /// the time this was drafted -- checked via `migration-audit.mjs` and a
-    /// direct `gh pr view` before picking this number, not guessed.
-    pub(crate) const CONSTITUTION_PROPOSALS: i64 = 38;
-    /// `migrations/0039_work_task_command_execution.sql`. Key 38 was already
-    /// recorded as applied in the shared development database by
-    /// concurrent, then-not-yet-committed work at the time this was drafted.
-    pub(crate) const WORK_TASK_COMMAND_EXECUTION: i64 = 39;
-    /// `migrations/0041_administration.sql`. 39 and 40 (like 19 before them)
-    /// were already reached by the shared development database from
-    /// concurrent work nobody had committed yet -- `migration-audit.mjs`
-    /// checked before picking 41, not guessed.
-    pub(crate) const ADMINISTRATION: i64 = 41;
-    /// `migrations/0042_administration_purge.sql`.
-    pub(crate) const ADMINISTRATION_PURGE: i64 = 42;
-    /// `migrations/0046_administration_recovery_inspection.sql`. 43, 44, and
-    /// 45 were each reached by the shared development database from
-    /// concurrent work nobody had committed yet -- checked directly against
-    /// `ackplane_schema_migrations` (44 collided with a different session's
-    /// migration under the *same* key, which `migration-audit.mjs` cannot
-    /// see because this branch's own source already accounts for that key)
-    /// before picking 46.
-    pub(crate) const ADMINISTRATION_RECOVERY_INSPECTION: i64 = 46;
-    /// `migrations/0047_administration_export.sql`. Checked directly against
-    /// `ackplane_schema_migrations` (only 46 applied above 42 at the time
-    /// this was drafted) before picking 47.
-    pub(crate) const ADMINISTRATION_EXPORT: i64 = 47;
-    /// `migrations/0049_delegation_use_receipts.sql`. Keys 43, 44, and 48
-    /// were already applied by concurrent work in the shared development
-    /// database when this unmerged slice was recovered; `migration-audit --next`
-    /// selected 49 rather than reusing an ambiguous key.
-    pub(crate) const DELEGATION_USE_RECEIPTS: i64 = 49;
-    /// `migrations/0050_administration_purge_confirming_label.sql`. Key 49
-    /// is already allocated to delegation-use receipts on main, so
-    /// `migration-audit --next` selected 50 for this recovered purge fix.
-    pub(crate) const ADMINISTRATION_PURGE_CONFIRMING_LABEL: i64 = 50;
-    /// `migrations/0051_administration_purge_confirmation_authentication.sql`.
-    pub(crate) const ADMINISTRATION_PURGE_CONFIRMATION_AUTHENTICATION: i64 = 51;
-    /// `migrations/0052_administration_purge_confirmation_fingerprint.sql`.
-    pub(crate) const ADMINISTRATION_PURGE_CONFIRMATION_FINGERPRINT: i64 = 52;
-    /// `migrations/0053_work_command_directives.sql`. Checked via
-    /// `migration-audit.mjs` before picking 53: no live discrepancy above 52.
-    pub(crate) const WORK_COMMAND_DIRECTIVES: i64 = 53;
-    /// `migrations/0054_human_decision_requests.sql` (ADR-0115 item 5).
-    /// Key 53 was already applied by concurrent work in the shared
-    /// development database when this slice was written;
-    /// `migration-audit --next` selected 54.
-    pub(crate) const HUMAN_DECISION_REQUESTS: i64 = 54;
-    /// `migrations/0055_projected_node_embeddings.sql` (ADR-0140 decision 1).
-    /// `migration-audit --next` selected 55: no live discrepancy above 54.
-    pub(crate) const PROJECTED_NODE_EMBEDDINGS: i64 = 55;
-    /// `migrations/0056_supervisor_outbox_positions.sql` (ADR-0146 decision 3).
-    /// `migration-audit --next` selected 56 from committed source; no live
-    /// database was reachable to check for a higher applied key, so this is
-    /// the next free key on `main` rather than a verified-against-live one.
-    pub(crate) const SUPERVISOR_OUTBOX_POSITIONS: i64 = 56;
-    /// `migrations/0057_administration_recovery_rehearsal.sql` (ADR-0145
-    /// slice 1). `migration-audit --next` selected 57 from committed source;
-    /// no live database was reachable to check for a higher applied key.
-    pub(crate) const ADMINISTRATION_RECOVERY_REHEARSAL: i64 = 57;
-    /// `migrations/0058_administration_recovery_execution.sql` (ADR-0145
-    /// slice 2). `migration-audit --next` selected 58, checked against the
-    /// shared development database (`ackplane_test`) as well as committed
-    /// source: no live discrepancy above 57.
-    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION: i64 = 58;
-    /// `migrations/0059_design_constitution_display_label.sql` (ADR-0142
-    /// decision 4). `migration-audit --next` selected 59 from committed
-    /// source, but the shared development database (`ackplane_test`) had
-    /// already applied a different migration's content under key 59 by the
-    /// time tests ran here -- renumbered to 60 rather than reusing an
-    /// ambiguous key. `migration-audit.mjs` cannot see this class of
-    /// collision from committed source alone; only the live database
-    /// surfaces a same-key-different-content mismatch, and only at
-    /// connect() time.
-    ///
-    /// `migrations/0060_constitution_proposals_display_label.sql`, applied by
-    /// `ConstitutionStore::connect()` only. Originally bundled with the
-    /// materialization table's ALTER under this one key; split so this
-    /// store's connect() never touches a table only `MaterializationStore`
-    /// creates (see key 61's doc comment).
-    pub(crate) const CONSTITUTION_PROPOSALS_DISPLAY_LABEL: i64 = 60;
-    /// `migrations/0061_design_materialization_display_label.sql`, applied by
-    /// `MaterializationStore::connect()` only. On a genuinely fresh database
-    /// (unlike the long-lived shared dev container, which already had this
-    /// table from unrelated prior activity), `ConstitutionStore::connect()`
-    /// can run before `MaterializationStore::connect()` ever creates
-    /// `industrial_design_materializations` (migration 0032) -- bundling
-    /// both ALTERs under one key made `ConstitutionStore` fail with
-    /// "relation industrial_design_materializations does not exist" in CI's
-    /// clean-container run. Each store now only ever migrates tables it
-    /// already owns or transitively depends on.
-    pub(crate) const DESIGN_MATERIALIZATION_DISPLAY_LABEL: i64 = 61;
-    /// `migrations/0063_administration_recovery_execution_receipt.sql`
-    /// (ADR-0145 slice 4). Filed as 59, 60, 61, then 62 -- each time the
-    /// shared development database (`ackplane_test`) had accepted a different
-    /// migration under that key from a concurrent branch first. Renumbered a
-    /// fifth time to 63 for a genuinely new reason: CI caught that 62's own
-    /// content had real foreign keys from `rehearsal_id`/`request_id` to
-    /// tables a real restore always empties before this row is ever inserted
-    /// (see the migration's own comment), so the content changed and needed
-    /// a fresh key rather than reusing 62 under new content.
-    pub(crate) const ADMINISTRATION_RECOVERY_EXECUTION_RECEIPT: i64 = 63;
-    /// `migrations/0064_industrial_designs_display_label.sql` -- the third
-    /// and final table of ADR-0142 decision 4's display_label rollout
-    /// (`CONSTITUTION_PROPOSALS_DISPLAY_LABEL`/60 and
-    /// `DESIGN_MATERIALIZATION_DISPLAY_LABEL`/61 closed the other two;
-    /// this one was deferred while `design_store.rs` carried a live
-    /// ADR-0143 pool-migration claim).
-    pub(crate) const INDUSTRIAL_DESIGNS_DISPLAY_LABEL: i64 = 64;
-    /// `migrations/0065_work_event_positions.sql`
-    pub(crate) const WORK_EVENT_POSITIONS: i64 = 65;
-    /// `migrations/0066_delegated_claim_parked.sql` (ADR-0096 clause
-    /// completion). `migration-audit --next` selected 66 from committed
-    /// source; no live discrepancy above 65.
-    pub(crate) const DELEGATED_CLAIM_PARKED: i64 = 66;
-}
+/// Set (to any value) to acknowledge that a migration applied against a
+/// database marked shared (see [`mark_shared_database`]) is genuinely
+/// reviewed -- e.g. after confirming its key is committed and collision-free
+/// via `node scripts/migration-audit.mjs`. Never set this to make a refusal
+/// go away without doing that check first; that is exactly the shortcut
+/// this gate exists to close.
+const REVIEW_ACKNOWLEDGEMENT_ENV: &str = "ACKPLANE_MIGRATE_REVIEWED";
+
+pub(crate) mod key;
 
 /// Apply `migration_sql` once per database under the global schema lock and
 /// the advisory lock named by `lock_key`. The applied-key ledger prevents a
@@ -242,7 +47,7 @@ pub(crate) mod key {
 /// That is not hypothetical. `migration_lock.rs`'s own key comments record six
 /// keys (19, 27, 36, 39, 40, 41, 42) burned by concurrent branches applying to
 /// the shared development database before committing, and note key 44
-/// colliding "with a different session's migration under the *same* key" —
+/// colliding "with a different session's migration under the *same* key" â€”
 /// exactly this. `scripts/migration-audit.mjs` cannot see that case, because
 /// the branch's own source does account for the key; only the content can tell
 /// them apart.
@@ -251,6 +56,23 @@ pub(crate) async fn migrate_locked(
     lock_key: i64,
     migration_sql: &str,
 ) -> Result<(), tokio_postgres::Error> {
+    let reviewed = std::env::var(REVIEW_ACKNOWLEDGEMENT_ENV).is_ok();
+    migrate_locked_checked(client, lock_key, migration_sql, reviewed).await
+}
+
+/// The reviewed-acknowledgement flag as an explicit parameter rather than an
+/// env var read buried inside the guarded logic, so tests exercise both
+/// branches deterministically instead of mutating process-global
+/// environment state under parallel test execution.
+async fn migrate_locked_checked(
+    client: &mut Client,
+    lock_key: i64,
+    migration_sql: &str,
+    reviewed: bool,
+) -> Result<(), tokio_postgres::Error> {
+    if shared_gate_refuses(is_marked_shared(client).await?, reviewed) {
+        return Err(raise_shared_database_refusal(client, lock_key).await);
+    }
     let transaction = client.transaction().await?;
     transaction
         .execute("SELECT pg_advisory_xact_lock($1)", &[&key::GLOBAL_SCHEMA])
@@ -287,7 +109,7 @@ pub(crate) async fn migrate_locked(
         // point: continuing would skip this migration's DDL and report
         // success, which is how a schema ends up missing tables nobody knows
         // are missing. Editing an already-applied migration file reaches here
-        // too, and is refused for the same reason — ADR-0063 asks that a
+        // too, and is refused for the same reason â€” ADR-0063 asks that a
         // migration tidy the past, never the present.
         Some(Some(applied)) => {
             let refusal = raise_collision(&transaction, lock_key, &applied, &digest).await;
@@ -300,8 +122,8 @@ pub(crate) async fn migrate_locked(
         }
         // Applied before the digest column existed. The row is real but says
         // nothing about *which* migration wrote it, and assuming it was this
-        // one would assert a fact the ledger never held. Skip as before —
-        // that is what this database has always done for this row — and adopt
+        // one would assert a fact the ledger never held. Skip as before â€”
+        // that is what this database has always done for this row â€” and adopt
         // the digest so the ambiguity does not outlive this run.
         Some(None) => {
             transaction
@@ -331,6 +153,99 @@ pub(crate) async fn migrate_locked(
     }
 }
 
+/// Whether this database has been explicitly designated shared (see
+/// [`mark_shared_database`]). A fresh database, or one with no
+/// `ackplane_schema_migrations` table yet, is never shared by default --
+/// designation is opt-in, applied once by whoever provisions the instance,
+/// never guessed from the connection string
+/// (gaps.d/unaccepted-work-migration-reaches-shared-db.md).
+async fn is_marked_shared(client: &Client) -> Result<bool, tokio_postgres::Error> {
+    let table_exists = client
+        .query_one(
+            "SELECT to_regclass('public.' || $1) IS NOT NULL",
+            &[&APPLIED_MIGRATIONS_TABLE],
+        )
+        .await?
+        .get::<_, bool>(0);
+    if !table_exists {
+        return Ok(false);
+    }
+    let marked = client
+        .query_opt(
+            &format!("SELECT 1 FROM {APPLIED_MIGRATIONS_TABLE} WHERE migration_key = $1"),
+            &[&key::SHARED_DATABASE_MARKER],
+        )
+        .await?
+        .is_some();
+    Ok(marked)
+}
+
+/// Marks this database shared: a one-time, explicit provisioning action for
+/// whoever stands up a shared or persistent Postgres instance (as opposed to
+/// an ephemeral local or CI container), never something `migrate_locked`
+/// itself decides. Exposed to operators via `ackplane-migrate --mark-shared`.
+///
+/// Deliberately not exercised by a live-database test against
+/// `ACKPLANE_TEST_DATABASE_URL`: that database is this fleet's own shared
+/// development instance, reused concurrently by many agents' test runs
+/// (gaps.d/unaccepted-work-migration-reaches-shared-db.md's own subject), so
+/// even a briefly-inserted marker row risks refusing an unrelated concurrent
+/// migration attempt for a reason that has nothing to do with it. Its SQL
+/// mirrors `migrate_locked`'s own already-tested
+/// `CREATE TABLE IF NOT EXISTS`/idempotent-insert pattern; `shared_gate_refuses`
+/// below carries the actual decision logic this task's acceptance depends on,
+/// and that is fully unit-tested without touching any live database.
+pub(crate) async fn mark_shared_database(client: &Client) -> Result<(), tokio_postgres::Error> {
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE IF NOT EXISTS {APPLIED_MIGRATIONS_TABLE} (\
+                 migration_key BIGINT PRIMARY KEY,\
+                 applied_at TIMESTAMPTZ NOT NULL DEFAULT now()\
+             );\
+             ALTER TABLE {APPLIED_MIGRATIONS_TABLE} \
+                 ADD COLUMN IF NOT EXISTS content_digest TEXT"
+        ))
+        .await?;
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {APPLIED_MIGRATIONS_TABLE} (migration_key) VALUES ($1) \
+                 ON CONFLICT (migration_key) DO NOTHING"
+            ),
+            &[&key::SHARED_DATABASE_MARKER],
+        )
+        .await?;
+    Ok(())
+}
+
+/// The actual gating decision, pulled out as a pure function so it can be
+/// unit-tested exhaustively without a database at all: refuse only when the
+/// database is marked shared AND nobody has acknowledged review.
+fn shared_gate_refuses(marked_shared: bool, reviewed: bool) -> bool {
+    marked_shared && !reviewed
+}
+
+/// The refusal raised when a database marked shared has no review
+/// acknowledgement for this migration attempt. Mirrors [`raise_collision`]'s
+/// shape (a real `tokio_postgres::Error` via `RAISE EXCEPTION`, not a second
+/// error type) and names the exact remedy rather than just the fact of
+/// refusal.
+async fn raise_shared_database_refusal(client: &Client, lock_key: i64) -> tokio_postgres::Error {
+    let message = format!(
+        "this database is marked shared (gaps.d/unaccepted-work-migration-reaches-shared-db.md); \
+         refusing to apply migration key {lock_key} without an explicit review acknowledgement. \
+         Set {REVIEW_ACKNOWLEDGEMENT_ENV}=1 only after confirming this migration's key is \
+         committed and collision-free, e.g. via node scripts/migration-audit.mjs."
+    );
+    client
+        .batch_execute(&format!(
+            "DO $do$ BEGIN RAISE EXCEPTION '%', $msg${message}$msg$ \
+             USING ERRCODE = 'raise_exception'; END $do$"
+        ))
+        .await
+        .expect_err("RAISE EXCEPTION always errors")
+}
+
 /// A stable fingerprint of a migration's SQL, for telling two migrations that
 /// share a key apart. Whitespace is not normalised: a migration file is
 /// committed and immutable, so any difference at all is a difference worth
@@ -345,8 +260,8 @@ fn content_digest(migration_sql: &str) -> String {
 /// The refusal raised when a key is already held by different content.
 ///
 /// Asks PostgreSQL to raise it, so the result is a genuine
-/// `tokio_postgres::Error` carrying the explanation. The alternative — a new
-/// error type on this function — would push a decision onto every caller for a
+/// `tokio_postgres::Error` carrying the explanation. The alternative â€” a new
+/// error type on this function â€” would push a decision onto every caller for a
 /// case where there is only one correct response: stop.
 ///
 /// The message names both digests and the remedy, because the reader's first
@@ -369,7 +284,7 @@ async fn raise_collision(
     );
     // The message is dollar-quoted rather than embedded in a single-quoted
     // literal. An earlier version was not, and the apostrophe in "migration's"
-    // — text written right here, not caller input — produced a syntax error
+    // â€” text written right here, not caller input â€” produced a syntax error
     // instead of the refusal. Dollar quoting removes the whole class rather
     // than escaping this one instance.
     let error = transaction
@@ -400,7 +315,7 @@ mod tests {
     ///
     /// The counter alone was not enough: it restarts at the same value in each
     /// test process, so a run that panicked before its cleanup left rows that
-    /// the next run then collided with — which is the very condition these
+    /// the next run then collided with â€” which is the very condition these
     /// tests induce deliberately, showing up as an unexplained failure in an
     /// unrelated case. Seeding from the process id makes each run's keys its
     /// own.
@@ -451,7 +366,7 @@ mod tests {
     /// taken never ran its own SQL, the schema silently lacked whatever it
     /// creates, and the failure surfaced much later as an unrelated missing
     /// relation. This file's own key comments record key 44 colliding "with a
-    /// different session's migration under the *same* key" — exactly this.
+    /// different session's migration under the *same* key" â€” exactly this.
     #[tokio::test]
     async fn a_key_applied_under_different_content_is_refused_not_skipped() {
         let Some(mut client) = test_client().await else {
@@ -521,8 +436,8 @@ mod tests {
 
     /// A row written before the digest column existed says nothing about which
     /// migration wrote it. Assuming it was this one would assert a fact the
-    /// ledger never held, so the behaviour is unchanged for that row — skip,
-    /// exactly as this database has always done — and the digest is adopted so
+    /// ledger never held, so the behaviour is unchanged for that row â€” skip,
+    /// exactly as this database has always done â€” and the digest is adopted so
     /// the ambiguity does not outlive the run.
     #[tokio::test]
     async fn a_row_predating_the_digest_column_is_adopted_not_assumed() {
@@ -726,5 +641,47 @@ mod tests {
         );
 
         holder_txn.commit().await.unwrap();
+    }
+
+    /// The decision logic this task exists to add, tested exhaustively
+    /// without a database: refuse only when marked shared AND unacknowledged.
+    #[test]
+    fn shared_gate_only_refuses_an_unacknowledged_marked_database() {
+        assert!(!super::shared_gate_refuses(false, false));
+        assert!(!super::shared_gate_refuses(false, true));
+        assert!(super::shared_gate_refuses(true, false));
+        assert!(!super::shared_gate_refuses(true, true));
+    }
+
+    /// The default, unmarked state (what every database starts in, and what
+    /// the shared `ACKPLANE_TEST_DATABASE_URL` this test suite runs against
+    /// stays in, since nothing here ever calls `mark_shared_database` against
+    /// it -- see that function's own doc comment for why) applies migrations
+    /// exactly as before the gate was added, regardless of the review flag.
+    #[tokio::test]
+    async fn an_unmarked_database_applies_migrations_regardless_of_the_review_flag() {
+        let Some(client) = test_client().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+
+        assert!(
+            !super::is_marked_shared(&client).await.unwrap(),
+            "the shared test database must never be left marked shared by this suite"
+        );
+
+        let mut client = client;
+        for reviewed in [false, true] {
+            let key = test_migration_key();
+            let table = format!("unmarked_gate_{}", -key);
+            let sql = format!("CREATE TABLE {table} (id INT)");
+
+            super::migrate_locked_checked(&mut client, key, &sql, reviewed)
+                .await
+                .unwrap();
+
+            assert!(table_exists(&client, &table).await);
+            cleanup(&client, key, &[table]).await;
+        }
     }
 }
