@@ -220,6 +220,11 @@ impl From<WorkStoreError> for WorkIngressError {
             WorkStoreError::Database(_) => {
                 Self::Unavailable("native Work store is temporarily unavailable")
             }
+            // Retryable and transient, exactly like a database error: the pool
+            // is momentarily saturated, not the request malformed.
+            WorkStoreError::PoolExhausted(_) => {
+                Self::Unavailable("native Work store has no free database connection")
+            }
             WorkStoreError::TaskConflict { .. } => Self::Conflict,
             WorkStoreError::UnknownState { .. } => {
                 Self::Unavailable("native Work store has invalid state")

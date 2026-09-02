@@ -361,6 +361,9 @@ fn map_store_error(error: WorkStoreError) -> Status {
         WorkStoreError::UnknownState { .. } => Status::internal(error.to_string()),
         WorkStoreError::TaskConflict { .. } => Status::invalid_argument(error.to_string()),
         WorkStoreError::Database(_) => Status::internal(error.to_string()),
+        // `unavailable`, not `internal`: a saturated pool is a condition the
+        // caller can retry, matching how ClaimStore reports the same failure.
+        WorkStoreError::PoolExhausted(_) => Status::unavailable(error.to_string()),
     }
 }
 
@@ -372,17 +375,13 @@ mod tests {
     use crate::work_store::NewWorkTask;
 
     async fn store() -> Option<WorkStore> {
-        let database_url = std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()?;
-        Some(
-            WorkStore::connect(&database_url)
-                .await
-                .expect("connect work store"),
-        )
+        let pool = crate::test_support::test_pool()?;
+        Some(WorkStore::connect(&pool).await.expect("connect work store"))
     }
 
     #[tokio::test]
     async fn list_work_tasks_reports_the_page_it_created_and_its_publication_state() {
-        let Some(mut backing) = store().await else {
+        let Some(backing) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -475,7 +474,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_work_task_detail_reports_history_and_waits_for_the_task_it_names() {
-        let Some(mut backing) = store().await else {
+        let Some(backing) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };
@@ -544,7 +543,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_work_board_doctor_names_two_tasks_declaring_an_overlapping_path() {
-        let Some(mut backing) = store().await else {
+        let Some(backing) = store().await else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
         };

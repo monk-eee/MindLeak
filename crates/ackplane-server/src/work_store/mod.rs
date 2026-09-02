@@ -16,146 +16,20 @@
 
 use std::time::SystemTime;
 
-use sha2::{Digest, Sha256};
+use crate::db_pool::{PgConnection, PgPool};
 use thiserror::Error;
-use tokio_postgres::Client;
 
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
 const WORK_TASK_COMMAND_EXECUTION_MIGRATION: &str =
     include_str!("../../migrations/0039_work_task_command_execution.sql");
 
-/// ADR-0120 decision 3's eight lifecycle states, in the order the decision
-/// text lists them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkTaskState {
-    Open,
-    Claimed,
-    Waiting,
-    Paused,
-    Blocked,
-    InReview,
-    Completed,
-    Abandoned,
-}
-
-impl WorkTaskState {
-    fn as_i16(self) -> i16 {
-        match self {
-            Self::Open => 1,
-            Self::Claimed => 2,
-            Self::Waiting => 3,
-            Self::Paused => 4,
-            Self::Blocked => 5,
-            Self::InReview => 6,
-            Self::Completed => 7,
-            Self::Abandoned => 8,
-        }
-    }
-
-    fn from_i16(value: i16) -> Result<Self, WorkStoreError> {
-        match value {
-            1 => Ok(Self::Open),
-            2 => Ok(Self::Claimed),
-            3 => Ok(Self::Waiting),
-            4 => Ok(Self::Paused),
-            5 => Ok(Self::Blocked),
-            6 => Ok(Self::InReview),
-            7 => Ok(Self::Completed),
-            8 => Ok(Self::Abandoned),
-            other => Err(WorkStoreError::UnknownState { value: other }),
-        }
-    }
-
-    /// `completed`/`abandoned`: a Board Doctor scope-overlap or duplicate-
-    /// title finding never compares two tasks if either has left the board.
-    fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Abandoned)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkTask {
-    pub tenant_id: String,
-    pub repository_id: String,
-    pub task_id: String,
-    pub title: String,
-    pub acceptance: String,
-    pub goal_id: Option<String>,
-    pub state: WorkTaskState,
-    pub owner_id: Option<String>,
-    pub owner_session_id: Option<String>,
-    pub lease_expires_at: Option<SystemTime>,
-    pub declared_paths: Vec<String>,
-    pub declared_symbols: Vec<String>,
-    pub published_by: String,
-    /// Optimistic-concurrency version (ADR-0120 decision 3 / ADR-0125
-    /// decision 5). Starts at 1 and increments once per applied Work-command
-    /// effect; never decreases, never resets.
-    pub version: i64,
-    /// The bounded route or assignment reference `RouteWork` last recorded
-    /// (ADR-0125 decision 1). `None` until routed.
-    pub route_reference: Option<String>,
-    pub created_at: SystemTime,
-    pub updated_at: SystemTime,
-}
-
-/// A new task's initial event (ADR-0120 decision 2). `source_digest` covers
-/// its immutable bounded content; the event identity and publisher bind the
-/// remaining replay authority.
-#[derive(Debug, Clone, PartialEq)]
-pub struct NewWorkTask {
-    pub tenant_id: String,
-    pub repository_id: String,
-    pub task_id: String,
-    pub title: String,
-    pub acceptance: String,
-    pub goal_id: Option<String>,
-    pub declared_paths: Vec<String>,
-    pub declared_symbols: Vec<String>,
-    pub published_by: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkTaskPage {
-    pub items: Vec<WorkTask>,
-    pub total: i64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkTaskWait {
-    pub wait_id: String,
-    pub task_id: String,
-    pub question: String,
-    pub audience: Option<String>,
-    pub asked_by: String,
-    pub asked_at: SystemTime,
-    pub answered_by: Option<String>,
-    pub answer: Option<String>,
-    pub answered_at: Option<SystemTime>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkTaskEvent {
-    pub event_id: String,
-    pub task_id: String,
-    pub from_state: Option<WorkTaskState>,
-    pub to_state: WorkTaskState,
-    pub actor_id: String,
-    pub recorded_at: SystemTime,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WorkTaskDetail {
-    pub task: WorkTask,
-    pub history: Vec<WorkTaskEvent>,
-    pub waits: Vec<WorkTaskWait>,
-}
-
 #[derive(Debug, Error)]
 pub enum WorkStoreError {
     #[error("work store database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error("work store could not obtain a database connection: {0}")]
+    PoolExhausted(#[from] deadpool_postgres::PoolError),
     #[error("unknown work task state: {value}")]
     UnknownState { value: i16 },
     #[error("task {tenant_id}/{repository_id}/{task_id} already exists")]
@@ -166,46 +40,17 @@ pub enum WorkStoreError {
     },
 }
 
-fn source_digest(task: &NewWorkTask) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    append_digest_part(&mut hasher, b"mindleak.ackplane.work.task.v1");
-    append_digest_part(&mut hasher, task.title.as_bytes());
-    append_digest_part(&mut hasher, task.acceptance.as_bytes());
-    match &task.goal_id {
-        Some(goal_id) => {
-            hasher.update([1]);
-            append_digest_part(&mut hasher, goal_id.as_bytes());
-        }
-        None => hasher.update([0]),
-    }
-    for values in [&task.declared_paths, &task.declared_symbols] {
-        hasher.update((values.len() as u64).to_be_bytes());
-        for value in values {
-            append_digest_part(&mut hasher, value.as_bytes());
-        }
-    }
-    hasher.finalize().to_vec()
-}
-
-fn append_digest_part(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update((value.len() as u64).to_be_bytes());
-    hasher.update(value);
-}
-
 /// Read-write access to a tenant's Industrial Work namespace.
 pub struct WorkStore {
-    client: Client,
+    pool: PgPool,
 }
 
 impl WorkStore {
-    pub async fn connect(database_url: &str) -> Result<Self, WorkStoreError> {
-        let (mut client, connection) =
-            tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(error) = connection.await {
-                tracing::error!(%error, "ackplane work store connection closed with an error");
-            }
-        });
+    /// Takes a clone of the process's single pool (ADR-0143 decision 1), not a
+    /// database URL: a store that resolved its own connection would be exactly
+    /// the per-store demand the pool exists to bound.
+    pub async fn connect(pool: &PgPool) -> Result<Self, WorkStoreError> {
+        let mut client = pool.get().await?;
         crate::migration_lock::migrate_locked(
             &mut client,
             crate::migration_lock::key::CLAIM_DELEGATION,
@@ -227,19 +72,32 @@ impl WorkStore {
             WORK_TASK_COMMAND_EXECUTION_MIGRATION,
         )
         .await?;
-        Ok(Self { client })
+        Ok(Self { pool: pool.clone() })
+    }
+
+    /// One checked-out connection, held only for the call that asked for it.
+    ///
+    /// A caller that opens a transaction keeps this binding alive for the life
+    /// of that transaction — which is load-bearing here: ADR-0120 decision 3
+    /// requires the Work event and its projection update to land in one
+    /// transaction, so both must run on the same connection.
+    pub(in crate::work_store) async fn connection(&self) -> Result<PgConnection, WorkStoreError> {
+        Ok(self.pool.get().await?)
     }
 
     /// Records the initial event and the current-state projection in one
     /// transaction (ADR-0120 decision 3).
     pub async fn create_task(
-        &mut self,
+        &self,
         task: &NewWorkTask,
         event_id: &str,
         now: SystemTime,
     ) -> Result<WorkTask, WorkStoreError> {
         let digest = source_digest(task);
-        let transaction = self.client.transaction().await?;
+        // One connection, held until commit: ADR-0120 decision 3 requires the
+        // event and its projection update to land in one transaction.
+        let mut connection = self.connection().await?;
+        let transaction = connection.transaction().await?;
         let inserted = transaction
             .execute(
                 "INSERT INTO work_tasks (tenant_id, repository_id, task_id, title, acceptance, \
@@ -342,9 +200,12 @@ impl WorkStore {
         page_size: i64,
     ) -> Result<WorkTaskPage, WorkStoreError> {
         let offset = (page - 1) * page_size;
+        // One checkout for either branch: both arms are the same read with a
+        // different filter, so taking two connections would be accidental.
+        let connection = self.connection().await?;
         let rows = match state {
             Some(state) => {
-                self.client
+                connection
                     .query(
                         "SELECT *, COUNT(*) OVER()::BIGINT AS total_count FROM work_tasks \
                          WHERE tenant_id = $1 AND repository_id = $2 AND state = $3 \
@@ -360,7 +221,7 @@ impl WorkStore {
                     .await?
             }
             None => {
-                self.client
+                connection
                     .query(
                         "SELECT *, COUNT(*) OVER()::BIGINT AS total_count FROM work_tasks \
                          WHERE tenant_id = $1 AND repository_id = $2 \
@@ -385,7 +246,8 @@ impl WorkStore {
         task_id: &str,
     ) -> Result<Option<WorkTaskDetail>, WorkStoreError> {
         let Some(task_row) = self
-            .client
+            .connection()
+                .await?
             .query_opt(
                 "SELECT * FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
                 &[&tenant_id, &repository_id, &task_id],
@@ -396,7 +258,8 @@ impl WorkStore {
         };
         let task = Self::row_to_task(&task_row)?;
         let history_rows = self
-            .client
+            .connection()
+                .await?
             .query(
                 "SELECT event_id, from_state, to_state, actor_id, recorded_at FROM work_task_history \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
@@ -417,7 +280,8 @@ impl WorkStore {
             });
         }
         let wait_rows = self
-            .client
+            .connection()
+            .await?
             .query(
                 "SELECT wait_id, question, audience, asked_by, asked_at, answered_by, answer, \
                     answered_at FROM work_task_waits \
@@ -450,10 +314,15 @@ impl WorkStore {
 
 mod doctor;
 mod ingress;
+mod model;
 mod publication;
 
 pub use doctor::{FleetUnansweredWait, WorkDoctorFinding};
 pub(crate) use ingress::WorkTaskCreationOutcome;
+pub(in crate::work_store) use model::source_digest;
+pub use model::{
+    NewWorkTask, WorkTask, WorkTaskDetail, WorkTaskEvent, WorkTaskPage, WorkTaskState, WorkTaskWait,
+};
 pub use publication::{ClaimsOnlyWork, WorkPublication};
 
 #[cfg(test)]
@@ -479,14 +348,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_created_task_appears_in_the_list_as_open() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let now = SystemTime::now();
         store
             .create_task(
@@ -516,14 +385,14 @@ mod tests {
 
     #[tokio::test]
     async fn creating_the_same_task_twice_is_a_conflict() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let task = new_task(&tenant_id, &repository_id, &task_id, "Ship the thing");
         store
             .create_task(&task, &unique_id("event"), SystemTime::now())
@@ -539,14 +408,14 @@ mod tests {
 
     #[tokio::test]
     async fn task_detail_includes_the_creation_event() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let mut store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         let event_id = unique_id("event");
         store
             .create_task(
@@ -573,11 +442,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_task_that_does_not_exist_has_no_detail() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
-        let store = WorkStore::connect(&database_url).await.expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
 
         let detail = store
             .task_detail(&unique_id("tenant"), &unique_id("repo"), &unique_id("task"))

@@ -154,7 +154,7 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            let work_store = match WorkStore::connect(config.database_url()).await {
+            let work_store = match WorkStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(
@@ -167,7 +167,7 @@ async fn main() -> ExitCode {
             // existing one-connection-per-service pattern here (ADR-0143's
             // one-bounded-pool-per-process consolidation is separate,
             // in-progress work; this read service does not get ahead of it).
-            let work_query_store = match WorkStore::connect(config.database_url()).await {
+            let work_query_store = match WorkStore::connect(&db_pool).await {
                 Ok(store) => store,
                 Err(error) => {
                     eprintln!(
