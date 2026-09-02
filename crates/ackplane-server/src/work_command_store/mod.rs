@@ -110,7 +110,7 @@ impl WorkCommandStore {
     /// ADR-0107 directive on one transaction, so both must land on the same
     /// connection or neither is atomic.
     pub(crate) async fn connection(&self) -> Result<PgConnection, WorkCommandStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 }
 

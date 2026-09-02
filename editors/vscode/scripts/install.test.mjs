@@ -224,7 +224,14 @@ describe("install", () => {
     expect(fs.readFileSync(workflowPath, "utf8")).toBe("workflow v2\n");
     expect(fs.readFileSync(troubleshootingPath, "utf8")).toBe("troubleshooting v2\n");
     expect(log).toHaveBeenCalledWith("Next: restart your MCP client, then run /mindleak verify");
-  });
+    // Two full `install()` passes writing real files (including two staged
+    // .exe stubs) occasionally exceed vitest's 5000ms default on a loaded
+    // windows-latest runner -- MEASURED as a CI-only timeout that never
+    // reproduces locally, consistent with Windows Defender's real-time scan
+    // adding latency to newly written executables. A generous fixed budget
+    // here, not a global bump, since no other test in this file writes as
+    // many files across as many install() passes.
+  }, 15_000);
 
   it("stages both servers, preserves JSONC, and is idempotent", async () => {
     const root = temporaryDirectory();

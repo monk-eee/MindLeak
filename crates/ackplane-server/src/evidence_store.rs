@@ -174,7 +174,7 @@ impl EvidenceStore {
     /// `ConformanceStoreError`) can convert it through their own
     /// `#[from] deadpool_postgres::PoolError` variant with `?`.
     pub(crate) async fn connection(&self) -> Result<PgConnection, deadpool_postgres::PoolError> {
-        self.pool.get().await
+        crate::db_pool::checkout(&self.pool).await
     }
 
     /// Resolve the signing key an envelope claims, judged as of acceptance.

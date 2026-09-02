@@ -73,7 +73,7 @@ impl ContextPacketStore {
     }
 
     async fn connection(&self) -> Result<PgConnection, ContextPacketStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// Decisions 1 and 5: store a validated packet once. A byte-identical

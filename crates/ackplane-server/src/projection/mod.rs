@@ -189,7 +189,7 @@ impl Projector {
     /// life of that transaction, which is the one case where holding a
     /// connection across `.await` points is correct rather than accidental.
     async fn connection(&self) -> Result<PgConnection, ProjectionError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 }
 

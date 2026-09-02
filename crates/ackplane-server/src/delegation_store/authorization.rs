@@ -31,7 +31,7 @@ impl DelegationStore {
         // the `FOR UPDATE` lock on the projection row is session-scoped, and the
         // concurrent-replay test depends on a waiter blocking against a stable
         // connection identity for as long as the holder's transaction is open.
-        let mut connection = self.pool.get().await?;
+        let mut connection = crate::db_pool::checkout(&self.pool).await?;
         write::authorize_use(&mut connection, request, now).await
     }
 
@@ -45,7 +45,7 @@ impl DelegationStore {
         after: Option<&DelegationUseReceiptCursor>,
         requested_limit: i64,
     ) -> Result<DelegationUseReceiptPage, DelegationUseError> {
-        let connection = self.pool.get().await?;
+        let connection = crate::db_pool::checkout(&self.pool).await?;
         read::list_use_receipts(
             &connection,
             tenant_id,

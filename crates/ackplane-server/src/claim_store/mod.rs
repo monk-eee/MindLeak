@@ -118,7 +118,7 @@ impl ClaimStore {
     }
 
     async fn connection(&self) -> Result<PgConnection, ClaimStoreError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// Resolve the signing key a claim request's authentication claims,

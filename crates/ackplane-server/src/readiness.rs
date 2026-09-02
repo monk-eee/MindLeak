@@ -128,7 +128,7 @@ impl ReadinessStore {
     }
 
     async fn connection(&self) -> Result<PgConnection, ReadinessError> {
-        Ok(self.pool.get().await?)
+        Ok(crate::db_pool::checkout(&self.pool).await?)
     }
 
     /// One page of readiness, one row per enrolled repository, ordered by

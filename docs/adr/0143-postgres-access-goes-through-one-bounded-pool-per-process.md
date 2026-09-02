@@ -8,7 +8,10 @@
 - Depends on: [ADR-0086](0086-postgresql-is-the-ackplane-ledger-and-arbiter.md)
   (PostgreSQL is the Ackplane ledger and arbiter)
 - Related:
-  [gaps.d/the-postgres-connection-ceiling-fails-the-suite-misleadingly.md](../../gaps.d/the-postgres-connection-ceiling-fails-the-suite-misleadingly.md)
+  `gaps.d/the-postgres-connection-ceiling-fails-the-suite-misleadingly.md`
+  (closed 2026-09-02 -- see `docs/POSTGRES-CONNECTION-BUDGET.md` and
+  `crates/ackplane-server/src/db_pool.rs::checkout` for the follow-on that
+  closed it)
 
 ## Context
 
@@ -35,7 +38,8 @@ and `ackplane-bridge` (`git grep -c "fn connect(" -- crates/ackplane-server/src
 crates/ackplane-bridge/src` — 23), each opening its own raw connection with no
 shared pool, no cap, and no backpressure. This is not a hypothetical concern;
 it already produced a real, misdiagnosed outage
-([gaps.d/the-postgres-connection-ceiling-fails-the-suite-misleadingly.md](../../gaps.d/the-postgres-connection-ceiling-fails-the-suite-misleadingly.md)):
+(`gaps.d/the-postgres-connection-ceiling-fails-the-suite-misleadingly.md`,
+closed 2026-09-02):
 
 - A running `ackplane-bridge` process holds 17 of these dedicated connections
   for its entire life (one per store its `main.rs` constructs); `ackplane-server`
