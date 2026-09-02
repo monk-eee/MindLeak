@@ -42,6 +42,12 @@ pub enum ClaimOperation<'a> {
         symbols: &'a [String],
         reason: &'a str,
     },
+    /// No operation-specific fields beyond identity: parking carries no free
+    /// text (the question itself is local-only, ADR-0020's task_qa thread).
+    Park,
+    Answer {
+        lease_seconds: u64,
+    },
 }
 
 impl ClaimOperation<'_> {
@@ -54,6 +60,8 @@ impl ClaimOperation<'_> {
             Self::Renew { .. } => "renew",
             Self::Release => "release",
             Self::Recover { .. } => "recover",
+            Self::Park => "park",
+            Self::Answer { .. } => "answer",
         }
     }
 
@@ -89,6 +97,10 @@ impl ClaimOperation<'_> {
                 push_list(bytes, paths);
                 push_list(bytes, symbols);
                 push_field(bytes, reason.as_bytes());
+            }
+            Self::Park => {}
+            Self::Answer { lease_seconds } => {
+                push_field(bytes, &lease_seconds.to_be_bytes());
             }
         }
     }

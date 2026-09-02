@@ -221,6 +221,10 @@ pub(crate) mod key {
     pub(crate) const INDUSTRIAL_DESIGNS_DISPLAY_LABEL: i64 = 64;
     /// `migrations/0065_work_event_positions.sql`
     pub(crate) const WORK_EVENT_POSITIONS: i64 = 65;
+    /// `migrations/0066_delegated_claim_parked.sql` (ADR-0096 clause
+    /// completion). `migration-audit --next` selected 66 from committed
+    /// source; no live discrepancy above 65.
+    pub(crate) const DELEGATED_CLAIM_PARKED: i64 = 66;
 }
 
 /// Apply `migration_sql` once per database under the global schema lock and

@@ -251,6 +251,22 @@ mod tests {
         ) -> crate::Result<crate::FederatedClaimOutcome> {
             self.record_call()
         }
+
+        fn park(&self, _task_id: &str, _owner: &str) -> crate::Result<bool> {
+            match self.record_call()? {
+                crate::FederatedClaimOutcome::Granted(_) => Ok(true),
+                crate::FederatedClaimOutcome::Rejected { .. } => Ok(false),
+            }
+        }
+
+        fn answer(
+            &self,
+            _task_id: &str,
+            _owner: &str,
+            _lease_secs: i64,
+        ) -> crate::Result<crate::FederatedClaimOutcome> {
+            self.record_call()
+        }
     }
 
     fn federated_grant() -> crate::FederatedClaimGrant {
@@ -455,6 +471,161 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, LodestarError::Federated(_)));
         assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// `ask_question` routes through the authority (ADR-0096 clause
+    /// completion) and, on a successful park, projects the local task to
+    /// `needs_input` and appends the question to `task_qa` -- the durable
+    /// dialogue text itself never leaves this repository's own store.
+    #[test]
+    fn ask_question_with_a_federated_authority_parks_and_records_the_question_locally() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        let parked = e
+            .ask_question(&task.id, "local-agent", "which file first?", None)
+            .unwrap();
+        assert!(parked);
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(after.status, TaskStatus::NeedsInput);
+        assert_eq!(after.lease_expires_at, None);
+        let thread = e.task_qa(&task.id).unwrap();
+        assert_eq!(thread.len(), 1);
+        assert_eq!(thread[0].body, "which file first?");
+    }
+
+    /// A refused park leaves the local task untouched -- Ackplane's CAS is
+    /// the sole authority, so a rejection is never quietly retried locally.
+    #[test]
+    fn ask_question_with_a_federated_authority_rejection_is_a_no_op() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::rejecting("already parked"));
+        let e = engine().with_federated_claim_authority(authority);
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+        let before = e.store.get_task(&task.id).unwrap().unwrap();
+
+        let parked = e
+            .ask_question(&task.id, "local-agent", "which file first?", None)
+            .unwrap();
+        assert!(!parked);
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(before.status, after.status);
+        assert!(e.task_qa(&task.id).unwrap().is_empty());
+    }
+
+    /// `answer_question` reads the parked owner from the local cache and asks
+    /// Ackplane to grant *that* owner the fresh lease, regardless of which
+    /// agent supplied the answer text (ADR-0046: a peer answers a question
+    /// addressed to it, not to itself).
+    #[test]
+    fn answer_question_with_a_federated_authority_grants_the_parked_owners_lease() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+        // Establishes a cached owner via the federated grant path first
+        // (`apply_federated_park` only projects the status/lease transition,
+        // not ownership -- it assumes a prior grant already set one, exactly
+        // like `apply_federated_grant` is the only place that ever does).
+        e.claim_task_with_partial_scope(&task.id, "local-agent", 300, None, None)
+            .unwrap();
+        e.ask_question(&task.id, "local-agent", "which file first?", None)
+            .unwrap();
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let answered = e
+            .answer_question(&task.id, "lib.rs first", "peer-agent", 300)
+            .unwrap();
+        assert!(answered);
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(after.status, TaskStatus::Claimed);
+        assert_eq!(after.lease_expires_at, Some(800));
+        let thread = e.task_qa(&task.id).unwrap();
+        assert_eq!(thread.len(), 2);
+        assert_eq!(thread[1].body, "lib.rs first");
+        assert_eq!(thread[1].author, "peer-agent");
+    }
+
+    /// Answering a task with no owner at all (never claimed) is a local
+    /// no-op that never reaches the authority -- there is nobody to grant a
+    /// lease to.
+    #[test]
+    fn answer_question_with_a_federated_authority_and_no_owner_is_a_local_no_op() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        let answered = e
+            .answer_question(&task.id, "lib.rs first", "peer-agent", 300)
+            .unwrap();
+        assert!(!answered);
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// `pause_task` routes through the same `park` authority as
+    /// `ask_question` (ADR-0096 clause completion), projecting the local
+    /// cache to `paused` rather than `needs_input` -- the wire-level
+    /// arbitration is identical either way.
+    #[test]
+    fn pause_task_with_a_federated_authority_parks_as_paused_not_needs_input() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+
+        let paused = e
+            .pause_task(&task.id, "local-agent", Some("waiting on CI"))
+            .unwrap();
+        assert!(paused);
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(after.status, TaskStatus::Paused);
+        assert_eq!(after.lease_expires_at, None);
+        let thread = e.task_qa(&task.id).unwrap();
+        assert_eq!(thread.len(), 1);
+        assert_eq!(thread[0].body, "waiting on CI");
+    }
+
+    /// `resume_task` routes through the same `answer` authority as
+    /// `answer_question`, but -- unlike that one -- asserts `agent` as the
+    /// owner directly, matching `resume_task`'s own already-owner-guarded
+    /// local shape (ADR-0096 clause completion).
+    #[test]
+    fn resume_task_with_a_federated_authority_applies_the_grant() {
+        let authority = std::sync::Arc::new(FakeFederatedAuthority::granting(federated_grant()));
+        let e = engine().with_federated_claim_authority(authority.clone());
+        let goal = e
+            .define_goal(GoalKind::Objective, "Ship", "ship it", None)
+            .unwrap();
+        let task = e.create_task(&goal.id, "Edit the tools", "done").unwrap();
+        e.pause_task(&task.id, "local-agent", None).unwrap();
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let resumed = e.resume_task(&task.id, "local-agent", 300).unwrap();
+        assert!(resumed);
+        assert_eq!(authority.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let after = e.store.get_task(&task.id).unwrap().unwrap();
+        assert_eq!(after.status, TaskStatus::Claimed);
+        assert_eq!(after.lease_expires_at, Some(800));
     }
 
     /// Asking about nothing must not answer "nothing exists" — that reads as a

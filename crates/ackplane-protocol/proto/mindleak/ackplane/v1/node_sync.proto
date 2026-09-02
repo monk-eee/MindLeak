@@ -20,6 +20,12 @@ service ClaimDelegationService {
   rpc RenewClaim(ClaimRenewRequest) returns (ClaimLeaseResult);
   rpc RecoverClaim(ClaimRecoverRequest) returns (ClaimLeaseResult);
   rpc ListActiveClaims(ActiveClaimsRequest) returns (ActiveClaimsResult);
+  // ADR-0096 clause completion: a task entering needs_input/paused is a
+  // claim-state transition Ackplane arbitrates in federated mode, exactly
+  // like delegate/renew/release/recover -- the durable question/answer text
+  // itself stays local (ADR-0020's task_qa thread), so neither carries it.
+  rpc ParkClaim(ClaimParkRequest) returns (ClaimParkResult);
+  rpc AnswerClaim(ClaimAnswerRequest) returns (ClaimLeaseResult);
 }
 
 // ADR-0139 clause 2: ackplane-mcp's task_query tool composes this read-only
@@ -295,6 +301,37 @@ message ActiveClaimSummary {
 
 message ActiveClaimsResult {
   repeated ActiveClaimSummary claims = 1;
+}
+
+// ADR-0096 clause completion: park keeps the owner and the CAS lock over the
+// task's scope (unlike release) but clears the live lease, exactly matching
+// the local `needs_input` transition (ADR-0020). No free-form question text:
+// that stays in the local, per-repository task_qa thread, which Ackplane
+// never becomes a mode of.
+message ClaimParkRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string owner_id = 4;
+  ClaimAuthentication authentication = 5;
+}
+
+message ClaimParkResult {
+  bool parked = 1;
+  string diagnostic = 2;
+}
+
+// The counterpart to ClaimParkRequest: only the exact parking owner may
+// answer, and only a genuinely parked claim can be answered -- an
+// already-live or never-parked claim is rejected, matching RenewClaim's
+// same-owner-only shape.
+message ClaimAnswerRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string task_id = 3;
+  string owner_id = 4;
+  uint64 lease_seconds = 5;
+  ClaimAuthentication authentication = 6;
 }
 
 // The embedding field is omitted (not zero-length) when the caller has no
