@@ -32,12 +32,14 @@
 
   **What is actually missing:** decision 2's second, optional pass over the
   projected set — the Ackplane-side analogue of `mindleak-core`'s
-  `nodes_missing_embeddings` → embed → store loop. That needs somewhere to run
-  and something to call, and the "something to call" is a cross-boundary
-  question: `ackplane-server` deliberately holds no plane crate and no HTTP
-  client, so whether the pass lives in the server, in a node that already has an
-  embedder, or in a new component is a design decision, not an oversight to
-  patch. Until it exists, `RecalledNode`-shaped read surface is premature.
+  `nodes_missing_embeddings` → embed → store loop. **Who runs it is now decided:
+  [ADR-0148](../docs/adr/0148-an-enrolled-node-computes-projection-embeddings.md)
+  (2026-09-02) puts the pass on an enrolled node, publishing under its enrolled
+  key in its own domain, with Ackplane storing and ranking but computing
+  nothing.** That followed the path knowledge embeddings already take rather
+  than giving the federation service an HTTP client and a model. What remains is
+  building it: the authenticated request pair (ask which projected nodes lack an
+  embedding for a model, publish the vectors) and the node-side loop.
 
   **Not fixed this run, and deliberately not worked around.** Found while
   starting `task:ddb8b1a4705b` (slice 3's proto/service/MCP plumbing); that task
