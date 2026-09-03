@@ -136,6 +136,17 @@ services:
   # the stack does not silently rotate the certificate under a client that
   # pinned it. Runs as root because a fresh named volume is root-owned; the
   # key is handed to the server's unprivileged uid and nobody else.
+  #
+  # Two-tier (root CA + signed leaf), not one self-signed cert wearing both
+  # hats: a client that wants to verify this development certificate rather
+  # than working around it (`MINDLEAK_ACKPLANE_TLS_CA_PATH`,
+  # `ackplane-client::connect_channel`) trusts `/tls/ca.crt` as a root and
+  # validates `/tls/server.crt` against it. A single self-signed cert used as
+  # its own trust anchor fails that validation outright -- rustls-webpki
+  # refuses to treat a certificate as a valid TLS server leaf and its own
+  # root simultaneously (`CaUsedAsEndEntity`), confirmed empirically before
+  # writing this. Real CA hierarchies always keep the two apart for the same
+  # reason; this just does not skip that step for being a development cert.
   tls-init:
     build:
       context: .
@@ -147,17 +158,25 @@ services:
     entrypoint: ["/bin/sh", "-euc"]
     command:
       - |
-        if [ -s /tls/server.crt ] && [ -s /tls/server.key ]; then
+        if [ -s /tls/server.crt ] && [ -s /tls/server.key ] && [ -s /tls/ca.crt ]; then
           echo "tls-init: development certificate already present, keeping it"
         else
-          echo "tls-init: generating a self-signed development certificate"
+          echo "tls-init: generating a development root CA and a leaf certificate it signs"
           openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
-            -subj "/CN=ackplane" \
-            -addext "subjectAltName=DNS:ackplane,DNS:localhost,IP:127.0.0.1" \
-            -keyout /tls/server.key -out /tls/server.crt
+            -subj "/CN=ackplane-dev-root" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -keyout /tls/ca.key -out /tls/ca.crt
+          openssl req -newkey rsa:2048 -nodes -subj "/CN=ackplane" \
+            -keyout /tls/server.key -out /tmp/server.csr
+          printf 'subjectAltName=DNS:ackplane,DNS:localhost,IP:127.0.0.1\nbasicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n' > /tmp/leaf.ext
+          openssl x509 -req -in /tmp/server.csr -CA /tls/ca.crt -CAkey /tls/ca.key -CAcreateserial -days 365 \
+            -extfile /tmp/leaf.ext \
+            -out /tls/server.crt
+          rm -f /tmp/server.csr /tmp/leaf.ext /tls/ca.srl /tls/ca.key
         fi
         chown 10001:10001 /tls/server.crt /tls/server.key
-        chmod 644 /tls/server.crt
+        chmod 644 /tls/server.crt /tls/ca.crt
         chmod 600 /tls/server.key
     volumes:
       - ackplane-tls:/tls

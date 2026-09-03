@@ -29,10 +29,10 @@ use ackplane_protocol::connection_challenge_auth::{
 use ackplane_protocol::v1::{self, node_sync_service_client::NodeSyncServiceClient};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{transport::Channel, Streaming};
+use tonic::Streaming;
 
 use crate::auth::ClaimSigner;
-use crate::{ClientError, CONNECT_TIMEOUT};
+use crate::{connect_channel, ClientError};
 
 /// How many outbound frames may be queued locally before `send` blocks. Small
 /// and fixed: this connection carries control frames, not a bulk transfer
@@ -82,11 +82,7 @@ impl NodeSyncConnection {
         capabilities: Vec<String>,
         last_accepted_position: u64,
     ) -> Result<Self, ClientError> {
-        let channel = Channel::from_shared(endpoint.to_string())
-            .map_err(|_| ClientError::InvalidEndpoint(endpoint.to_string()))?
-            .connect_timeout(CONNECT_TIMEOUT)
-            .connect()
-            .await?;
+        let channel = connect_channel(endpoint).await?;
         let mut client = NodeSyncServiceClient::new(channel);
 
         let (tx, request_rx) = mpsc::channel::<v1::NodeFrame>(OUTBOUND_CHANNEL_CAPACITY);

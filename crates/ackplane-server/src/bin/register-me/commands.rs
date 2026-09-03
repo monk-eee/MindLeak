@@ -31,9 +31,10 @@ pub(super) async fn run_request(flags: HashMap<String, String>) -> Result<(), St
             .as_nanos()
     );
 
-    let mut client = NodeEnrollmentServiceClient::connect(grpc_endpoint.clone())
+    let channel = ackplane_client::connect_channel(&grpc_endpoint)
         .await
         .map_err(|error| format!("could not reach {grpc_endpoint}: {error}"))?;
+    let mut client = NodeEnrollmentServiceClient::new(channel);
     let status = client
         .submit_enrollment_request(Request::new(v1::EnrollmentRequest {
             request_id: request_id.clone(),
@@ -145,9 +146,10 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
     let signing_key =
         load_or_generate_key(&path).map_err(|error| format!("key {}: {error}", path.display()))?;
 
-    let mut enrollment_client = NodeEnrollmentServiceClient::connect(grpc_endpoint.clone())
+    let channel = ackplane_client::connect_channel(&grpc_endpoint)
         .await
         .map_err(|error| format!("could not reach {grpc_endpoint}: {error}"))?;
+    let mut enrollment_client = NodeEnrollmentServiceClient::new(channel);
     let challenge = enrollment_client
         .get_activation_challenge(Request::new(v1::EnrollmentChallengeRequest {
             request_id: request_id.clone(),

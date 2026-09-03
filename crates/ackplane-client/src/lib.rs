@@ -32,7 +32,7 @@ use ackplane_protocol::v1::claim_delegation_service_client::ClaimDelegationServi
 use ackplane_protocol::v1::node_enrollment_service_client::NodeEnrollmentServiceClient;
 use ackplane_protocol::v1::work_query_service_client::WorkQueryServiceClient;
 use thiserror::Error;
-use tonic::transport::Channel;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 pub mod auth;
 pub use auth::{
@@ -67,11 +67,57 @@ pub use ackplane_protocol::v1::{
 /// How long a connection attempt is given before it counts as unreachable.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A CA certificate (PEM) this crate trusts for an `https://` Ackplane
+/// endpoint, beyond the platform's default trust store. Lets a client verify
+/// the Compose topology's self-signed development certificate (ADR-0132)
+/// instead of the plaintext-restart workaround that gap otherwise forces.
+/// Unset: unchanged default behavior -- platform roots for `https://`, no TLS
+/// at all for `http://`.
+pub const TLS_CA_PATH_ENV: &str = "MINDLEAK_ACKPLANE_TLS_CA_PATH";
+
+/// Build a channel to `endpoint`, additionally trusting `TLS_CA_PATH_ENV`'s
+/// certificate when it names one. The one place every `connect`/`open` below
+/// builds its channel, so the CA-trust seam exists exactly once. `pub`
+/// (rather than `pub(crate)`) so a caller that needs a generated client this
+/// crate does not wrap in its own type -- `register-me`'s enrollment
+/// request/activate flow, e.g. -- can still build its channel through this
+/// same seam instead of a bare `Channel::from_shared` that skips CA trust.
+pub async fn connect_channel(endpoint: &str) -> Result<Channel, ClientError> {
+    connect_channel_with_ca(endpoint, std::env::var(TLS_CA_PATH_ENV).ok().as_deref()).await
+}
+
+/// [`connect_channel`]'s logic, with the CA path an explicit argument rather
+/// than an internal `std::env::var` read. `std::env::set_var`/`remove_var`
+/// mutate whole-process state that is not guaranteed visible in the same
+/// order across the OS threads `cargo test`'s default concurrent harness
+/// runs different tests on (`std::env`'s own docs: "not thread-safe"), so a
+/// unit test exercising the CA-path-handling logic itself takes the path as
+/// a plain argument instead of racing every other test in this crate over
+/// one global variable.
+async fn connect_channel_with_ca(
+    endpoint: &str,
+    ca_path: Option<&str>,
+) -> Result<Channel, ClientError> {
+    let mut endpoint_builder = Endpoint::from_shared(endpoint.to_string())
+        .map_err(|_| ClientError::InvalidEndpoint(endpoint.to_string()))?
+        .connect_timeout(CONNECT_TIMEOUT);
+    if let Some(ca_path) = ca_path {
+        let pem = std::fs::read_to_string(ca_path)
+            .map_err(|error| ClientError::InvalidTlsCa(ca_path.to_string(), error.to_string()))?;
+        endpoint_builder = endpoint_builder
+            .tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))
+            .map_err(|error| ClientError::InvalidTlsCa(ca_path.to_string(), error.to_string()))?;
+    }
+    Ok(endpoint_builder.connect().await?)
+}
+
 /// Failure connecting to, or talking with, an Ackplane deployment.
 #[derive(Debug, Error)]
 pub enum ClientError {
     #[error("`{0}` is not a valid Ackplane endpoint URI")]
     InvalidEndpoint(String),
+    #[error("{TLS_CA_PATH_ENV}={0} could not be used as a trusted CA: {1}")]
+    InvalidTlsCa(String, String),
     #[error("could not reach the Ackplane arbiter: {0}")]
     Unreachable(#[from] tonic::transport::Error),
     #[error("Ackplane rejected the request: {0}")]
@@ -136,11 +182,7 @@ impl ClaimClient {
     /// Connect to `endpoint` (e.g. `http://127.0.0.1:8443`), refusing rather
     /// than blocking indefinitely if the arbiter never answers.
     pub async fn connect(endpoint: &str) -> Result<Self, ClientError> {
-        let channel = Channel::from_shared(endpoint.to_string())
-            .map_err(|_| ClientError::InvalidEndpoint(endpoint.to_string()))?
-            .connect_timeout(CONNECT_TIMEOUT)
-            .connect()
-            .await?;
+        let channel = connect_channel(endpoint).await?;
         Ok(Self {
             inner: ClaimDelegationServiceClient::new(channel),
         })
@@ -238,11 +280,7 @@ impl EnrollmentClient {
     /// Connect to `endpoint` (e.g. `http://127.0.0.1:8443`), refusing rather
     /// than blocking indefinitely if the arbiter never answers.
     pub async fn connect(endpoint: &str) -> Result<Self, ClientError> {
-        let channel = Channel::from_shared(endpoint.to_string())
-            .map_err(|_| ClientError::InvalidEndpoint(endpoint.to_string()))?
-            .connect_timeout(CONNECT_TIMEOUT)
-            .connect()
-            .await?;
+        let channel = connect_channel(endpoint).await?;
         Ok(Self {
             inner: NodeEnrollmentServiceClient::new(channel),
         })
@@ -278,11 +316,7 @@ impl WorkQueryClient {
     /// Connect to `endpoint` (e.g. `http://127.0.0.1:8443`), refusing rather
     /// than blocking indefinitely if the arbiter never answers.
     pub async fn connect(endpoint: &str) -> Result<Self, ClientError> {
-        let channel = Channel::from_shared(endpoint.to_string())
-            .map_err(|_| ClientError::InvalidEndpoint(endpoint.to_string()))?
-            .connect_timeout(CONNECT_TIMEOUT)
-            .connect()
-            .await?;
+        let channel = connect_channel(endpoint).await?;
         Ok(Self {
             inner: WorkQueryServiceClient::new(channel),
         })
@@ -316,5 +350,40 @@ impl WorkQueryClient {
             .get_work_board_doctor(request)
             .await?
             .into_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bug: an operator pointing `MINDLEAK_ACKPLANE_TLS_CA_PATH` at a typo'd
+    /// or missing file got `Unreachable` (a bare `tonic::transport::Error`
+    /// from the connect attempt that ran anyway with no CA configured),
+    /// which reads as "the server is down" and sends debugging in exactly
+    /// the wrong direction. Impact: a misconfigured CA path is
+    /// indistinguishable from a genuinely unreachable arbiter. Fix:
+    /// `connect_channel_with_ca` reads the file before ever attempting a
+    /// connection, so a bad path fails fast as `InvalidTlsCa`, naming the
+    /// path and the read error, and never reaches the network.
+    #[tokio::test]
+    async fn tls_ca_path_env_is_only_an_error_when_set_and_unusable() {
+        let unset = connect_channel_with_ca("http://127.0.0.1:0", None).await;
+        assert!(
+            !matches!(unset, Err(ClientError::InvalidTlsCa(..))),
+            "expected no CA-path error when unset, got {unset:?}"
+        );
+
+        let missing = connect_channel_with_ca(
+            "https://127.0.0.1:0",
+            Some("/nonexistent/does-not-exist.pem"),
+        )
+        .await;
+        match missing {
+            Err(ClientError::InvalidTlsCa(path, _)) => {
+                assert_eq!(path, "/nonexistent/does-not-exist.pem");
+            }
+            other => panic!("expected ClientError::InvalidTlsCa, got {other:?}"),
+        }
     }
 }
