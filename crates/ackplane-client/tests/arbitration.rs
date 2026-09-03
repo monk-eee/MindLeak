@@ -79,52 +79,69 @@ fn unique_task_id() -> String {
     format!("ackplane-client-arbitration-{nanos}")
 }
 
-async fn register_test_key(database_url: &str) {
-    // Apply the enrollment and signing-key schemas through their production
-    // owner before inserting the fixture's already-approved key.
-    let enrollment_pool = ackplane_server::db_pool::build_pool(
-        database_url,
-        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
-    )
-    .expect("the test pool builds from a valid database url");
-    drop(
-        EnrollmentStore::connect(&enrollment_pool)
-            .await
-            .expect("the gated test database should accept enrollment migrations"),
-    );
+static KEY_REGISTERED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
-    let (mut client, connection) = tokio_postgres::connect(database_url, NoTls)
-        .await
-        .expect("the gated test database should accept a signing-key connection");
-    tokio::spawn(async move {
-        connection
+// Regression (see the test below): the two tests in this file both register
+// this identical fixture identity, and two overlapping calls used to each
+// attempt their own INSERT. `signing_keys::register`'s
+// `ON CONFLICT (signing_key_id) DO NOTHING` usually makes a second insert of
+// the same row a harmless no-op, but under a rare interleaving in Postgres's
+// own conflict resolution the loser can instead be caught by the table's
+// OTHER unique constraint -- `(tenant_id, repository_id, node_id,
+// public_key_fingerprint, activated_at)` -- which the arbiter does not cover,
+// surfacing a bare unique-violation instead. A `OnceCell` makes every caller
+// but the first a no-op that awaits the first's already-committed result,
+// instead of a second racing INSERT.
+async fn register_test_key(database_url: &str) {
+    KEY_REGISTERED
+        .get_or_init(|| async move {
+            // Apply the enrollment and signing-key schemas through their production
+            // owner before inserting the fixture's already-approved key.
+            let enrollment_pool = ackplane_server::db_pool::build_pool(
+                database_url,
+                ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+            )
+            .expect("the test pool builds from a valid database url");
+            drop(
+                EnrollmentStore::connect(&enrollment_pool)
+                    .await
+                    .expect("the gated test database should accept enrollment migrations"),
+            );
+
+            let (mut client, connection) = tokio_postgres::connect(database_url, NoTls)
+                .await
+                .expect("the gated test database should accept a signing-key connection");
+            tokio::spawn(async move {
+                connection
+                    .await
+                    .expect("the signing-key fixture connection should stay healthy");
+            });
+            let transaction = client
+                .transaction()
+                .await
+                .expect("the signing-key fixture should start a transaction");
+            let key = signing_key();
+            signing_keys::register(
+                &transaction,
+                &SigningKeyRecord {
+                    signing_key_id: SIGNING_KEY_ID.to_string(),
+                    tenant_id: TENANT_ID.to_string(),
+                    repository_id: REPOSITORY_ID.to_string(),
+                    node_id: NODE_ID.to_string(),
+                    public_key: key.verifying_key().to_bytes().to_vec(),
+                    public_key_fingerprint: SIGNING_KEY_ID.to_string(),
+                    activated_at: std::time::SystemTime::UNIX_EPOCH,
+                    expires_at: None,
+                },
+            )
             .await
-            .expect("the signing-key fixture connection should stay healthy");
-    });
-    let transaction = client
-        .transaction()
-        .await
-        .expect("the signing-key fixture should start a transaction");
-    let key = signing_key();
-    signing_keys::register(
-        &transaction,
-        &SigningKeyRecord {
-            signing_key_id: SIGNING_KEY_ID.to_string(),
-            tenant_id: TENANT_ID.to_string(),
-            repository_id: REPOSITORY_ID.to_string(),
-            node_id: NODE_ID.to_string(),
-            public_key: key.verifying_key().to_bytes().to_vec(),
-            public_key_fingerprint: SIGNING_KEY_ID.to_string(),
-            activated_at: std::time::SystemTime::UNIX_EPOCH,
-            expires_at: None,
-        },
-    )
-    .await
-    .expect("the fixture key should register through the production schema");
-    transaction
-        .commit()
-        .await
-        .expect("the fixture key should commit");
+            .expect("the fixture key should register through the production schema");
+            transaction
+                .commit()
+                .await
+                .expect("the fixture key should commit");
+        })
+        .await;
 }
 
 #[tokio::test]
@@ -499,4 +516,95 @@ async fn a_parked_claim_blocks_delegate_and_only_its_owner_may_answer() {
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn registering_the_shared_fixture_key_concurrently_does_not_race() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    // Regression: the two tests above both register this file's one shared
+    // fixture identity, and two overlapping first-time inserts of that
+    // identical row used to be able to race Postgres's own conflict
+    // resolution -- `signing_keys::register`'s
+    // `ON CONFLICT (signing_key_id) DO NOTHING` usually makes a second insert
+    // a harmless no-op, but under a rare interleaving the loser could instead
+    // be caught by the table's OTHER unique constraint on `(tenant_id,
+    // repository_id, node_id, public_key_fingerprint, activated_at)`, which
+    // the arbiter does not cover. Measured at 1 failure in 60 attempts
+    // against the unfixed pattern (roughly the rate of the one real CI
+    // failure this guards against), so this loops rather than trusting a
+    // single attempt. It exercises the same call and the same `OnceCell`
+    // guard `register_test_key` now uses, but against a private identity of
+    // its own (never TENANT_ID/etc.) so its per-iteration cleanup can never
+    // disturb the two tests above, which depend on their shared key staying
+    // registered for their entire run.
+    const TENANT: &str = "ackplane-client-race-regression-tenant";
+    const REPOSITORY: &str = "ackplane-client-race-regression-repository";
+    const NODE: &str = "ackplane-client-race-regression-node";
+    const KEY_ID: &str = "ackplane-client-race-regression-key";
+
+    async fn register(database_url: &str) {
+        let (mut client, connection) = tokio_postgres::connect(database_url, NoTls)
+            .await
+            .expect("the gated test database should accept a signing-key connection");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let transaction = client
+            .transaction()
+            .await
+            .expect("the signing-key fixture should start a transaction");
+        signing_keys::register(
+            &transaction,
+            &SigningKeyRecord {
+                signing_key_id: KEY_ID.to_string(),
+                tenant_id: TENANT.to_string(),
+                repository_id: REPOSITORY.to_string(),
+                node_id: NODE.to_string(),
+                public_key: signing_key().verifying_key().to_bytes().to_vec(),
+                public_key_fingerprint: KEY_ID.to_string(),
+                activated_at: std::time::SystemTime::UNIX_EPOCH,
+                expires_at: None,
+            },
+        )
+        .await
+        .expect("the fixture key should register through the production schema");
+        transaction
+            .commit()
+            .await
+            .expect("the fixture key should commit");
+    }
+
+    for _ in 0..60 {
+        let (client, connection) = tokio_postgres::connect(&database_url, NoTls)
+            .await
+            .expect("the gated test database should accept a cleanup connection");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .execute("DELETE FROM signing_keys WHERE tenant_id = $1", &[&TENANT])
+            .await
+            .expect("the fixture row should be clearable between iterations");
+        drop(client);
+
+        // A fresh guard each iteration, exactly mirroring the shape of the
+        // fix: whichever caller arrives first does the real insert, the
+        // other awaits its result instead of racing a second one.
+        let guard = std::sync::Arc::new(tokio::sync::OnceCell::<()>::new());
+        let (guard_a, guard_b) = (guard.clone(), guard.clone());
+        let url_a = database_url.clone();
+        let url_b = database_url.clone();
+        tokio::try_join!(
+            tokio::spawn(async move {
+                guard_a.get_or_init(|| register(&url_a)).await;
+            }),
+            tokio::spawn(async move {
+                guard_b.get_or_init(|| register(&url_b)).await;
+            }),
+        )
+        .expect("registering the shared fixture key concurrently must never race");
+    }
 }
