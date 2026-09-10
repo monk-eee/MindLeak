@@ -202,29 +202,20 @@ impl EnrollmentStore {
         if state == EnrollmentState::Activating && consumed_at.is_some() {
             let receipt = transaction
                 .query_one(
-                    "SELECT enrollment_receipt_id FROM enrollment_receipts WHERE tenant_id = $1 \
-                     AND repository_id = $2 AND request_id = $3",
+                    "SELECT receipt.enrollment_receipt_id, signing_key.signing_key_id \
+                     FROM enrollment_receipts receipt JOIN signing_keys signing_key \
+                       ON signing_key.tenant_id = receipt.tenant_id \
+                      AND signing_key.repository_id = receipt.repository_id \
+                      AND signing_key.node_id = receipt.proposed_node_id \
+                      AND signing_key.public_key_fingerprint = receipt.public_key_fingerprint \
+                      AND signing_key.activated_at = receipt.activated_at \
+                     WHERE receipt.tenant_id = $1 AND receipt.repository_id = $2 \
+                       AND receipt.request_id = $3 AND signing_key.public_key = $4",
                     &[
                         &request.tenant_id,
                         &request.repository_id,
                         &request.request_id,
-                    ],
-                )
-                .await?;
-            // A replay must return the key actually assigned on the ORIGINAL
-            // activation, not the fresh id the caller generated for this
-            // retry -- signing_keys has no request_id column, so the same
-            // (tenant, repository, node) lookup an external node would have
-            // to do resolves it, ordered by recency in case of a later
-            // rotation.
-            let signing_key = transaction
-                .query_one(
-                    "SELECT signing_key_id FROM signing_keys WHERE tenant_id = $1 \
-                     AND repository_id = $2 AND node_id = $3 ORDER BY activated_at DESC LIMIT 1",
-                    &[
-                        &request.tenant_id,
-                        &request.repository_id,
-                        &request.proposed_node_id,
+                        &public_key,
                     ],
                 )
                 .await?;
@@ -233,7 +224,7 @@ impl EnrollmentStore {
                 request_id: request.request_id.clone(),
                 state,
                 enrollment_receipt_id: receipt.get(0),
-                signing_key_id: signing_key.get(0),
+                signing_key_id: receipt.get(1),
             });
         }
         if state != EnrollmentState::Approved {
@@ -346,8 +337,9 @@ mod tests {
     use crate::enrollment::activation_challenge_bytes;
     use crate::enrollment_store::submission::tests::sample_submission_for;
 
+    // Replay selected the newest node key, incorrectly changing the immutable activation result.
     #[tokio::test]
-    async fn activation_reuses_its_live_challenge_and_exact_replay_receipt() {
+    async fn activation_replay_preserves_the_original_key_and_receipt() {
         let Some(pool) = crate::test_support::test_pool() else {
             println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
             return;
@@ -404,12 +396,33 @@ mod tests {
             .activate(&activation, &receipt_id, &signing_key_id, now)
             .await
             .expect("valid proof activates enrollment");
+        let later_key = SigningKey::from_bytes(&[9; 32]);
+        let mut connection = pool.get().await.unwrap();
+        let transaction = connection.transaction().await.unwrap();
+        signing_keys::register(
+            &transaction,
+            &SigningKeyRecord {
+                signing_key_id: crate::test_support::unique_id("later-node-key"),
+                tenant_id: enrollment.tenant_id.clone(),
+                repository_id: enrollment.repository_id.clone(),
+                node_id: enrollment.proposed_node_id.clone(),
+                public_key: later_key.verifying_key().to_bytes().to_vec(),
+                public_key_fingerprint: public_key_fingerprint(
+                    &later_key.verifying_key().to_bytes(),
+                ),
+                activated_at: now + Duration::from_secs(1),
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
         let replay = store
             .activate(
                 &activation,
                 "receipt-replay-must-not-persist",
                 "signing-key-replay-must-not-persist",
-                now,
+                now + Duration::from_secs(2),
             )
             .await
             .expect("exact valid replay returns durable receipt");

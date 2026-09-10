@@ -70,6 +70,7 @@ pub(super) async fn run_request(flags: HashMap<String, String>) -> Result<(), St
         node_id: node_id.clone(),
         public_key_fingerprint: fingerprint.clone(),
         grpc_endpoint: grpc_endpoint.clone(),
+        activation_nonce: None,
         activation: None,
     };
     saved.save(&state)?;
@@ -171,11 +172,31 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
                 proposed_node_id: saved.node_id.clone(),
                 public_key_fingerprint: saved.public_key_fingerprint.clone(),
             }))
-            .await
-            .map_err(|error| format!("get_activation_challenge failed: {error}"))?
-            .into_inner();
+            .await;
+        let nonce = match challenge {
+            Ok(response) => {
+                let challenge = response.into_inner();
+                if challenge.request_id != saved.request_id
+                    || challenge.tenant_id != saved.tenant_id
+                    || challenge.repository_id != saved.repository_id
+                    || challenge.proposed_node_id != saved.node_id
+                    || challenge.public_key_fingerprint != saved.public_key_fingerprint
+                {
+                    return Err(
+                        "activation challenge does not match the saved enrollment".to_string()
+                    );
+                }
+                saved.grpc_endpoint = grpc_endpoint.clone();
+                saved.record_activation_nonce(&state, challenge.nonce.clone())?;
+                challenge.nonce
+            }
+            Err(error) => match &saved.activation_nonce {
+                Some(nonce) if error.code() == tonic::Code::FailedPrecondition => nonce.clone(),
+                _ => return Err(format!("get_activation_challenge failed: {error}")),
+            },
+        };
         let proof_bytes = activation_challenge_bytes(
-            &challenge.nonce,
+            &nonce,
             &request_id,
             &saved.tenant_id,
             &saved.repository_id,
@@ -190,7 +211,7 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
                 repository_id: saved.repository_id.clone(),
                 proposed_node_id: saved.node_id.clone(),
                 public_key_fingerprint: saved.public_key_fingerprint.clone(),
-                nonce: challenge.nonce.clone(),
+                nonce,
                 signature,
             }))
             .await

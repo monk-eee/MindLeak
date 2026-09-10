@@ -19,6 +19,8 @@ pub(super) struct SavedRequest {
     pub(super) public_key_fingerprint: String,
     pub(super) grpc_endpoint: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) activation_nonce: Option<Vec<u8>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) activation: Option<SavedActivation>,
 }
 
@@ -27,6 +29,16 @@ impl SavedRequest {
         let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
         let saved: Self = serde_json::from_slice(&bytes)
             .map_err(|error| format!("{}: {error}", path.display()))?;
+        if saved
+            .activation_nonce
+            .as_ref()
+            .is_some_and(|nonce| nonce.len() != 32)
+        {
+            return Err(format!(
+                "{}: recorded activation challenge is not a 32-byte nonce; restore the enrollment record",
+                path.display()
+            ));
+        }
         if saved.activation.as_ref().is_some_and(|activation| {
             activation.signing_key_id.trim().is_empty()
                 || activation.enrolment_receipt_id.trim().is_empty()
@@ -49,7 +61,7 @@ impl SavedRequest {
             let mut temporary = NamedTempFile::new_in(parent)?;
             temporary.write_all(&bytes)?;
             temporary.as_file().sync_all()?;
-            if self.activation.is_some() {
+            if self.activation.is_some() || self.activation_nonce.is_some() {
                 temporary.persist(path).map_err(|error| error.error)?;
             } else {
                 temporary
@@ -94,9 +106,32 @@ impl SavedRequest {
                 )
             };
         }
+        let nonce = self.activation_nonce.take();
         self.activation = Some(activation);
         if let Err(error) = self.save(path) {
+            self.activation_nonce = nonce;
             self.activation = None;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(super) fn record_activation_nonce(
+        &mut self,
+        path: &Path,
+        nonce: Vec<u8>,
+    ) -> Result<(), String> {
+        if nonce.len() != 32 || self.activation.is_some() {
+            return Err(
+                "cannot record an invalid challenge or replace completed activation".to_string(),
+            );
+        }
+        if self.activation_nonce.as_ref() == Some(&nonce) {
+            return Ok(());
+        }
+        let previous = self.activation_nonce.replace(nonce);
+        if let Err(error) = self.save(path) {
+            self.activation_nonce = previous;
             return Err(error);
         }
         Ok(())
@@ -115,6 +150,7 @@ mod tests {
             node_id: "node-test".to_string(),
             public_key_fingerprint: "fingerprint-test".to_string(),
             grpc_endpoint: "http://127.0.0.1:8443".to_string(),
+            activation_nonce: None,
             activation: None,
         }
     }
@@ -234,6 +270,77 @@ mod tests {
                 .err()
                 .expect("must refuse incomplete activation");
             assert!(error.contains("recorded activation is incomplete"));
+        }
+    }
+
+    #[test]
+    fn activation_nonce_survives_restart_until_the_receipt_is_saved() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("enrollment.json");
+        let mut saved = pending();
+        saved.save(&path).unwrap();
+        saved.record_activation_nonce(&path, vec![9; 32]).unwrap();
+        let mut restarted = SavedRequest::load(&path).unwrap();
+        assert_eq!(restarted.activation_nonce, Some(vec![9; 32]));
+        assert!(restarted.activation.is_none());
+
+        restarted
+            .record_activation_nonce(&path, vec![10; 32])
+            .unwrap();
+        assert_eq!(
+            SavedRequest::load(&path).unwrap().activation_nonce,
+            Some(vec![10; 32])
+        );
+        restarted.record_activation(&path, &response()).unwrap();
+        assert!(SavedRequest::load(&path)
+            .unwrap()
+            .activation_nonce
+            .is_none());
+        assert!(restarted
+            .record_activation_nonce(&path, vec![11; 32])
+            .is_err());
+    }
+
+    #[test]
+    fn failed_challenge_and_receipt_writes_preserve_the_previous_attempt() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("enrollment.json");
+        let mut saved = pending();
+        saved.save(&path).unwrap();
+        saved.record_activation_nonce(&path, vec![9; 32]).unwrap();
+        let blocked = directory.path().join("directory-not-a-file");
+        fs::create_dir(&blocked).unwrap();
+
+        assert!(saved
+            .record_activation_nonce(&blocked, vec![10; 32])
+            .is_err());
+        assert_eq!(saved.activation_nonce, Some(vec![9; 32]));
+        assert!(saved.record_activation(&blocked, &response()).is_err());
+        assert_eq!(saved.activation_nonce, Some(vec![9; 32]));
+        assert!(saved.activation.is_none());
+        assert_eq!(
+            SavedRequest::load(&path).unwrap().activation_nonce,
+            Some(vec![9; 32])
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn malformed_activation_nonces_are_refused_without_changing_the_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("enrollment.json");
+        let mut saved = pending();
+        for length in [0, 31, 33] {
+            assert!(saved
+                .record_activation_nonce(&path, vec![9; length])
+                .is_err());
+            assert!(saved.activation_nonce.is_none());
+            let mut raw = serde_json::to_value(&saved).unwrap();
+            raw["activation_nonce"] = serde_json::json!(vec![9; length]);
+            let bytes = serde_json::to_vec(&raw).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(SavedRequest::load(&path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
         }
     }
 }
