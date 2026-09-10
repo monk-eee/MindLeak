@@ -340,6 +340,8 @@ pub async fn run(
     reconnect_delay: Duration,
     stopping: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
+    let _state_ownership = crate::storage::claim_state_directory(&config.state_dir)
+        .map_err(|error| DaemonError::Worker(error.to_string()))?;
     if config.workers.is_empty() {
         return run_session(config, reconnect_delay, stopping).await;
     }

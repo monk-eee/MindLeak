@@ -108,8 +108,22 @@ A missing variable is refused at startup, and **every** missing one is named at
 once — configuring a new node otherwise means learning about the next omission
 only after fixing the previous one.
 
+Each supervisor process needs its own state directory. Startup holds an
+exclusive SQLite lock in `ownership.db` before checking recovery markers or
+connecting to Ackplane. This prevents two processes from registering over the
+same durable directory while idle; configured slots within one process still
+run concurrently. Normal exit or process termination releases the lock without
+deleting its file. Never delete or replace that file while a supervisor is
+running. A released ownership lock does not prove a previously active worker
+stopped: existing worker-run markers still require recovery. This local guard
+does not compare workspaces configured under different state directories;
+continue to give every slot a separate checkout or worktree.
+
 ## When it stops
 
+- **State directory already in use** - refuses before registering or opening
+  session queues. Stop the current owner or choose a separate state directory;
+  removing its lock file is not a recovery operation.
 - **Ctrl+C or SIGTERM on Unix** - stops every configured slot, terminates owned
   processes, releases active leases and flushes durable receipts. Shutdown has
   a thirty-second deadline; failed acknowledgement exits unsuccessfully and
@@ -152,6 +166,11 @@ The second tests graph input, lesson activation, retry feedback and refusal of
 cross-session or unleased requests. Without the database variable these gated
 tests skip; a skipped run is not verification. The fixtures test the runtime
 contract, not a live vendor model or its login/tool-permission configuration.
+
+`cargo test --locked -p ackplane-supervisor --test instance_ownership` needs no
+database or live server. It launches real supervisor processes to verify
+duplicate startup refusal, idle process-death restart and independent state
+directory concurrency.
 
 ### Live Agent Check
 
