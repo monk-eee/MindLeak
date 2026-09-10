@@ -203,11 +203,11 @@ pub use ranking::{rank, RankedNode};
 pub use rebuild::run_projection_worker;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ledger::{DedupKey, EventEnvelope, ProvenanceClass};
 
-    pub(super) fn structural_fact_envelope(
+    pub(crate) fn structural_fact_envelope(
         key: DedupKey,
         digest: &[u8],
         fact: &StructuralFact,

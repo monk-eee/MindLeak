@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS outbound_frames (
     frame BLOB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS directive_effects (
+    directive_id TEXT PRIMARY KEY REFERENCES directive_inbox(directive_id),
+    receipt BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS outbound_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0)
@@ -139,6 +144,27 @@ pub(crate) fn next_sequence(transaction: &Transaction<'_>) -> Result<i64, rusqli
         [],
         |row| row.get(0),
     )
+}
+
+pub(crate) fn load_effect(
+    conn: &Connection,
+    directive_id: &str,
+) -> Result<Option<Vec<u8>>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT receipt FROM directive_effects WHERE directive_id = ?1",
+        [directive_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+pub(crate) fn store_effect(
+    conn: &Connection,
+    directive_id: &str,
+    receipt: &[u8],
+) -> Result<(), rusqlite::Error> {
+    conn.execute("INSERT INTO directive_effects (directive_id, receipt) VALUES (?1, ?2) ON CONFLICT (directive_id) DO UPDATE SET receipt = excluded.receipt", params![directive_id, receipt])?;
+    Ok(())
 }
 
 pub(crate) fn load_receipt(

@@ -5,20 +5,21 @@
 //! supply a map. That keeps every refusal path — which is most of this module —
 //! exhaustively testable without a machine that happens to be misconfigured.
 //!
-//! Every variable here already exists. `MINDLEAK_ACKPLANE_ENDPOINT`,
+//! Shared enrollment variables include `MINDLEAK_ACKPLANE_ENDPOINT`,
 //! `_TENANT_ID`, `_REPOSITORY_ID`, `_NODE_ID`, `_SIGNING_KEY_ID`,
 //! `_NODE_SIGNING_KEY_SEED` and `MINDLEAK_ACKPLANE_KEY_PATH` are the same names
 //! `lodestar-mcp`'s federated claim path and `register-me` already read, so an
 //! operator who has enrolled a node has already configured this daemon
-//! (ADR-0116; no new configuration mechanism is invented here).
+//! (ADR-0116). Named worker commands are explicit local operator configuration.
 //!
 //! The enrolled node half of that set is resolved by
 //! [`ackplane_client::node_identity`], not re-implemented here. This module
 //! owns only what is genuinely the supervisor's: the endpoint, its own
 //! supervisor id, its state directory and its heartbeat interval.
 
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
+use crate::WorkerCommand;
 use ackplane_client::node_identity::{resolve_node_identity, NodeIdentity, NodeIdentityError};
 
 const ENDPOINT_ENV: &str = "MINDLEAK_ACKPLANE_ENDPOINT";
@@ -31,6 +32,7 @@ const SUPERVISOR_ID_ENV: &str = "ACKPLANE_SUPERVISOR_ID";
 /// its receipts has no business claiming it processed anything.
 const STATE_DIR_ENV: &str = "ACKPLANE_SUPERVISOR_STATE_DIR";
 const HEARTBEAT_SECONDS_ENV: &str = "ACKPLANE_SUPERVISOR_HEARTBEAT_SECONDS";
+pub const WORKERS_ENV: &str = "ACKPLANE_SUPERVISOR_WORKERS";
 
 const DEFAULT_STATE_DIR: &str = ".mindleak/supervisor";
 const DEFAULT_HEARTBEAT_SECONDS: u64 = 30;
@@ -45,9 +47,14 @@ pub struct SupervisorConfig {
     pub supervisor_id: String,
     pub state_dir: PathBuf,
     pub heartbeat_interval: Duration,
+    pub workers: BTreeMap<String, WorkerCommand>,
 }
 
 impl SupervisorConfig {
+    pub fn worker_run_path(&self, name: &str) -> PathBuf {
+        self.state_dir.join(format!("{name}.worker-run.json"))
+    }
+
     /// The durable inbox path for this supervisor.
     pub fn inbox_path(&self) -> PathBuf {
         self.state_dir
@@ -71,6 +78,8 @@ pub enum ConfigError {
     Missing(Vec<&'static str>),
     MalformedSeed,
     MalformedHeartbeat(String),
+    InvalidSupervisorId,
+    InvalidWorkers(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -83,6 +92,11 @@ impl std::fmt::Display for ConfigError {
                 names.join(", ")
             ),
             Self::MalformedSeed => write!(formatter, "{}", NodeIdentityError::MalformedSeed),
+            Self::InvalidSupervisorId => write!(
+                formatter,
+                "{SUPERVISOR_ID_ENV} must contain 1-64 letters, digits, hyphens or underscores"
+            ),
+            Self::InvalidWorkers(reason) => write!(formatter, "{WORKERS_ENV}: {reason}"),
             Self::MalformedHeartbeat(value) => write!(
                 formatter,
                 "{HEARTBEAT_SECONDS_ENV} must be a positive whole number of seconds, not {value:?}"
@@ -135,6 +149,16 @@ where
     let identity = identity.map_err(|_| ConfigError::MalformedSeed)?;
     let endpoint = endpoint.expect("endpoint is present once nothing is missing");
     let supervisor_id = supervisor_id.expect("supervisor id is present once nothing is missing");
+    let valid_local_name = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    };
+    if !valid_local_name(&supervisor_id) {
+        return Err(ConfigError::InvalidSupervisorId);
+    }
 
     let heartbeat_interval = match read(HEARTBEAT_SECONDS_ENV) {
         Some(value) => {
@@ -149,6 +173,33 @@ where
         None => Duration::from_secs(DEFAULT_HEARTBEAT_SECONDS),
     };
 
+    let workers: BTreeMap<String, WorkerCommand> = match read(WORKERS_ENV) {
+        Some(json) => serde_json::from_str(&json)
+            .map_err(|error| ConfigError::InvalidWorkers(error.to_string()))?,
+        None => BTreeMap::new(),
+    };
+    if workers.len() > 32 {
+        return Err(ConfigError::InvalidWorkers(
+            "at most 32 named workers are supported".into(),
+        ));
+    }
+    let mut directories = std::collections::HashSet::new();
+    for (name, worker) in &workers {
+        if !valid_local_name(name) {
+            return Err(ConfigError::InvalidWorkers(
+                "worker names must contain 1-64 letters, digits, hyphens or underscores".into(),
+            ));
+        }
+        worker
+            .validate()
+            .map_err(|error| ConfigError::InvalidWorkers(error.to_string()))?;
+        if !directories.insert(&worker.working_directory) {
+            return Err(ConfigError::InvalidWorkers(
+                "workers must have separate working directories".into(),
+            ));
+        }
+    }
+
     Ok(SupervisorConfig {
         endpoint,
         identity,
@@ -157,6 +208,7 @@ where
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR)),
         heartbeat_interval,
+        workers,
     })
 }
 
@@ -204,6 +256,37 @@ mod tests {
         );
         assert_eq!(config.heartbeat_interval, Duration::from_secs(30));
         assert_eq!(config.state_dir, PathBuf::from(DEFAULT_STATE_DIR));
+        assert!(config.workers.is_empty());
+    }
+
+    #[test]
+    fn multiple_runtime_commands_are_configured_without_a_shell() {
+        let root = std::env::temp_dir();
+        let workers = serde_json::json!({
+            "copilot": {"command":"copilot", "args":["-p","{prompt}"], "working_directory":root.join("worker-first"), "branch":"agents/first"},
+            "claude": {"command":"claude", "args":["-p","{prompt}"], "working_directory":root.join("worker-second"), "branch":"agents/second"},
+        }).to_string();
+        let mut pairs = complete();
+        pairs.push((WORKERS_ENV, &workers));
+        let config = resolve(environment(&pairs)).unwrap();
+        assert_eq!(config.workers.len(), 2);
+        assert_eq!(config.workers["copilot"].command, "copilot");
+        assert_eq!(config.workers["claude"].command, "claude");
+    }
+
+    #[test]
+    fn workers_cannot_share_the_same_working_directory() {
+        let root = std::env::temp_dir();
+        let workers = serde_json::json!({
+            "first": {"command":"copilot", "args":["-p","{prompt}"], "working_directory":root, "branch":"agents/first"},
+            "second": {"command":"claude", "args":["-p","{prompt}"], "working_directory":root, "branch":"agents/second"},
+        }).to_string();
+        let mut pairs = complete();
+        pairs.push((WORKERS_ENV, &workers));
+        assert!(matches!(
+            resolve(environment(&pairs)),
+            Err(ConfigError::InvalidWorkers(_))
+        ));
     }
 
     /// An operator configuring a new node should learn about every missing
@@ -246,6 +329,25 @@ mod tests {
         let error = resolve(environment(&pairs)).expect_err("a blank node id must be refused");
 
         assert_eq!(error, ConfigError::Missing(vec![NODE_ID_ENV]));
+    }
+
+    /// Supervisor ids become local queue filenames and must not contain path separators or colons.
+    #[test]
+    fn supervisor_ids_cannot_escape_or_invalidate_the_state_directory() {
+        for invalid in [
+            "../outside",
+            "supervisor:slot",
+            "parent/child",
+            "parent\\child",
+        ] {
+            let mut pairs = complete();
+            pairs.retain(|(name, _)| *name != SUPERVISOR_ID_ENV);
+            pairs.push((SUPERVISOR_ID_ENV, invalid));
+            assert!(
+                resolve(environment(&pairs)).is_err(),
+                "accepted unsafe state name {invalid}"
+            );
+        }
     }
 
     #[test]

@@ -18,6 +18,8 @@ pub struct CreateWorkPayload {
     pub title: String,
     pub acceptance: String,
     pub goal_id: Option<String>,
+    pub declared_paths: Vec<String>,
+    pub declared_symbols: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +140,12 @@ pub fn payload_digest(payload: &WorkCommandPayload) -> Result<Vec<u8>, WorkComma
             append_bytes(&mut hasher, payload.title.as_bytes());
             append_bytes(&mut hasher, payload.acceptance.as_bytes());
             append_optional_bytes(&mut hasher, payload.goal_id.as_deref());
+            for values in [&payload.declared_paths, &payload.declared_symbols] {
+                hasher.update((values.len() as u64).to_be_bytes());
+                for value in values {
+                    append_bytes(&mut hasher, value.as_bytes());
+                }
+            }
         }
         WorkCommandPayload::RouteWork(payload) => {
             append_bytes(&mut hasher, payload.route_reference.as_bytes());
@@ -184,4 +192,34 @@ pub fn payload_digest(payload: &WorkCommandPayload) -> Result<Vec<u8>, WorkComma
 fn append_target(hasher: &mut Sha256, target: &DirectiveTarget) {
     append_bytes(hasher, target.target_node_id.as_bytes());
     append_bytes(hasher, target.target_session_id.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_work_confirmation_binds_paths_and_symbols_separately() {
+        let original = CreateWorkPayload {
+            task_id: "task:scope".into(),
+            title: "Scoped work".into(),
+            acceptance: "Checks pass".into(),
+            goal_id: None,
+            declared_paths: vec!["result.json".into()],
+            declared_symbols: vec![],
+        };
+        let digest = payload_digest(&WorkCommandPayload::CreateWork(original.clone())).unwrap();
+        let mut changed = original.clone();
+        changed.declared_paths = vec!["another.json".into()];
+        assert_ne!(
+            digest,
+            payload_digest(&WorkCommandPayload::CreateWork(changed)).unwrap()
+        );
+        let mut changed = original;
+        changed.declared_symbols = std::mem::take(&mut changed.declared_paths);
+        assert_ne!(
+            digest,
+            payload_digest(&WorkCommandPayload::CreateWork(changed)).unwrap()
+        );
+    }
 }

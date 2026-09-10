@@ -91,7 +91,7 @@ should not create repository evidence or own Lodestar tasks. See the full
 
 ### Option B — build from source
 
-Requires stable Rust 1.85+:
+Requires stable Rust 1.88+:
 
 ```bash
 cargo build --release --locked -p mindleak-mcp -p lodestar-mcp
@@ -316,6 +316,9 @@ through `telemetry_snapshot`.
 
 ## 7. Next steps
 
+- **[INDUSTRIAL-QUICKSTART.md](INDUSTRIAL-QUICKSTART.md)** — run the shared
+  Ackplane server, enroll a node, and use the Bridge and federated task
+  claiming instead of the Local profile alone.
 - **[WALKTHROUGH.md](WALKTHROUGH.md)** — a normal day in four end-to-end
   scenarios (look-before-you-leap, ADR-to-tasks, two agents splitting a goal,
   passive capture), with the VS Code panels shown.

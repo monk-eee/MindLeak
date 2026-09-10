@@ -1,88 +1,107 @@
 # ackplane-supervisor
 
-The enrolled supervisor daemon: the Industrial runtime endpoint an operator can
-actually run (ADR-0116).
+The enrolled, runtime-neutral agent runner (ADR-0116). One process can run up
+to 32 configured worker slots concurrently. Slots may use the same agent CLI
+or different runtimes; each has its own workspace, branch, session, lease,
+context packet, and durable receipts.
 
-It connects to Ackplane over authenticated gRPC, registers, opens a session,
-heartbeats, and receives directives — durably receipting each one and returning
-the receipt over the same stream. On reconnect it reconciles its position and
-reports a genuine gap rather than resuming through one.
+## Start Agents
 
-## What it cannot do yet
+1. Build the server and supervisor from the same revision. An older running
+   container does not acquire the new context protocol from a source edit.
+2. Follow the [Industrial quickstart](../../docs/INDUSTRIAL-QUICKSTART.md) for
+   the server, TLS trust, and enrolled node identity. Configure the environment
+   variables below. Publish the repository's adopted constitution and Work
+   tasks, including goals, acceptance criteria, and declared file scope.
+3. Install and authenticate each agent executable. Give each slot a separate
+   checkout or worktree, and declare its actual branch. The runner does not
+   create branches or grant an agent additional tool permissions.
+4. Provide a JSON file such as `workers.json`, replacing the example absolute
+   paths with existing directories on the worker host:
 
-**It has no worker adapter, so it cannot drive a worker process.** It says so in
-its own registration rather than by refusing after the fact.
-
-It declares exactly one capability, `notify`. That is not a placeholder: a
-`NotifyDirective` carries a message *to the supervisor*, so receiving it and
-durably recording it is the whole action, and an `accepted` receipt for one is
-truthful.
-
-Every worker-driving capability — `prompt`, `assign`, `steer`, `pause`,
-`resume`, `drain`, `terminate` — is deliberately **not** declared. Ackplane
-refuses to enqueue a directive whose capability the target never declared, so
-that work never reaches the queue; and if one arrives anyway, it is durably
-receipted `refused` / `capability_missing`.
-
-An `accepted` receipt for work nothing performed is therefore unreachable, not
-merely unlikely. Wiring a real `WorkerAdapter` in is a separate, deliberate
-change.
-
-## Running it against the local stack
-
-Bring up the Compose topology:
-
-```bash
-docker compose up -d postgres migrate ackplane
+```json
+{
+  "copilot-a": {
+    "command": "copilot",
+    "args": ["-p", "{prompt}"],
+    "working_directory": "/absolute/path/to/checkout-a",
+    "branch": "agents/copilot-a"
+  },
+  "claude-b": {
+    "command": "claude",
+    "args": ["-p", "{prompt}"],
+    "working_directory": "/absolute/path/to/checkout-b",
+    "branch": "agents/claude-b"
+  }
+}
 ```
 
-Enrol this node, if you have not already. `register-me` prints the tenant id and
-the signing key id you will need:
+These are executable/argument examples, not built-in vendor integrations.
+Configure authentication and allowed tools for your installed CLI version.
+Any non-interactive executable accepting a prompt argument can use the same
+adapter. The standalone `{prompt}` argument is replaced as one argument, never
+evaluated by a shell. Control-plane environment variables are stripped from
+children; ordinary runtime/provider settings are retained.
 
-```bash
-cargo run -p ackplane-server --bin register-me -- request \
-  --repo my-repo --node my-node --tenant-name my-tenant --salt-path .mindleak/bridge.salt
-cargo run -p ackplane-server --bin register-me -- approve \
-  --request-id <ID> --repo my-repo --fingerprint <FP> \
-  --tenant-name my-tenant --salt-path .mindleak/bridge.salt \
-  --admin-database-url postgres://ackplane:...@127.0.0.1:5432/ackplane
-cargo run -p ackplane-server --bin register-me -- activate --request-id <ID>
+```text
+cargo run --locked -p ackplane-supervisor --bin ackplane-supervisor -- --workers workers.json
 ```
 
-Then declare the same identity and run the daemon:
+The Bridge's Supervisors page shows each slot's registered session. Use the
+existing authorized Work command flow to assign a published task to its node
+and session. Each assignment must be confirmed before delivery. The supervisor
+obtains the authoritative task lease, requests a scoped context packet, checks
+its digest and freshness, and starts the configured executable. An `applied`
+receipt moves Work to `claimed`; an exit code does not complete the task.
 
-```bash
-export MINDLEAK_ACKPLANE_ENDPOINT=http://127.0.0.1:8443
-export MINDLEAK_ACKPLANE_TENANT_ID=<from register-me>
-export MINDLEAK_ACKPLANE_REPOSITORY_ID=my-repo
-export MINDLEAK_ACKPLANE_NODE_ID=my-node
-export MINDLEAK_ACKPLANE_SIGNING_KEY_ID=<from register-me activate>
-export ACKPLANE_SUPERVISOR_ID=supervisor-1
+Work creation accepts `declared_paths` and `declared_symbols` through the Bridge
+API. With `ackplane-workctl`, repeat `--path` and `--symbol` on both submission
+and confirmation. Changing that scope changes the confirmation digest.
 
-cargo run -p ackplane-supervisor
-```
+With no worker definitions the daemon remains notification-only. Configured
+workers advertise `notify`, `assign`, and force termination. Generic processes
+do **not** advertise live prompt injection, steer, pause, resume, drain, or
+checkpoint support. Unsupported operations are refused, not approximated.
 
-On Windows PowerShell, use `$env:NAME = "value"` instead of `export`.
+## Memory And Guardrails
 
-It should log `starting the Ackplane supervisor`, warn that no worker adapter is
-wired in, and then hold the connection. The supervisor and its session appear on
-the Bridge's Supervisors page.
+Ackplane reserves the complete mandatory envelope before optional context:
+identity, task lease and scope, objective, acceptance, constitution, policy,
+safety controls, and required evidence. It refuses missing authority or an
+insufficient budget. Optional context contains active, decay-ranked lessons,
+bounded graph relationships, and recent observed outcomes from previous
+sessions of the same task. Missing graph projection is stated explicitly.
+
+Every packet is stored with its digest and source references. A recorded lesson
+remains a candidate until activated by the knowledge workflow. Activated lessons
+can change the next prompt, and a prior failed worker can inform a retry, but
+neither becomes policy or proof of success. No model call is required to compile
+this context; this is evidence-informed guidance, not model-weight training.
+
+Native worker processes are **not a sandbox**. Workspace separation, scoped
+leases, authenticated directives, process-group ownership, and replay checks
+are enforced; prompts alone cannot prevent an agent from reading other files or
+using its user's permissions. Use an isolated account/container runtime when
+hard filesystem or network restrictions are required. Completion still needs
+the existing evidence/conformance or human-review workflow.
 
 ## Configuration
 
-Every variable is one this repository already uses; none is invented here.
+Identity and endpoint variables are shared with the other enrolled clients.
 
 | Variable | Required | Meaning |
 |---|---|---|
 | `MINDLEAK_ACKPLANE_ENDPOINT` | yes | Ackplane's gRPC endpoint |
+| `MINDLEAK_ACKPLANE_TLS_CA_PATH` | for private CAs | Trusted CA certificate; the Compose endpoint uses HTTPS |
 | `MINDLEAK_ACKPLANE_TENANT_ID` | yes | Enrolled tenant |
 | `MINDLEAK_ACKPLANE_REPOSITORY_ID` | yes | Enrolled repository |
 | `MINDLEAK_ACKPLANE_NODE_ID` | yes | Enrolled node |
 | `MINDLEAK_ACKPLANE_SIGNING_KEY_ID` | yes | Key id from activation |
-| `ACKPLANE_SUPERVISOR_ID` | yes | This supervisor's id; one node may run several |
+| `ACKPLANE_SUPERVISOR_ID` | yes | 1-64 ASCII letters, digits, hyphens or underscores; one node may run several |
 | `MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED` | no | Hex seed override. Unset uses the OS credential facility |
 | `ACKPLANE_SUPERVISOR_STATE_DIR` | no | Durable inbox/outbox directory (default `.mindleak/supervisor`) |
 | `ACKPLANE_SUPERVISOR_HEARTBEAT_SECONDS` | no | Heartbeat interval (default `30`) |
+| `ACKPLANE_SUPERVISOR_WORKERS` | no | JSON worker map when not using `--workers`; the file argument takes precedence |
 | `RUST_LOG` | no | Log filter (default `info`) |
 
 A missing variable is refused at startup, and **every** missing one is named at
@@ -91,9 +110,62 @@ only after fixing the previous one.
 
 ## When it stops
 
-- **Connection dropped** — reconnects after a short delay.
+- **Ctrl+C or SIGTERM on Unix** - stops every configured slot, terminates owned
+  processes, releases active leases and flushes durable receipts. Shutdown has
+  a thirty-second deadline; failed acknowledgement exits unsuccessfully and
+  retains the run marker and queue evidence for recovery.
+- **Connection dropped or acknowledgement stalled** - reconnects after a short
+  delay. Acknowledgement waits are bounded to ten seconds. Active leases are
+  renewed; failed renewal stops the owned worker rather than inventing authority.
+- **Unaccounted previous run** - refuses to reuse that worker slot. Its
+  `<slot>.worker-run.json` marker identifies the session, workspace and durable
+  queue files. Preserve that evidence and inspect the old process tree and
+  receipts before operator recovery; deleting the marker is not proof the old
+  worker stopped. Automatic recovery after process loss is not implemented.
 - **`Ackplane holds supervisor evidence this node cannot account for`** — stops
   deliberately. The server has accepted more than this supervisor's durable
   state can describe, which means local state was lost (restored from an older
   copy, or truncated). Reconnecting cannot restore it, and resuming would hide
   it, so the daemon reports and exits for a person to investigate.
+
+## Verify The Loop
+
+Set `ACKPLANE_TEST_DATABASE_URL` to the isolated `ackplane_test` database, never
+the live service database, then run:
+
+```text
+cargo test --locked -p ackplane-supervisor --test multi_agent_end_to_end
+cargo test --locked -p ackplane-server --lib context_service::tests
+```
+
+The first test starts a real authenticated gRPC server and the supervisor binary
+with two concurrent fixture executables, checks their distinct memory-informed
+prompts, credential separation, Work transitions, durable outcome receipts, and
+orderly shutdown of two active workers on Unix.
+The second tests graph input, lesson activation, retry feedback and refusal of
+cross-session or unleased requests. Without the database variable these gated
+tests skip; a skipped run is not verification. The fixtures test the runtime
+contract, not a live vendor model or its login/tool-permission configuration.
+
+### Live Agent Check
+
+The same path was exercised on 2026-09-10 with two authenticated Copilot CLI
+1.0.83 processes, using separate workspaces and permissions limited to their
+own `result.json` files. Both first-round outputs matched their task/session/
+packet identities, and both fresh second-round sessions received the first
+round's packet ids and outcomes in their newly compiled prompts. The Bridge
+recorded concurrent starts and completed worker lifecycles for both rounds.
+Those observations verify the control-and-memory loop, not unrestricted coding
+permissions, sandboxing, or automatic approval of an agent's work.
+
+For an isolated reproduction, enroll `demo-agent-runtime` and configure its
+enrolled identity, then publish its bounded demonstration policy:
+
+```text
+cargo run --locked -p ackplane-client --example publish_demo_constitution
+```
+
+This example uses signed gRPC, requires the exact demo repository name, and
+refuses to overwrite an existing constitution. It does not access the database
+or generate enrollment credentials. Use normal authorized Work commands to
+create and assign tasks after configuring the worker executables.

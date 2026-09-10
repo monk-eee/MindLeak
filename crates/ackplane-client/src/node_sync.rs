@@ -59,6 +59,7 @@ pub struct NodeSyncConnection {
     /// silently dropped, without forcing every caller to become a directive
     /// handler.
     directives: VecDeque<v1::AgentDirective>,
+    exchange_timed_out: bool,
 }
 
 impl NodeSyncConnection {
@@ -162,6 +163,7 @@ impl NodeSyncConnection {
             enabled_capabilities: accepted.enabled_capabilities,
             flow_control,
             directives: VecDeque::new(),
+            exchange_timed_out: false,
         })
     }
 
@@ -217,36 +219,48 @@ impl NodeSyncConnection {
         expected: &'static str,
         mut receipt: impl FnMut(v1::ackplane_frame::Frame) -> Result<T, v1::ackplane_frame::Frame>,
     ) -> Result<T, ClientError> {
-        self.send(frame).await?;
-        loop {
-            let Some(envelope) = self.recv().await? else {
-                return Err(ClientError::UnexpectedFrame {
-                    expected,
-                    got: "a closed stream",
-                });
-            };
-            let Some(frame) = envelope.frame else {
-                continue;
-            };
-            match frame {
-                v1::ackplane_frame::Frame::Rejection(rejection) => {
-                    return Err(frame_refused(rejection))
-                }
-                v1::ackplane_frame::Frame::AgentDirective(directive) => {
-                    self.directives.push_back(*directive);
+        if self.exchange_timed_out {
+            return Err(ClientError::AcknowledgementTimeout { expected });
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            self.send(frame).await?;
+            loop {
+                let Some(envelope) = self.recv().await? else {
+                    return Err(ClientError::UnexpectedFrame {
+                        expected,
+                        got: "a closed stream",
+                    });
+                };
+                let Some(frame) = envelope.frame else {
                     continue;
-                }
-                v1::ackplane_frame::Frame::FlowControl(_)
-                | v1::ackplane_frame::Frame::Notice(_) => continue,
-                other => match receipt(other) {
-                    Ok(receipt) => return Ok(receipt),
-                    Err(unexpected) => {
-                        return Err(ClientError::UnexpectedFrame {
-                            expected,
-                            got: frame_name(&unexpected),
-                        })
+                };
+                match frame {
+                    v1::ackplane_frame::Frame::Rejection(rejection) => {
+                        return Err(frame_refused(rejection))
                     }
-                },
+                    v1::ackplane_frame::Frame::AgentDirective(directive) => {
+                        self.directives.push_back(*directive);
+                    }
+                    v1::ackplane_frame::Frame::FlowControl(_)
+                    | v1::ackplane_frame::Frame::Notice(_) => {}
+                    other => match receipt(other) {
+                        Ok(receipt) => return Ok(receipt),
+                        Err(unexpected) => {
+                            return Err(ClientError::UnexpectedFrame {
+                                expected,
+                                got: frame_name(&unexpected),
+                            })
+                        }
+                    },
+                }
+            }
+        })
+        .await;
+        match result {
+            Ok(result) => result,
+            Err(_) => {
+                self.exchange_timed_out = true;
+                Err(ClientError::AcknowledgementTimeout { expected })
             }
         }
     }
@@ -285,6 +299,85 @@ impl NodeSyncConnection {
     /// with it, and draining here cannot miss one that is still in flight.
     pub fn next_directive(&mut self) -> Option<v1::AgentDirective> {
         self.directives.pop_front()
+    }
+
+    pub async fn request_context_packet(
+        &mut self,
+        request: v1::ContextPacketRequest,
+    ) -> Result<ackplane_protocol::context_packet::ContextPacket, ClientError> {
+        let reply = self
+            .exchange(
+                v1::NodeFrame {
+                    frame: Some(v1::node_frame::Frame::ContextPacketRequest(request)),
+                },
+                "ContextPacketReply",
+                |frame| match frame {
+                    v1::ackplane_frame::Frame::ContextPacketReply(reply) => Ok(reply),
+                    other => Err(other),
+                },
+            )
+            .await?;
+        if reply.packet_json.len() > 128 * 1024 {
+            return Err(ClientError::InvalidContext(
+                "packet exceeds 128 KiB".to_string(),
+            ));
+        }
+        let packet: ackplane_protocol::context_packet::ContextPacket =
+            serde_json::from_slice(&reply.packet_json)
+                .map_err(|error| ClientError::InvalidContext(error.to_string()))?;
+        packet
+            .validate()
+            .map_err(|error| ClientError::InvalidContext(error.to_string()))?;
+        Ok(packet)
+    }
+
+    pub async fn report_context_use(
+        &mut self,
+        receipt: &ackplane_protocol::context_packet::ContextPacketUseReceipt,
+    ) -> Result<(), ClientError> {
+        receipt
+            .validate()
+            .map_err(|error| ClientError::InvalidContext(error.to_string()))?;
+        let receipt_json = serde_json::to_vec(receipt)
+            .map_err(|error| ClientError::InvalidContext(error.to_string()))?;
+        let ack = self
+            .exchange(
+                v1::NodeFrame {
+                    frame: Some(v1::node_frame::Frame::ContextPacketUseReport(
+                        v1::ContextPacketUseReport {
+                            receipt_json,
+                            outbox_sequence: None,
+                        },
+                    )),
+                },
+                "ContextPacketUseAck",
+                |frame| match frame {
+                    v1::ackplane_frame::Frame::ContextPacketUseAck(ack) => Ok(ack),
+                    other => Err(other),
+                },
+            )
+            .await?;
+        if ack.packet_id != receipt.packet_id {
+            return Err(ClientError::InvalidContext(
+                "receipt acknowledged another packet".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub async fn exchange_outbox_frame(&mut self, frame: v1::NodeFrame) -> Result<(), ClientError> {
+        if matches!(
+            &frame.frame,
+            Some(v1::node_frame::Frame::ContextPacketUseReport(_))
+        ) {
+            self.exchange(frame, "ContextPacketUseAck", |frame| match frame {
+                v1::ackplane_frame::Frame::ContextPacketUseAck(_) => Ok(()),
+                other => Err(other),
+            })
+            .await
+        } else {
+            self.exchange_supervisor_frame(frame).await.map(|_| ())
+        }
     }
 
     /// Return the durable receipt for a directive this supervisor processed.
@@ -354,5 +447,7 @@ fn frame_name(frame: &v1::ackplane_frame::Frame) -> &'static str {
         v1::ackplane_frame::Frame::AgentDirective(_) => "AgentDirective",
         v1::ackplane_frame::Frame::SupervisorFrameReceipt(_) => "SupervisorFrameReceipt",
         v1::ackplane_frame::Frame::WorkTaskReceipt(_) => "WorkTaskReceipt",
+        v1::ackplane_frame::Frame::ContextPacketReply(_) => "ContextPacketReply",
+        v1::ackplane_frame::Frame::ContextPacketUseAck(_) => "ContextPacketUseAck",
     }
 }

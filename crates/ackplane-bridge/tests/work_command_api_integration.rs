@@ -381,6 +381,53 @@ async fn every_command_kind_records_a_pending_confirmation_under_the_verified_lo
     }
 }
 
+/// Bridge-created tasks silently lost file scope, leaving worker leases empty.
+#[tokio::test]
+async fn confirmed_create_work_preserves_the_declared_worker_scope() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let unique = unique_id("work-command-api-scope");
+    let tenant_id = format!("tenant-{unique}");
+    let repository_id = format!("repository-{unique}");
+    enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
+    let app = application(&database_url, &tenant_id).await;
+    let uri = format!("/api/v1/repositories/{repository_id}/work/commands");
+    let payload = json!({
+        "kind": "create_work",
+        "task_id": "task:scoped",
+        "title": "Run a scoped worker",
+        "acceptance": "Write only the declared result file",
+        "goal_id": "goal:scoped",
+        "declared_paths": ["result.json"],
+        "declared_symbols": ["symbol:src/check.rs:check"],
+    });
+    let (status, pending) =
+        post_json(&app, &uri, envelope(&tenant_id, None, payload.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pending["status"], "pending_confirmation");
+    let confirmation = format!("{uri}/{}/confirm", pending["command_id"].as_str().unwrap());
+    let (status, executed) = post_json(&app, &confirmation, payload).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(executed["outcome"], "applied");
+    let pool = ackplane_server::db_pool::build_pool(
+        &database_url,
+        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
+    )
+    .unwrap();
+    let task = ackplane_server::work_store::WorkStore::connect(&pool)
+        .await
+        .unwrap()
+        .task_detail(&tenant_id, &repository_id, "task:scoped")
+        .await
+        .unwrap()
+        .unwrap()
+        .task;
+    assert_eq!(task.declared_paths, vec!["result.json"]);
+    assert_eq!(task.declared_symbols, vec!["symbol:src/check.rs:check"]);
+}
+
 /// A request `issuing_principal_id` that does not match the Bridge's own
 /// `tenant_id` is still refused, exactly as ADR-0142 clause 2 requires --
 /// the loopback profile is a real, un-forgeable principal, not a synonym

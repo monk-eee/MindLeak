@@ -18,7 +18,7 @@
 //! ```
 //!
 //! See `crates/ackplane-supervisor/README.md` for the full walkthrough,
-//! including what this daemon deliberately cannot do yet.
+//! including multi-runtime `--workers` configuration and recovery boundaries.
 
 use std::{process::ExitCode, time::Duration};
 
@@ -40,7 +40,36 @@ async fn main() -> ExitCode {
         )
         .init();
 
-    let config = match config::resolve(|name| std::env::var(name).ok()) {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    let workers = match arguments.as_slice() {
+        [] => None,
+        [flag] if flag == "--help" || flag == "-h" => {
+            println!("usage: ackplane-supervisor [--workers <workers.json>]\nWorker definitions name an executable, argument vector with one {{prompt}}, absolute working_directory, and branch. Enrollment and endpoint use the MINDLEAK_ACKPLANE_* environment variables.");
+            return ExitCode::SUCCESS;
+        }
+        [flag, path] if flag == "--workers" => match std::fs::read_to_string(path) {
+            Ok(json) if json.len() <= 64 * 1024 => Some(json),
+            Ok(_) => {
+                eprintln!("ackplane-supervisor: worker configuration exceeds 64 KiB");
+                return ExitCode::FAILURE;
+            }
+            Err(error) => {
+                eprintln!("ackplane-supervisor: could not read workers file: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        _ => {
+            eprintln!("usage: ackplane-supervisor [--workers <workers.json>]");
+            return ExitCode::FAILURE;
+        }
+    };
+    let config = match config::resolve(|name| {
+        if name == config::WORKERS_ENV {
+            workers.clone().or_else(|| std::env::var(name).ok())
+        } else {
+            std::env::var(name).ok()
+        }
+    }) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("ackplane-supervisor: {error}");
@@ -57,18 +86,57 @@ async fn main() -> ExitCode {
         state_dir = %config.state_dir.display(),
         "starting the Ackplane supervisor"
     );
-    tracing::warn!(
-        "no worker adapter is wired in, so this supervisor declares only the notify \
-         capability: a notification is complete once durably recorded, but any directive \
-         needing a worker (prompt, assign, steer, pause, resume, drain, terminate) will be \
-         durably receipted as refused (capability missing), never as applied"
-    );
+    if config.workers.is_empty() {
+        tracing::warn!(
+            "no workers configured; set ACKPLANE_SUPERVISOR_WORKERS to enable agent execution"
+        );
+    } else {
+        tracing::info!(
+            workers = config.workers.len(),
+            "starting configured worker runtimes with independent sessions and workspaces"
+        );
+    }
 
-    match daemon::run(&config, RECONNECT_DELAY).await {
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let run = daemon::run(&config, RECONNECT_DELAY, stopping);
+    tokio::pin!(run);
+    let result = tokio::select! {
+        result = &mut run => result,
+        signal = shutdown_signal() => {
+            match signal {
+                Ok(()) => {
+                    tracing::info!("stopping workers and flushing their durable receipts");
+                    stop.send_replace(true);
+                    match tokio::time::timeout(Duration::from_secs(30), &mut run).await {
+                        Ok(result) => result,
+                        Err(_) => Err(daemon::DaemonError::Worker(
+                            "shutdown deadline exceeded; unacknowledged receipts and run markers are retained".into(),
+                        )),
+                    }
+                }
+                Err(error) => Err(daemon::DaemonError::Worker(format!("shutdown signal handler failed: {error}"))),
+            }
+        }
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("ackplane-supervisor: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
 }

@@ -103,6 +103,31 @@ impl SupervisorOutbox {
         Ok(QueueOutcome::Queued)
     }
 
+    /// Allocate and stamp a durable receipt frame in the same transaction.
+    pub fn enqueue_next(&self, mut frame: v1::NodeFrame) -> Result<QueuedFrame, OutboxError> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let sequence = next_outbound_sequence(&transaction)?;
+        match frame.frame.as_mut() {
+            Some(v1::node_frame::Frame::DirectiveReceipt(receipt)) => {
+                receipt.outbox_sequence = Some(sequence as u64)
+            }
+            Some(v1::node_frame::Frame::SupervisorLifecycleReceipt(receipt)) => {
+                receipt.outbox_sequence = Some(sequence as u64)
+            }
+            Some(v1::node_frame::Frame::ContextPacketUseReport(receipt)) => {
+                receipt.outbox_sequence = Some(sequence as u64)
+            }
+            _ => return Err(OutboxError::UnsupportedFrame),
+        }
+        store_outbound_frame(&transaction, sequence, &frame.encode_to_vec())?;
+        record_outbound_sequence(&transaction, sequence)?;
+        transaction.commit()?;
+        Ok(QueuedFrame {
+            sequence: sequence as u64,
+            frame,
+        })
+    }
+
     /// Return the oldest pending frames in local sequence order.
     pub fn pending(&self, limit: u32) -> Result<Vec<QueuedFrame>, OutboxError> {
         if limit == 0 {
@@ -175,6 +200,8 @@ pub struct QueuedFrame {
 /// Durable-outbox errors are explicit so a future transport never guesses delivery state.
 #[derive(Debug, Error)]
 pub enum OutboxError {
+    #[error("frame does not support durable supervisor delivery")]
+    UnsupportedFrame,
     #[error("invalid supervisor declaration: {0}")]
     Supervisor(#[from] SupervisorError),
     #[error("supervisor session does not belong to the configured supervisor")]

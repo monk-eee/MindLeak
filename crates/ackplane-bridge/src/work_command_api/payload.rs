@@ -25,6 +25,10 @@ pub(super) enum WorkCommandPayloadRequest {
         acceptance: String,
         #[serde(default)]
         goal_id: Option<String>,
+        #[serde(default)]
+        declared_paths: Vec<String>,
+        #[serde(default)]
+        declared_symbols: Vec<String>,
     },
     RouteWork {
         route_reference: String,
@@ -97,11 +101,15 @@ pub(super) fn build_payload(
             title,
             acceptance,
             goal_id,
+            declared_paths,
+            declared_symbols,
         } => WorkCommandPayload::CreateWork(CreateWorkPayload {
             task_id,
             title,
             acceptance,
             goal_id,
+            declared_paths,
+            declared_symbols,
         }),
         WorkCommandPayloadRequest::RouteWork { route_reference } => {
             WorkCommandPayload::RouteWork(RouteWorkPayload { route_reference })

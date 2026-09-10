@@ -177,6 +177,27 @@ async fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            let context_service =
+                match ackplane_server::context_service::ContextService::connect(&db_pool).await {
+                    Ok(service) => service,
+                    Err(error) => {
+                        eprintln!("ackplane-server: could not connect context sources: {error}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+            let command_service =
+                match ackplane_server::work_command_store::WorkCommandService::connect(&db_pool)
+                    .await
+                {
+                    Ok(service) => service,
+                    Err(error) => {
+                        eprintln!(
+                            "ackplane-server: could not connect Work receipt processing: {error}"
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                };
+
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
@@ -210,7 +231,9 @@ async fn main() -> ExitCode {
                             max_in_flight_batches: config.max_in_flight_batches,
                             max_batch_bytes: config.max_batch_bytes,
                         },
-                    ),
+                    )
+                    .with_context_service(context_service)
+                    .with_work_command_service(command_service),
                 ))
                 .add_service(NodeEnrollmentServiceServer::new(
                     NodeEnrollmentService::new(enrollment_store),

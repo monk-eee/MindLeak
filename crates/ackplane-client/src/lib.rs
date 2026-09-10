@@ -114,6 +114,10 @@ async fn connect_channel_with_ca(
 /// Failure connecting to, or talking with, an Ackplane deployment.
 #[derive(Debug, Error)]
 pub enum ClientError {
+    #[error("{expected} acknowledgement deadline exceeded; reconnect before sending more frames")]
+    AcknowledgementTimeout { expected: &'static str },
+    #[error("invalid context packet: {0}")]
+    InvalidContext(String),
     #[error("`{0}` is not a valid Ackplane endpoint URI")]
     InvalidEndpoint(String),
     #[error("{TLS_CA_PATH_ENV}={0} could not be used as a trusted CA: {1}")]

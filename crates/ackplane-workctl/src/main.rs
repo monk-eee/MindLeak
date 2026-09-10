@@ -50,7 +50,7 @@ fn usage() -> String {
          [--delegation-id ID] [--policy-ref REF ...] <kind-specific flags>\n  \
          ackplane-workctl confirm <kind> --bridge-url URL --repository-id ID \
          --command-id ID <kind-specific flags>\n  \
-         ackplane-workctl help\n\nkinds: {}",
+         ackplane-workctl help\n\ncreate_work scope: repeat --path PATH and --symbol ID on submit and confirm.\n\nkinds: {}",
         KINDS.join(", ")
     )
 }
@@ -158,6 +158,8 @@ fn merge_payload_fields(
             body["task_id"] = json!(one(flags, "task-id")?);
             body["title"] = json!(one(flags, "title")?);
             body["acceptance"] = json!(one(flags, "acceptance")?);
+            body["declared_paths"] = json!(many(flags, "path"));
+            body["declared_symbols"] = json!(many(flags, "symbol"));
             if let Some(goal_id) = optional(flags, "goal-id") {
                 body["goal_id"] = json!(goal_id);
             }
@@ -303,4 +305,38 @@ fn confirm(args: &[String]) -> Result<ExitCode, String> {
         serde_json::to_string_pretty(&response).expect("a JSON value always re-serializes")
     );
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_work_keeps_repeatable_scope_flags_for_submission_and_confirmation() {
+        let arguments = [
+            "--task-id",
+            "task:scope",
+            "--title",
+            "Scoped work",
+            "--acceptance",
+            "Checks pass",
+            "--path",
+            "src/first.rs",
+            "--path",
+            "src/second.rs",
+            "--symbol",
+            "symbol:src/first.rs:check",
+        ];
+        let flags = parse_flags(&arguments.map(String::from)).unwrap();
+        let mut body = json!({});
+        merge_payload_fields(&mut body, "create_work", &flags).unwrap();
+        assert_eq!(
+            body["declared_paths"],
+            json!(["src/first.rs", "src/second.rs"])
+        );
+        assert_eq!(
+            body["declared_symbols"],
+            json!(["symbol:src/first.rs:check"])
+        );
+    }
 }

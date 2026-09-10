@@ -15,6 +15,7 @@ fn assignment(worker_id: &str, millis: u64) -> WorkerAssignment {
         worker_id: worker_id.to_string(),
         command: sleep_worker().to_string(),
         args: vec![millis.to_string()],
+        working_directory: std::env::temp_dir(),
     }
 }
 
@@ -78,6 +79,7 @@ fn refuses_a_command_that_cannot_spawn() {
         worker_id: "w1".to_string(),
         command: "this-binary-does-not-exist-anywhere".to_string(),
         args: vec![],
+        working_directory: std::env::temp_dir(),
     });
     assert!(matches!(result, Err(AdapterError::SpawnFailed(_))));
 }

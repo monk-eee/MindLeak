@@ -6,9 +6,11 @@
 //! not itself register.
 
 use std::collections::HashMap;
-use std::process::{Child, Command};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 use ackplane_protocol::supervisor::SupervisorWorkerState;
+use command_group::{CommandGroup, GroupChild};
 use thiserror::Error;
 
 /// A typed unit of work handed to a worker adapter. The adapter translates
@@ -21,6 +23,7 @@ pub struct WorkerAssignment {
     pub worker_id: String,
     pub command: String,
     pub args: Vec<String>,
+    pub working_directory: PathBuf,
 }
 
 /// A local, adapter-scoped refusal. This is distinct from the wire-level
@@ -28,6 +31,8 @@ pub struct WorkerAssignment {
 /// part of the closed protocol vocabulary Ackplane records receipts against.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AdapterError {
+    #[error("invalid worker assignment: {0}")]
+    InvalidAssignment(String),
     #[error("worker {0} is not registered with this adapter")]
     UnknownWorker(String),
     #[error("worker {0} is already registered")]
@@ -87,7 +92,7 @@ pub trait WorkerAdapter {
 /// the trait's default refusal rather than approximate them.
 #[derive(Default)]
 pub struct ProcessWorkerAdapter {
-    workers: HashMap<String, Child>,
+    workers: HashMap<String, GroupChild>,
 }
 
 impl ProcessWorkerAdapter {
@@ -103,7 +108,17 @@ impl WorkerAdapter for ProcessWorkerAdapter {
         }
         let child = Command::new(&assignment.command)
             .args(&assignment.args)
-            .spawn()
+            .current_dir(&assignment.working_directory)
+            .stdin(Stdio::null())
+            .env_clear()
+            .envs(std::env::vars_os().filter(|(name, _)| {
+                let name = name.to_string_lossy().to_ascii_uppercase();
+                !name.starts_with("ACKPLANE_")
+                    && !name.starts_with("MINDLEAK_ACKPLANE_")
+                    && !name.starts_with("LODESTAR_")
+                    && !matches!(name.as_str(), "DATABASE_URL" | "PGPASSWORD")
+            }))
+            .group_spawn()
             .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
         self.workers.insert(assignment.worker_id, child);
         Ok(())
@@ -123,12 +138,13 @@ impl WorkerAdapter for ProcessWorkerAdapter {
     }
 
     fn terminate(&mut self, worker_id: &str) -> Result<(), AdapterError> {
-        let mut child = self
+        let child = self
             .workers
-            .remove(worker_id)
+            .get_mut(worker_id)
             .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?;
         if matches!(child.try_wait(), Ok(Some(_))) {
             // Already exited, and `try_wait` reaped it on the way past.
+            self.workers.remove(worker_id);
             return Ok(());
         }
         child
@@ -139,7 +155,18 @@ impl WorkerAdapter for ProcessWorkerAdapter {
         child
             .wait()
             .map(|_| ())
-            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))
+            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
+        self.workers.remove(worker_id);
+        Ok(())
+    }
+}
+
+impl Drop for ProcessWorkerAdapter {
+    fn drop(&mut self) {
+        for child in self.workers.values_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -158,6 +185,7 @@ mod tests {
                 worker_id: "w1".to_string(),
                 command: "/bin/sleep".to_string(),
                 args: vec!["30".to_string()],
+                working_directory: std::env::temp_dir(),
             })
             .expect("a long-running child should spawn");
         let pid = adapter.workers["w1"].id();

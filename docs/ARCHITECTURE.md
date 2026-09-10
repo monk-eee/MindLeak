@@ -9,10 +9,12 @@ durable constitution, design, coordination, knowledge, and conformance ledger.
 
 The category is cooperative, not preemptive: the system schedules, arbitrates,
 remembers, governs, and audits, but it never preempts an agent, sandboxes a
-process, or blocks a write. What ships today is **MindLeak Core**, the local
-tier described below. *Ackplane* (federation, ADR-0082 to ADR-0088) and *the
-Bridge* (assurance operations, ADR-0090) are accepted designs whose services
-are not yet fully built. Ackplane now includes the repository-side contract and
+process, or blocks a write. What ships in the packaged release today is
+**MindLeak Core**, the local tier described below. *Ackplane* (federation,
+ADR-0082 to ADR-0088) and *the Bridge* (assurance operations, ADR-0090) are
+implemented and runnable from source — see the
+[Industrial quickstart](INDUSTRIAL-QUICKSTART.md) — but not yet part of that
+packaged release. Ackplane now includes the repository-side contract and
 the ledger-backed node synchronization transport described under
 `ackplane-core` and `ackplane-server` below.
 
@@ -390,9 +392,18 @@ It does not open a network listener. `reconcile.rs` is ADR-0116 decision 7's rec
 
 The position it compares against is now a genuinely independent one (ADR-0141, made implementable by ADR-0146). The supervisor stamps `outbox_sequence` — the position its own durable outbox assigned — onto every outbox-carried frame, today `DirectiveReceipt` alone; Ackplane records the maximum it has durably accepted per `(tenant_id, repository_id, supervisor_id)` in `supervisor_outbox_positions` and answers with it as `accepted_outbox_sequence` on the registration `SupervisorFrameReceipt`. Registration therefore now precedes the resend in `serve_once`, because the registration frame is the first point at which the server knows *which* supervisor it is talking to (`Hello` names only `producer_id`). Three properties keep this honest rather than a longer echo: the server never counts or interpolates, only records what a supervisor stated; the recorded position moves only upward, so a resend of an older frame cannot walk it backwards; and either side stating no position leaves the reconciliation unrun rather than deciding it against a fabricated zero. Relatedly, `receipt_digest` excludes `outbox_sequence` — a receipt's identity is the decision it records, not the outbox slot it was sent from, so a directive redelivered and receipted again from a later slot stays one receipt instead of becoming two.
 
-`daemon/mod.rs`, `daemon/frames.rs`, and `main.rs` are the runnable `ackplane-supervisor` binary (ADR-0116: "an enrolled supervisor is the only Industrial runtime endpoint"). `frames.rs` holds pure, I/O-free wire-frame builders (registration/session/heartbeat) split out so `mod.rs`'s `serve_once` reads as control flow. It resolves configuration from the same `MINDLEAK_ACKPLANE_*` variables `register-me` and the federated claim path already use, plus `ACKPLANE_SUPERVISOR_ID`/`_STATE_DIR`/`_HEARTBEAT_SECONDS`; refuses at startup naming every missing variable at once; then connects, registers, opens a session, heartbeats, and durably receipts each delivered directive. With no `WorkerAdapter` wired in it declares exactly one capability, `Notify` — a notification is complete once durably recorded, so accepting one is truthful — and declares none of the worker-driving capabilities, so Ackplane refuses to enqueue work it cannot do and an `Accepted` receipt for unperformed work is unreachable rather than merely unlikely (decision 10). A directive receipt is enqueued into the durable outbox before transmission and acknowledged only once Ackplane's own frame receipt confirms it, so one lost to a dropped connection is resent from the outbox on the next connect rather than depending on server-side redelivery; a non-retryable server refusal is dropped rather than resent forever. `serve_once` deliberately does **not** call `reconcile` on connect: `HelloAccepted.accepted_position` only echoes the `last_accepted_position` the client itself just sent, so comparing it against the outbox's own position could only ever answer `UpToDate` and an earlier revision that made this call was a dishonest guard, not a working one (recorded in `gaps.d/ackplane-never-reports-its-own-supervisor-position.md`; detecting a server genuinely ahead needs a wire-protocol change Ackplane does not yet make). `reconcile` itself stays correct and unit-tested for when that server-reported position exists.
+`daemon/mod.rs`, `daemon/runtime.rs`, `daemon/claims.rs`, `daemon/frames.rs`, and `main.rs` compose the runnable supervisor. A `--workers` JSON file or `ACKPLANE_SUPERVISOR_WORKERS` map declares up to 32 executable/argument/workspace/branch configurations. Each slot runs concurrently on a local async task set with its own signer and SQLite queues, and gets a fresh session per completed assignment. The runtime obtains and renews the task's authoritative lease, requests server-compiled context, validates its scope/digest/freshness, and launches the configured process. With no workers it declares only `Notify`; with workers it also declares `Assign` and force termination. Other process controls are explicitly unsupported. Directive effects are marked durably before launch, then recorded as applied/refused/failed; replay never launches a second worker. Context-use and lifecycle frames share the durable outbox and accepted-position reconciliation. A run marker remains until the worker has stopped and its receipts are acknowledged; an unaccounted process loss blocks slot reuse for operator recovery. Native worker processes are not a filesystem or network sandbox.
 
-`worker_adapter.rs` is ADR-0116 decisions 5 and 9's small, runtime-neutral `WorkerAdapter` trait: `start`/`observe`/`terminate` are mandatory, and `checkpoint`/`pause`/`drain` default to a typed `AdapterError::Unsupported` refusal an adapter overrides only when it can genuinely enforce the control, never approximated. `ProcessWorkerAdapter` is the reference implementation: it owns a map of local child processes, starts a declared command and argument vector (never a shell string, per decision 5's "cannot execute arbitrary shell strings"), and every method refuses to act on a `worker_id` it did not itself register with a distinct `UnknownWorker`/`DuplicateWorker` error rather than silently no-op'ing. `observe` maps a live/exited/failed child to `SupervisorWorkerState`; `terminate` kills a still-running child and is idempotent against one that already exited. Because checkpoint, pause, and drain are not honestly enforceable against a generic OS process, `ProcessWorkerAdapter` relies on the trait's default refusal rather than approximate them. Wiring it into the daemon so a directive is genuinely executed is a separate, deliberate change.
+`worker_adapter.rs` remains the runtime-neutral `WorkerAdapter` contract. `ProcessWorkerAdapter` owns process groups through `command-group`, refuses unknown/duplicate worker ids, uses an explicit working directory, and strips control-plane environment settings from children. `worker_command.rs` converts a validated, current packet into one structured prompt argument, separating mandatory requirements from optional evidence. The server cannot choose the executable or inject environment variables. Unsupported checkpoint/pause/drain requests retain the trait's typed refusal. Worker exit reports lifecycle state, never verified task completion.
+
+Shutdown signals propagate to every worker slot. The supervisor stops owned
+processes before recording termination, releases active leases, and flushes
+receipts within a thirty-second deadline; failed delivery retains recovery
+markers. Generated supervisor ids and configured names are safe for local queue
+filenames, including on Windows. Work creation carries explicit paths and
+symbols from the Bridge and `ackplane-workctl` into both the confirmed payload
+digest and the task projection, so public-API assignments have the same scope
+as natively published Work tasks.
 
 
 ### `ackplane-server` (binary)
@@ -440,6 +451,25 @@ is not evidence a supervisor acted; only the directive's own later receipt is.
 Authenticated `NodeSync` streams ingest `DirectiveReceipt` frames through that same ledger only after their tenant, repository, and node match the completed connection challenge. Ackplane returns a typed `SupervisorFrameReceipt` for a durable write or exact replay, resolving the supervisor only from the receipt's scoped session; unknown or cross-scope directives receive a generic refusal rather than a directive-existence disclosure. Outbound delivery (above) and the Bridge's own issuance route (`WorkCommandStore`/`work_command_api/` below) close the two ends this ingress path originally left open.
 
 `ContextPacketCompiler` (`context_packet_compiler.rs`) is ADR-0114's pure deterministic envelope compiler. It validates every candidate before selection, reserves mandatory governance, task, and evidence context under the requested token budget, and refuses when that mandatory set cannot fit. Optional candidates sort by relevance then stable identifier; each is included whole or retained as a typed budget exclusion. It returns the existing validated `ContextPacket` protocol contract and makes no model call, persistent write, authenticated transport, or action-authority decision; later service slices own those boundaries.
+
+`context_service/` connects that compiler to the authenticated NodeSync stream.
+Context requests must identify a pending assignment for the authenticated node
+and addressed session, a live claim matching the published task scope, and an
+adopted constitution. The service reads Work, current clauses, active
+decay-ranked knowledge, bounded projected graph relationships, and recent
+worker outcomes for retries. Mandatory text uses conservative UTF-8 byte counts
+as token estimates; the complete mandatory envelope must fit before optional
+material is admitted. Packets expire within sixty seconds and no later than
+their directive or lease, are stored immutably, and cannot contain another
+tenant's selections. Typed `ContextPacketRequest`/`ContextPacketUseReport`
+frames inherit the connection's authenticated identity; the client cannot
+select a tenant or supply its own policy candidates. Packet-use receipts are
+scoped, idempotent and durable. Prior worker outcomes remain observations, and
+candidate lessons require the existing activation workflow before influencing
+subsequent prompts. The production receipt acknowledgement also invokes the
+existing `WorkCommandService` to apply authenticated directive outcomes to Work
+before acknowledging them; merely storing a receipt no longer leaves the board
+unchanged. None of these paths invokes a model or certifies task completion.
 
 Authenticated `NodeSync` streams also accept the closed `WorkTaskCreate` frame for one native Industrial Work record. The frame carries only a node-scoped creation id and bounded task content; the completed connection challenge supplies tenant, repository, and publisher identity. Ackplane derives an opaque Work id from that authenticated identity and creation id, writes the current task projection and initial history event transactionally, and returns a typed `WorkTaskReceipt`. An exact retry returns the original Work id with `idempotent_replay`; changed content under the same creation id receives a non-retryable conflict. This is native Ackplane Work publication, not a Local Lodestar import: the Bridge remains a bounded read-only projection and exposes no Work mutation route.
 

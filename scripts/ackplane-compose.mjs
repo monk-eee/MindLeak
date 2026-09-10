@@ -1,9 +1,9 @@
 // Ackplane Compose lifecycle commands (ADR-0088 clauses 3, 7): a developer
-// types `docker compose` or `node` and nothing else, and backup, restore, and
+// types `docker compose`, `podman compose`, or `node` and nothing else, and backup, restore, and
 // reset are explicit operations rather than something pieced together from
 // `docker compose exec` invocations remembered by hand.
 //
-// Platform-agnostic: node + docker compose only. Usage:
+// Platform-agnostic: node + Docker Compose or Podman Compose. Usage:
 //   node scripts/ackplane-compose.mjs up                start postgres, migrate, ackplane
 //   node scripts/ackplane-compose.mjs down              stop the stack, keep the volume
 //   node scripts/ackplane-compose.mjs backup <file>      pg_dump the ledger to <file>
@@ -18,8 +18,26 @@ const POSTGRES_SERVICE = "postgres";
 const POSTGRES_USER = "ackplane";
 const POSTGRES_DB = "ackplane";
 
+function composeCommand(env = process.env, probe = execFileSync) {
+  const configured = env.MINDLEAK_COMPOSE_BIN;
+  if (configured) {
+    return configured;
+  }
+  for (const command of ["docker", "podman"]) {
+    try {
+      probe(command, ["compose", "version"], { stdio: "ignore" });
+      return command;
+    } catch {
+      // Try the next supported compose implementation.
+    }
+  }
+  throw new Error(
+    "neither docker nor podman compose is available; set MINDLEAK_COMPOSE_BIN",
+  );
+}
+
 function compose(args, options = {}) {
-  execFileSync("docker", ["compose", ...args], {
+  execFileSync(composeCommand(), ["compose", ...args], {
     stdio: "inherit",
     ...options,
   });
@@ -40,7 +58,7 @@ function backup(file) {
   const out = openSync(file, "w");
   try {
     execFileSync(
-      "docker",
+      composeCommand(),
       [
         "compose",
         "exec",
@@ -65,7 +83,7 @@ function restore(file) {
   }
   const dump = readFileSync(file);
   execFileSync(
-    "docker",
+    composeCommand(),
     [
       "compose",
       "exec",
@@ -127,4 +145,4 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   }
 }
 
-export { up, down, backup, restore, reset };
+export { composeCommand, up, down, backup, restore, reset };

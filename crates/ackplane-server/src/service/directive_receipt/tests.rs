@@ -212,6 +212,7 @@ async fn authenticated_receipts_persist_and_replay_with_a_supervisor_acknowledge
         &fixture.tenant_id,
         &fixture.repository_id,
         &fixture.supervisors,
+        None,
     )
     .await
     .expect("acknowledge persisted receipt");
@@ -244,6 +245,7 @@ async fn authenticated_receipts_persist_and_replay_with_a_supervisor_acknowledge
         &fixture.tenant_id,
         &fixture.repository_id,
         &fixture.supervisors,
+        None,
     )
     .await
     .expect("acknowledge replayed receipt");
