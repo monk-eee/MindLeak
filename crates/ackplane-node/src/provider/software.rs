@@ -13,8 +13,7 @@ use sha2::{Digest, Sha256};
 use crate::signer::{KeyHandle, NodeIdentity, NodeSignerError, Signature, SigningBinding};
 use crate::NodeSigner;
 
-/// A signing key that can only be constructed by generating fresh random
-/// material and whose `Debug` impl never renders its bytes. `ed25519-dalek`'s
+/// A provider-owned signing key whose `Debug` impl never renders its bytes. `ed25519-dalek`'s
 /// `zeroize` feature makes the wrapped `SigningKey` zero its memory on drop.
 struct SecretSigningKey(SigningKey);
 
@@ -105,6 +104,20 @@ impl SoftwareProvider {
     /// Creates a fresh provider with a newly generated active key.
     pub fn generate(tenant_id: &str, repository_id: &str, node_id: &str) -> Self {
         let active = ActiveKey::generate(tenant_id, repository_id, node_id, "key-1");
+        Self::from_active(active)
+    }
+
+    pub(super) fn from_seed(binding: &SigningBinding, seed: &[u8; 32]) -> Self {
+        Self::from_active(ActiveKey {
+            key_id: binding.key_id.clone(),
+            tenant_id: binding.tenant_id.clone(),
+            repository_id: binding.repository_id.clone(),
+            node_id: binding.node_id.clone(),
+            signing_key: SecretSigningKey(SigningKey::from_bytes(seed)),
+        })
+    }
+
+    fn from_active(active: ActiveKey) -> Self {
         Self {
             state: Mutex::new(SoftwareProviderState {
                 active,

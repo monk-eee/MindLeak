@@ -50,7 +50,7 @@ repository. They are provisional, not deadlines; reassess after STAB-03.
 | Task | Ledger ID | Status | Estimate | Acceptance Summary |
 | --- | --- | --- | --- | --- |
 | STAB-01: Reproducible build and database gate | `task:52eb3f6d82bd` | Merged, CI passed, required check enabled | 1-3 days | Fail closed without database/recovery prerequisites; migrate explicitly; compile every target; run all-feature workspace tests against disposable Postgres in CI and locally. |
-| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: durable activation; runtime handoff open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
+| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: persistent provider; runtime handoff open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
 | STAB-03: Real worker execution and isolation | `task:df1e790eefca` | Queued after STAB-02 | 5-10 days | Addressed, authenticated work drives a real configured worker with bounded current context in its own worktree; two-node isolation and peer-impersonation refusals pass. |
 | STAB-04: Completion and restart recovery | `task:a200ebd9ec16` | Queued after STAB-03 | 5-8 days | Attributed evidence and conformance govern completion; crashes, reconnects, duplicate messages, expired claims and lost outbox state cannot silently lose or repeat work. |
 | STAB-05: Shared context and honest freshness | `task:8edce4b7d4a9` | Queued after STAB-04 | 4-7 days | Enrolled-node embedding production feeds shared recall; invalidation, cross-tenant refusal and explicit unembedded/stale/unavailable states are tested. Resolve the Work freshness design mismatch explicitly. |
@@ -189,3 +189,47 @@ the protected enrollment state. Saving a receipt is not signer provisioning; see
 [runtime identity handoff gap](../gaps.d/enrollment-runtime-identity-handoff-is-not-wired.md).
 That remains STAB-02 work, not an invitation to generate a new key or to copy a
 private seed into dotenv.
+
+## Persistent Node Provider
+
+`ackplane-node::CredentialProvider` is an explicitly selected software provider
+for the existing `NodeSigner` interface. `provision` creates one new local key in
+the OS credential facility; `recover` only restores the previously recorded
+handle and identity. Neither call activates a node on Ackplane. The existing
+`enrol` API now accepts an optional opaque provider handle; a persistent provider
+requires one, while memory-only test providers pass `None`.
+
+The credential includes its tenant, repository, node and key binding. Local
+`enrolment.json` contains only public identity and a random handle, never the
+private seed. Recovery checks both records, and signing re-reads the credential
+so removal or replacement stops new signatures. Provisioning refuses existing
+state, metadata publication never overwrites a filesystem entry, and a failed
+publication removes only the newly created credential. Errors and debug output
+exclude secret bytes; transient secret buffers are zeroized.
+
+Tests cover restart, no-overwrite provisioning, metadata rebinding, replaced or
+missing credentials, write failure and redacted errors. An opt-in native test
+provisions a random test credential, releases the provider, launches a separate
+process, verifies a signature from the same restored public key, then deletes
+only that test credential. macOS and Windows CI explicitly enable the test:
+
+```bash
+cargo test --locked -p ackplane-node a_persistent_provider_survives_a_real_process_restart -- --nocapture
+```
+
+Set `MINDLEAK_REQUIRE_CREDENTIAL_FACILITY=1` to require that native test rather
+than skip it. It requires Keychain, Credential Manager or Linux Secret Service;
+the ordinary isolated tests do not access a real credential store.
+
+Local verification passed all 29 node tests with native credential access
+required, all-target/all-feature Clippy, and the full industrial gate: 2,588
+passed, zero failed and three existing ignored tests across 79 targets.
+Metadata-rebinding and no-overwrite regressions were checked in both failing and
+fixed forms. The native restart test removed its randomly addressed credential.
+
+This does not wire `register-me`, the supervisor or local planes to the provider,
+does not adopt an existing file-based key, and does not claim hardware-backed
+non-exportability. Persistent key rotation is refused, not approximated. The
+existing process-lock file can remain after a crash; automatic lock recovery
+and an uninterrupted signing lifecycle remain to be implemented. STAB-02 stays
+open until the real enrollment-to-runtime path uses this ownership model.

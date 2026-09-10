@@ -308,6 +308,31 @@ be the second arbiter ADR-0045 forbids.
 the refusal a repository sees names its actual remedy instead of asserting a
 rebuild that would not help.
 
+### `ackplane-node` (library)
+
+The repository-side identity owner's building blocks (ADR-0100), not yet a
+runnable companion integrated with the local planes or supervisor. `NodeSigner`
+exposes public identity and scoped signatures without a private-key export API.
+`SoftwareProvider` is memory-only. The explicitly selected `CredentialProvider`
+stores its software seed and tenant/repository/node/key binding in the operating
+system credential facility through `keyring`, addressed by a random opaque
+handle. Its atomic local enrollment record contains only the public identity,
+provider scheme and handle. Provisioning refuses an existing credential or
+record; recovery and every signature re-read the credential and refuse missing,
+malformed or mismatched state without generating a replacement. Secret buffers
+are zeroized after use and diagnostics omit credential-store payloads.
+
+The provider holds the existing repository process lock for its lifetime and
+refuses persistent rotation, retirement and destruction until those operations
+have an implemented durable lifecycle. Native CI proves recovery in a separate
+process on macOS Keychain and Windows Credential Manager. Linux Secret Service
+uses the same adapter but requires an available service for the opt-in native
+test. This is software key custody, not hardware non-exportability or remote
+enrollment: key-ID assignment, the approval ceremony and runtime clients still
+need to be connected. An ungraceful shutdown can leave the existing process-lock
+file behind and requires operator intervention; no automatic stale-lock removal
+is claimed.
+
 ### `ackplane-client` (library)
 
 The repository-side gRPC client for `ClaimDelegationService`

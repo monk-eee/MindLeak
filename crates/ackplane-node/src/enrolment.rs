@@ -13,7 +13,7 @@
 //! comparison ADR-0100 describes.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -33,12 +33,30 @@ pub struct EnrolmentRecord {
     pub repository_id: String,
     pub node_id: String,
     pub provider_scheme: String,
+    /// An opaque provider account, never a private seed. Required by persistent providers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_handle: Option<String>,
     pub signing_key_id: String,
     pub public_key: Vec<u8>,
     pub fingerprint: String,
 }
 
 impl EnrolmentRecord {
+    pub(crate) fn load(repository_state_dir: &Path) -> Result<Self, EnrolmentError> {
+        let path = record_path(repository_state_dir);
+        let bytes = fs::read(&path).map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                EnrolmentError::NoRecord(path.clone())
+            } else {
+                EnrolmentError::Io {
+                    path: path.clone(),
+                    source,
+                }
+            }
+        })?;
+        serde_json::from_slice(&bytes).map_err(|source| EnrolmentError::Parse { path, source })
+    }
+
     fn matches(&self, identity: &NodeIdentity, tenant_id: &str, repository_id: &str) -> bool {
         self.tenant_id == tenant_id
             && self.repository_id == repository_id
@@ -76,10 +94,12 @@ fn record_path(repository_state_dir: &Path) -> PathBuf {
 }
 
 /// First enrolment: captures `identity`'s public identity and persists it
-/// alongside `provider_scheme`, refusing if a record already exists (a
-/// restart should call [`recover`], not enrol again).
+/// alongside `provider_scheme` and an optional opaque handle, refusing if a
+/// record already exists (a restart should call [`recover`], not enrol again).
+/// Publication is atomic and never overwrites an existing filesystem entry.
 pub fn enrol(
     provider_scheme: &str,
+    provider_handle: Option<&str>,
     tenant_id: &str,
     repository_id: &str,
     identity: &NodeIdentity,
@@ -98,14 +118,30 @@ pub fn enrol(
         repository_id: repository_id.to_string(),
         node_id: identity.node_id.clone(),
         provider_scheme: provider_scheme.to_string(),
+        provider_handle: provider_handle.map(str::to_string),
         signing_key_id: identity.signing_key_id.clone(),
         public_key: identity.public_key.to_vec(),
         fingerprint: identity.fingerprint.clone(),
     };
     let bytes = serde_json::to_vec_pretty(&record).expect("EnrolmentRecord always serializes");
-    fs::write(&path, bytes).map_err(|source| EnrolmentError::Io {
-        path: path.clone(),
-        source,
+    let write = || -> io::Result<()> {
+        let mut temporary = tempfile::NamedTempFile::new_in(repository_state_dir)?;
+        temporary.write_all(&bytes)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist_noclobber(&path)
+            .map_err(|error| error.error)?;
+        Ok(())
+    };
+    write().map_err(|source| {
+        if source.kind() == io::ErrorKind::AlreadyExists {
+            EnrolmentError::AlreadyEnrolled(path.clone())
+        } else {
+            EnrolmentError::Io {
+                path: path.clone(),
+                source,
+            }
+        }
     })?;
     Ok(record)
 }
@@ -122,18 +158,7 @@ pub fn recover(
     repository_state_dir: &Path,
 ) -> Result<EnrolmentRecord, EnrolmentError> {
     let path = record_path(repository_state_dir);
-    if !path.exists() {
-        return Err(EnrolmentError::NoRecord(path));
-    }
-    let bytes = fs::read(&path).map_err(|source| EnrolmentError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    let record: EnrolmentRecord =
-        serde_json::from_slice(&bytes).map_err(|source| EnrolmentError::Parse {
-            path: path.clone(),
-            source,
-        })?;
+    let record = EnrolmentRecord::load(repository_state_dir)?;
     if !record.matches(identity, tenant_id, repository_id) {
         return Err(EnrolmentError::Mismatch(path));
     }
@@ -152,7 +177,15 @@ mod tests {
         let provider = SoftwareProvider::generate("tenant-a", "repo-a", "node-a");
         let identity = provider.identity();
 
-        let record = enrol("software-dev", "tenant-a", "repo-a", &identity, dir.path()).unwrap();
+        let record = enrol(
+            "software-dev",
+            None,
+            "tenant-a",
+            "repo-a",
+            &identity,
+            dir.path(),
+        )
+        .unwrap();
 
         assert_eq!(record.node_id, identity.node_id);
         assert_eq!(record.fingerprint, identity.fingerprint);
@@ -170,11 +203,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let provider = SoftwareProvider::generate("tenant-a", "repo-a", "node-a");
         let identity = provider.identity();
-        enrol("software-dev", "tenant-a", "repo-a", &identity, dir.path()).unwrap();
+        enrol(
+            "software-dev",
+            None,
+            "tenant-a",
+            "repo-a",
+            &identity,
+            dir.path(),
+        )
+        .unwrap();
 
-        let result = enrol("software-dev", "tenant-a", "repo-a", &identity, dir.path());
+        let result = enrol(
+            "software-dev",
+            None,
+            "tenant-a",
+            "repo-a",
+            &identity,
+            dir.path(),
+        );
 
         assert!(matches!(result, Err(EnrolmentError::AlreadyEnrolled(_))));
+    }
+
+    // A broken enrollment symlink used to look absent and let provisioning write through it.
+    #[cfg(unix)]
+    #[test]
+    fn enrollment_preserves_an_existing_dangling_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("missing-record.json");
+        let path = record_path(directory.path());
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let provider = SoftwareProvider::generate("tenant-test", "repo-test", "node-test");
+
+        let result = enrol(
+            "software-dev",
+            None,
+            "tenant-test",
+            "repo-test",
+            &provider.identity(),
+            directory.path(),
+        );
+
+        assert!(matches!(result, Err(EnrolmentError::AlreadyEnrolled(_))));
+        assert_eq!(fs::read_link(&path).unwrap(), target);
+        assert!(
+            !target.exists(),
+            "provisioning must not create the symlink's target"
+        );
     }
 
     #[test]
@@ -182,7 +257,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let provider = SoftwareProvider::generate("tenant-a", "repo-a", "node-a");
         let identity = provider.identity();
-        enrol("software-dev", "tenant-a", "repo-a", &identity, dir.path()).unwrap();
+        enrol(
+            "software-dev",
+            None,
+            "tenant-a",
+            "repo-a",
+            &identity,
+            dir.path(),
+        )
+        .unwrap();
 
         let recovered = recover("tenant-a", "repo-a", &identity, dir.path()).unwrap();
 
@@ -207,6 +290,7 @@ mod tests {
         let original_identity = original_provider.identity();
         enrol(
             "software-dev",
+            None,
             "tenant-a",
             "repo-a",
             &original_identity,

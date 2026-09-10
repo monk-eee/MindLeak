@@ -95,6 +95,11 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all
+      - name: Require a real persistent node signer restart (Windows)
+        if: matrix.os == 'windows-latest'
+        env:
+          MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
+        run: cargo test --locked -p ackplane-node a_persistent_provider_survives_a_real_process_restart -- --nocapture
       # gaps.d/the-credential-facility-signer-is-unverified-outside-windows.md:
       # this test already prints which branch it took, but a passing test's
       # stdout is otherwise discarded, so the distinction was invisible here.
@@ -132,6 +137,10 @@ jobs:
         env:
           MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
         run: cargo test -p ackplane-client a_stored_seed_round_trips_through_the_real_credential_facility -- --nocapture
+      - name: Require a real persistent node signer restart
+        env:
+          MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
+        run: cargo test --locked -p ackplane-node a_persistent_provider_survives_a_real_process_restart -- --nocapture
 
   # ADR-0088 keeps the repository-local planes usable without Ackplane's
   # container and PostgreSQL stack. Dependencies are installed before this
