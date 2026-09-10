@@ -18,7 +18,8 @@ fn oversized_binding_does_not_publish_an_unrecoverable_credential() {
         Err(CredentialProviderError::InvalidBinding)
     ));
     assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
-    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    assert!(directory.path().join("ackplane-node.lock").exists());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
 fn binding() -> SigningBinding {
@@ -184,7 +185,8 @@ fn failed_metadata_publication_cleans_up_only_the_new_credential() {
         std::fs::read(&path).unwrap(),
         b"a competing enrollment record"
     );
-    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    assert!(directory.path().join("ackplane-node.lock").exists());
+    assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 2);
 }
 
 #[test]

@@ -15,11 +15,3 @@
   enrollment-to-runtime across process restart without exporting a seed or
   silently replacing an existing credential. Left open under
   `task:f60a0347a46d`; provider persistence alone does not claim this is done.
-- **The node process lock does not recover automatically after a crash - OPEN.**
-  `crates/ackplane-node/src/process_lock.rs::NodeProcessLock` uses exclusive
-  creation and removes its file on `Drop`; a killed process can leave that file
-  behind. The persistent provider reuses this lock and safely refuses a second
-  owner, but a crashed node needs operator intervention before restart. Add
-  crash-safe ownership or verified stale-lock recovery without allowing two live
-  owners; test process termination and restart on the supported platforms. Left
-  open under STAB-02, not silently treated as a passing restart scenario.

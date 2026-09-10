@@ -322,16 +322,21 @@ record; recovery and every signature re-read the credential and refuse missing,
 malformed or mismatched state without generating a replacement. Secret buffers
 are zeroized after use and diagnostics omit credential-store payloads.
 
-The provider holds the existing repository process lock for its lifetime and
+The provider holds a kernel-backed repository file lock for its lifetime and
 refuses persistent rotation, retirement and destruction until those operations
-have an implemented durable lifecycle. Native CI proves recovery in a separate
-process on macOS Keychain and Windows Credential Manager. Linux Secret Service
+have an implemented durable lifecycle. `NodeProcessLock` uses `fs2` to refuse
+contenders without waiting and releases ownership when its file handle closes,
+including on process death. The lock file remains at its stable path; its PID
+is diagnostic, never proof of ownership, and removing it could split ownership
+across different files. Native CI proves recovery in a separate process after
+both normal and destructor-skipping exit on macOS Keychain and Windows
+Credential Manager. Linux Secret Service
 uses the same adapter but requires an available service for the opt-in native
 test. This is software key custody, not hardware non-exportability or remote
 enrollment: key-ID assignment, the approval ceremony and runtime clients still
-need to be connected. An ungraceful shutdown can leave the existing process-lock
-file behind and requires operator intervention; no automatic stale-lock removal
-is claimed.
+need to be connected. The lock coordinates cooperating processes on a local
+filesystem, not distributed hosts. Stop older marker-only node processes before
+upgrading; a live older process does not hold the new kernel lock.
 
 ### `ackplane-client` (library)
 

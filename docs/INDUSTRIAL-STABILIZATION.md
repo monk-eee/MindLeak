@@ -229,7 +229,31 @@ fixed forms. The native restart test removed its randomly addressed credential.
 
 This does not wire `register-me`, the supervisor or local planes to the provider,
 does not adopt an existing file-based key, and does not claim hardware-backed
-non-exportability. Persistent key rotation is refused, not approximated. The
-existing process-lock file can remain after a crash; automatic lock recovery
-and an uninterrupted signing lifecycle remain to be implemented. STAB-02 stays
-open until the real enrollment-to-runtime path uses this ownership model.
+non-exportability. Persistent key rotation is refused, not approximated. STAB-02
+stays open until the real enrollment-to-runtime path uses this ownership model.
+
+## Crash-Safe Ownership
+
+`NodeProcessLock` now uses a kernel-held exclusive file lock. A second process
+is refused while the owner is live; the OS releases the lock when the owner
+exits or is killed, even if Rust destructors never run. Restart does not delete
+or regenerate the key, credential handle or enrollment record.
+
+The `ackplane-node.lock` file intentionally remains after release. The PID in
+it is diagnostic, not an ownership decision. Never remove the file to clear a
+live lock: doing so can let two processes lock different files at the same
+path. An unlocked marker is reused automatically, with no PID reuse heuristics
+or stale-file timeout. These guarantees require a local filesystem and clients
+using this lock. Stop older marker-only node processes before upgrading.
+
+Process tests cover live-owner refusal, forced termination and restart,
+independent repositories, and graceful release without unlinking the marker.
+The native credential test also restores the same identity after a child exits
+without destructors. This closes the node's stale-lock restart gap; it does not
+claim worker-crash recovery, remote enrollment or a complete runtime handoff.
+
+Local verification: 29 node unit tests and five process-ownership tests pass
+with native credential access required. The full industrial gate passes 2,593
+tests with zero failures and three existing ignored tests across 80 targets;
+all-target/all-feature Clippy is clean. The stale-marker restart regression was
+confirmed failing against the old lock before this fix.

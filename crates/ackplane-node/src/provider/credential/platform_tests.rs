@@ -1,10 +1,12 @@
-use std::{path::PathBuf, process::Command};
+use std::{io::Write, path::PathBuf, process::Command};
 
 use ed25519_dalek::{Signature as EdSignature, VerifyingKey};
 
 use super::*;
 
 const CHILD_STATE: &str = "MINDLEAK_NODE_CREDENTIAL_RESTART_TEST";
+const EXIT_WITHOUT_DROP: &str = "MINDLEAK_NODE_CREDENTIAL_EXIT_WITHOUT_DROP";
+const RESTORED: &str = "restored-original-node-signature";
 const TEST_NAME: &str =
     "provider::credential::platform_tests::a_persistent_provider_survives_a_real_process_restart";
 
@@ -35,6 +37,11 @@ fn a_persistent_provider_survives_a_real_process_restart() {
                 &EdSignature::from_slice(signature.as_bytes()).unwrap(),
             )
             .unwrap();
+        println!("{RESTORED}");
+        std::io::stdout().flush().unwrap();
+        if std::env::var(EXIT_WITHOUT_DROP).as_deref() == Ok("1") {
+            std::process::exit(0);
+        }
         return;
     }
 
@@ -46,10 +53,14 @@ fn a_persistent_provider_survives_a_real_process_restart() {
     let record = EnrolmentRecord::load(directory.path()).unwrap();
     assert_eq!(record.public_key, original.public_key);
 
-    let result = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", TEST_NAME, "--nocapture"])
-        .env(CHILD_STATE, directory.path())
-        .output();
+    let results = [false, true, false].map(|abrupt| {
+        let result = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST_NAME, "--nocapture"])
+            .env(CHILD_STATE, directory.path())
+            .env(EXIT_WITHOUT_DROP, if abrupt { "1" } else { "0" })
+            .output();
+        (abrupt, result)
+    });
     let cleanup =
         CredentialProvider::entry(record.provider_handle.as_deref().unwrap()).and_then(|entry| {
             entry
@@ -58,16 +69,21 @@ fn a_persistent_provider_survives_a_real_process_restart() {
         });
     cleanup.expect("delete only the randomly addressed test credential");
 
-    let output = result.expect("the restart test child must start");
-    assert!(
-        output.status.success(),
-        "child stdout: {}\nchild stderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for (abrupt, result) in results {
+        let output = result.expect("the restart test child must start");
+        assert!(
+            output.status.success(),
+            "child stdout: {}\nchild stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(RESTORED));
+        if !abrupt {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+    }
     assert!(matches!(
         CredentialProvider::recover(&binding.tenant_id, &binding.repository_id, directory.path()),
         Err(CredentialProviderError::Facility(_))
     ));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
