@@ -105,10 +105,10 @@ pub(super) async fn run_approve(flags: HashMap<String, String>) -> Result<(), St
     );
 
     let pool = ackplane_server::db_pool::build_pool(&database_url, 1)
-        .map_err(|error| format!("could not build a database pool for {database_url}: {error}"))?;
+        .map_err(|error| format!("could not build the approval database pool: {error}"))?;
     let store = EnrollmentStore::connect(&pool)
         .await
-        .map_err(|error| format!("could not connect to {database_url}: {error}"))?;
+        .map_err(|error| format!("could not connect to the approval database: {error}"))?;
     let status = store
         .approve(&EnrollmentApproval {
             request_id,
@@ -247,4 +247,55 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
     println!();
     println!("{} is enrolled and synchronizing.", saved.node_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Approval errors used to print the password-bearing URL into captured terminal output.
+    #[tokio::test]
+    async fn approval_errors_preserve_failure_context_without_database_credentials() {
+        let password = "approval-password-must-not-be-logged";
+        for (database_url, expected_context) in [
+            (
+                format!("postgresql://admin:{password}@127.0.0.1:invalid/enrollment"),
+                "database pool",
+            ),
+            (
+                format!("host=127.0.0.1 password={password} port=invalid"),
+                "database pool",
+            ),
+            (
+                format!("postgresql://admin:{password}@127.0.0.1:1/enrollment?connect_timeout=1"),
+                "connect",
+            ),
+        ] {
+            let flags = HashMap::from([
+                ("request-id".to_string(), "request-test".to_string()),
+                ("tenant-id".to_string(), "tenant-test".to_string()),
+                ("repo".to_string(), "repository-test".to_string()),
+                ("fingerprint".to_string(), "fingerprint-test".to_string()),
+                ("admin-database-url".to_string(), database_url.clone()),
+            ]);
+
+            let error = tokio::time::timeout(std::time::Duration::from_secs(3), run_approve(flags))
+                .await
+                .expect("the local failure must be bounded")
+                .expect_err("invalid or unreachable database must refuse approval");
+
+            assert!(
+                !error.contains(password),
+                "approval error leaked a database password"
+            );
+            assert!(
+                !error.contains(&database_url),
+                "approval error repeated the connection string"
+            );
+            assert!(
+                error.contains(expected_context),
+                "approval error lost its failure category"
+            );
+        }
+    }
 }
