@@ -12,11 +12,3 @@
   enrollment-to-runtime across process restart without exporting a seed or
   silently replacing an existing credential. Left open under
   `task:f60a0347a46d`; the receipt-persistence change does not claim this is done.
-- **The activation response can still be lost before its local save.**
-  A process crash, transport loss or write failure after the server commits
-  activation but before `SavedRequest::record_activation` persists the response
-  can leave only the pending local record. `GetActivationChallenge` is not a
-  receipt-recovery operation. Add a possession-authenticated recovery of the
-  existing receipt and key binding, not a second activation or replacement key.
-  Exercise that exact failure window against the real service; left open under
-  the same STAB-02 recovery work.

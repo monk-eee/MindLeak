@@ -477,7 +477,12 @@ one real `NodeSync` stream, and sends a signed heartbeat event using the
 `state.rs` atomically records that key ID and receipt in the existing enrollment
 sidecar before synchronization, so a failed sync does not discard activation.
 New requests cannot replace saved enrollment; repeated activation reuses the
-record and still authenticates each NodeSync connection. `--skip-sync` reports
+record and still authenticates each NodeSync connection. Before submitting proof,
+the CLI persists the bound public challenge nonce so a lost activation response
+can be recovered through the existing exact-proof replay contract. A pending
+approval can refresh its challenge; an already consumed proof returns the
+original receipt and its original key, not a newer node key. The retry nonce is
+cleared only when the activation result has been saved. `--skip-sync` reports
 only recorded activation, not current authorization or liveness. Private key
 bytes remain outside this record; wiring an accepted persistent signer into the
 runtime is a separate STAB-02 requirement.

@@ -381,6 +381,7 @@ mod tests {
                     &approved.verifying_key().to_bytes(),
                 ),
                 grpc_endpoint: "http://127.0.0.1:1".to_string(),
+                activation_nonce: None,
                 activation: None,
             };
             let saved_bytes = serde_json::to_vec(&saved).unwrap();

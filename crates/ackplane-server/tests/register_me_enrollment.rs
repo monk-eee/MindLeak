@@ -1,6 +1,12 @@
-use std::{path::Path, process::Output, time::Duration};
+use std::{
+    path::Path,
+    process::Output,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use ackplane_protocol::v1::{
+    self, node_enrollment_service_server::NodeEnrollmentService as EnrollmentRpc,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer, FlowControl,
 };
@@ -14,7 +20,58 @@ use ackplane_server::{
 use serde_json::Value;
 use tokio::{process::Command, sync::oneshot};
 use tokio_stream::wrappers::TcpListenerStream;
-use tonic::transport::Server;
+use tonic::{transport::Server, Request, Response, Status};
+
+struct EnrollmentWithLostResponse {
+    inner: NodeEnrollmentService,
+    dropped: Option<Arc<Mutex<Option<v1::EnrollmentActivationResult>>>>,
+}
+
+#[tonic::async_trait]
+impl EnrollmentRpc for EnrollmentWithLostResponse {
+    async fn submit_enrollment_request(
+        &self,
+        request: Request<v1::EnrollmentRequest>,
+    ) -> Result<Response<v1::EnrollmentRequestStatus>, Status> {
+        self.inner.submit_enrollment_request(request).await
+    }
+
+    async fn get_activation_challenge(
+        &self,
+        request: Request<v1::EnrollmentChallengeRequest>,
+    ) -> Result<Response<v1::EnrollmentChallenge>, Status> {
+        self.inner.get_activation_challenge(request).await
+    }
+
+    async fn activate_enrollment(
+        &self,
+        request: Request<v1::EnrollmentActivationProof>,
+    ) -> Result<Response<v1::EnrollmentActivationResult>, Status> {
+        let response = self.inner.activate_enrollment(request).await?;
+        if let Some(dropped) = &self.dropped {
+            let mut original = dropped.lock().unwrap();
+            if original.is_none() {
+                *original = Some(response.get_ref().clone());
+                return Err(Status::unavailable("activation response lost after commit"));
+            }
+        }
+        Ok(response)
+    }
+
+    async fn rotate_node_key(
+        &self,
+        request: Request<v1::KeyRotationRequest>,
+    ) -> Result<Response<v1::KeyRotationResult>, Status> {
+        self.inner.rotate_node_key(request).await
+    }
+
+    async fn check_enrollment_status(
+        &self,
+        request: Request<v1::EnrollmentStatusRequest>,
+    ) -> Result<Response<v1::EnrollmentStatusResult>, Status> {
+        self.inner.check_enrollment_status(request).await
+    }
+}
 
 async fn run_cli(directory: &Path, args: &[&str]) -> Output {
     tokio::time::timeout(
@@ -35,6 +92,7 @@ async fn run_cli(directory: &Path, args: &[&str]) -> Output {
 async fn start_server(
     pool: &PgPool,
     with_sync: bool,
+    dropped: Option<Arc<Mutex<Option<v1::EnrollmentActivationResult>>>>,
 ) -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
     let enrollment = EnrollmentStore::connect(pool).await.unwrap();
     let sync = if with_sync {
@@ -54,7 +112,10 @@ async fn start_server(
     let server = tokio::spawn(async move {
         Server::builder()
             .add_service(NodeEnrollmentServiceServer::new(
-                NodeEnrollmentService::new(enrollment),
+                EnrollmentWithLostResponse {
+                    inner: NodeEnrollmentService::new(enrollment),
+                    dropped,
+                },
             ))
             .add_optional_service(sync)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
@@ -69,12 +130,24 @@ async fn start_server(
 // Activation used to discard its key ID and receipt before a failed sync, leaving no restart state.
 #[tokio::test]
 async fn activation_survives_a_failed_sync_and_a_cli_restart_without_replacing_identity() {
+    assert_activation_recovery(None).await;
+}
+
+// Losing an accepted response stranded the node; replay must recover the original receipt and key.
+#[tokio::test]
+async fn a_lost_activation_response_is_recovered_after_a_cli_restart() {
+    assert_activation_recovery(Some(Arc::new(Mutex::new(None)))).await;
+}
+
+async fn assert_activation_recovery(
+    dropped: Option<Arc<Mutex<Option<v1::EnrollmentActivationResult>>>>,
+) {
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
     };
     let pool = build_pool(&database_url, TEST_POOL_MAX_SIZE).unwrap();
-    let (endpoint, shutdown_tx, server) = start_server(&pool, false).await;
+    let (endpoint, shutdown_tx, server) = start_server(&pool, false, dropped.clone()).await;
     let directory = tempfile::tempdir().unwrap();
     let tenant = format!(
         "cli-{}-{}",
@@ -121,6 +194,42 @@ async fn activation_survives_a_failed_sync_and_a_cli_restart_without_replacing_i
         .unwrap();
 
     let activated = run_cli(directory.path(), &["activate", "--request-id", request_id]).await;
+    let activated = if dropped.is_some() {
+        assert!(!activated.status.success());
+        assert!(String::from_utf8_lossy(&activated.stderr)
+            .contains("activation response lost after commit"));
+        let interrupted_bytes = std::fs::read(&state_path).unwrap();
+        let interrupted: Value = serde_json::from_slice(&interrupted_bytes).unwrap();
+        assert!(interrupted["activation"].is_null());
+        assert_eq!(
+            interrupted["activation_nonce"].as_array().map(Vec::len),
+            Some(32),
+            "the original challenge must be saved before submitting the activation proof"
+        );
+        assert!(std::fs::read(&key_path).unwrap() == original_key);
+
+        let mut corrupted = interrupted.clone();
+        let first_byte = corrupted["activation_nonce"][0].as_u64().unwrap();
+        corrupted["activation_nonce"][0] = serde_json::json!(first_byte ^ 1);
+        let corrupted_bytes = serde_json::to_vec(&corrupted).unwrap();
+        std::fs::write(&state_path, &corrupted_bytes).unwrap();
+        let refused = run_cli(
+            directory.path(),
+            &["activate", "--request-id", request_id, "--skip-sync"],
+        )
+        .await;
+        assert!(
+            !refused.status.success(),
+            "a different nonce must not recover a receipt"
+        );
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("activate_enrollment failed"));
+        assert_eq!(std::fs::read(&state_path).unwrap(), corrupted_bytes);
+        std::fs::write(&state_path, &interrupted_bytes).unwrap();
+
+        run_cli(directory.path(), &["activate", "--request-id", request_id]).await
+    } else {
+        activated
+    };
     assert!(
         !activated.status.success(),
         "this fixture intentionally has no NodeSync service"
@@ -128,6 +237,25 @@ async fn activation_survives_a_failed_sync_and_a_cli_restart_without_replacing_i
     assert!(String::from_utf8_lossy(&activated.stderr).contains("could not open NodeSync"));
     let saved_bytes = std::fs::read(&state_path).unwrap();
     let saved: Value = serde_json::from_slice(&saved_bytes).unwrap();
+
+    if let Some(dropped) = &dropped {
+        let original = dropped.lock().unwrap();
+        let original = original
+            .as_ref()
+            .expect("the server committed one activation");
+        assert_eq!(
+            saved["activation"]["signing_key_id"],
+            original.signing_key_id
+        );
+        assert_eq!(
+            saved["activation"]["enrolment_receipt_id"],
+            original.enrolment_receipt_id
+        );
+        assert!(
+            saved["activation_nonce"].is_null(),
+            "completed activation needs no retry nonce"
+        );
+    }
 
     shutdown_tx.send(()).unwrap();
     server.await.unwrap();
@@ -178,7 +306,7 @@ async fn activation_survives_a_failed_sync_and_a_cli_restart_without_replacing_i
     assert_eq!(std::fs::read(&state_path).unwrap(), saved_bytes);
     assert!(std::fs::read(&key_path).unwrap() == original_key);
 
-    let (endpoint, shutdown_tx, server) = start_server(&pool, true).await;
+    let (endpoint, shutdown_tx, server) = start_server(&pool, true, None).await;
     for _attempt in 0..2 {
         let connected = run_cli(
             directory.path(),
@@ -200,6 +328,25 @@ async fn activation_survives_a_failed_sync_and_a_cli_restart_without_replacing_i
         assert_eq!(std::fs::read(&state_path).unwrap(), saved_bytes);
         assert!(std::fs::read(&key_path).unwrap() == original_key);
     }
+    let connection = pool.get().await.unwrap();
+    let counts = connection
+        .query_one(
+            "SELECT (SELECT count(*) FROM enrollment_receipts WHERE tenant_id = $1), \
+         (SELECT count(*) FROM signing_keys WHERE tenant_id = $1)",
+            &[&tenant],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        counts.get::<_, i64>(0),
+        1,
+        "replay must not create another receipt"
+    );
+    assert_eq!(
+        counts.get::<_, i64>(1),
+        1,
+        "replay must not provision a replacement key"
+    );
     shutdown_tx.send(()).unwrap();
     server.await.unwrap();
 }

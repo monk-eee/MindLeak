@@ -168,9 +168,24 @@ Unit tests cover missing fields, wrong requests, rejected responses, file-write
 failure and no-overwrite request persistence. Approval errors also retain their
 failure category without repeating the password-bearing database URL.
 
-There is still a recovery boundary: a process or disk failure after Ackplane
-accepts activation but before the local response is saved needs a server-backed
-receipt recovery path. Saving a receipt is also not signer provisioning; see the
+The CLI also records the public `activation_nonce` before submitting proof. If
+Ackplane commits activation but its response is lost, a new CLI process signs
+that same nonce with the same approved key and uses the existing exact-replay
+contract to recover the original receipt and key ID. A still-pending approval
+may return a refreshed challenge; receipt persistence clears the retry nonce.
+Failed writes preserve the previous retry state. No private seed or reusable
+signature is saved in the sidecar.
+
+The fault-injection test deliberately drops a successful server response and
+then restarts the CLI. A corrupted nonce is refused, a valid retry returns the
+original result, and the database still contains exactly one receipt and key.
+The server's replay lookup now binds the key to that original receipt instead
+of selecting the newest key for the same node. Existing proof verification and
+bootstrap expiry checks remain in force; this is recovery of a recorded result,
+not permission to reactivate an expired enrollment or claim current authority.
+
+Losing the whole sidecar, including the retry nonce, still requires restoring
+the protected enrollment state. Saving a receipt is not signer provisioning; see the
 [runtime identity handoff gap](../gaps.d/enrollment-runtime-identity-handoff-is-not-wired.md).
-These remain STAB-02 work, not an invitation to generate a new key or to copy a
+That remains STAB-02 work, not an invitation to generate a new key or to copy a
 private seed into dotenv.
