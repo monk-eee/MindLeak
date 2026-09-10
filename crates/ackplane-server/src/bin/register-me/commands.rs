@@ -18,6 +18,17 @@ pub(super) async fn run_request(flags: HashMap<String, String>) -> Result<(), St
         .unwrap_or_else(|| vec!["synchronize".to_string()]);
 
     let path = key_path(&flags);
+    let state = state_path(&path);
+    match std::fs::symlink_metadata(&state) {
+        Ok(_) => {
+            return Err(format!(
+                "saved enrollment already exists at {}; resume activation instead of creating a replacement request",
+                state.display()
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", state.display())),
+    }
     let signing_key =
         load_or_generate_key(&path).map_err(|error| format!("key {}: {error}", path.display()))?;
     let public_key = signing_key.verifying_key().to_bytes().to_vec();
@@ -59,13 +70,9 @@ pub(super) async fn run_request(flags: HashMap<String, String>) -> Result<(), St
         node_id: node_id.clone(),
         public_key_fingerprint: fingerprint.clone(),
         grpc_endpoint: grpc_endpoint.clone(),
+        activation: None,
     };
-    let state = state_path(&path);
-    std::fs::write(
-        &state,
-        serde_json::to_vec_pretty(&saved).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("could not write {}: {error}", state.display()))?;
+    saved.save(&state)?;
 
     println!("submitted: {status:?}");
     println!("key saved at {}", path.display());
@@ -128,10 +135,7 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
     let request_id = require(&flags, "request-id")?.to_string();
     let path = key_path(&flags);
     let state = state_path(&path);
-    let saved: SavedRequest = serde_json::from_slice(
-        &std::fs::read(&state).map_err(|error| format!("{}: {error}", state.display()))?,
-    )
-    .map_err(|error| format!("{}: {error}", state.display()))?;
+    let mut saved = SavedRequest::load(&state)?;
     if saved.request_id != request_id {
         return Err(format!(
             "{} was saved for request {}, not {request_id}",
@@ -142,7 +146,7 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
     let grpc_endpoint = flags
         .get("grpc-endpoint")
         .cloned()
-        .unwrap_or(saved.grpc_endpoint);
+        .unwrap_or_else(|| saved.grpc_endpoint.clone());
     let signing_key =
         load_key(&path).map_err(|error| format!("key {}: {error}", path.display()))?;
     if public_key_fingerprint(&signing_key.verifying_key().to_bytes())
@@ -154,44 +158,55 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
         ));
     }
 
-    let channel = ackplane_client::connect_channel(&grpc_endpoint)
-        .await
-        .map_err(|error| format!("could not reach {grpc_endpoint}: {error}"))?;
-    let mut enrollment_client = NodeEnrollmentServiceClient::new(channel);
-    let challenge = enrollment_client
-        .get_activation_challenge(Request::new(v1::EnrollmentChallengeRequest {
-            request_id: request_id.clone(),
-            tenant_id: saved.tenant_id.clone(),
-            repository_id: saved.repository_id.clone(),
-            proposed_node_id: saved.node_id.clone(),
-            public_key_fingerprint: saved.public_key_fingerprint.clone(),
-        }))
-        .await
-        .map_err(|error| format!("get_activation_challenge failed: {error}"))?
-        .into_inner();
-    let proof_bytes = activation_challenge_bytes(
-        &challenge.nonce,
-        &request_id,
-        &saved.tenant_id,
-        &saved.repository_id,
-        &saved.node_id,
-        &saved.public_key_fingerprint,
+    if saved.activation.is_none() {
+        let channel = ackplane_client::connect_channel(&grpc_endpoint)
+            .await
+            .map_err(|error| format!("could not reach the enrollment service: {error}"))?;
+        let mut enrollment_client = NodeEnrollmentServiceClient::new(channel);
+        let challenge = enrollment_client
+            .get_activation_challenge(Request::new(v1::EnrollmentChallengeRequest {
+                request_id: request_id.clone(),
+                tenant_id: saved.tenant_id.clone(),
+                repository_id: saved.repository_id.clone(),
+                proposed_node_id: saved.node_id.clone(),
+                public_key_fingerprint: saved.public_key_fingerprint.clone(),
+            }))
+            .await
+            .map_err(|error| format!("get_activation_challenge failed: {error}"))?
+            .into_inner();
+        let proof_bytes = activation_challenge_bytes(
+            &challenge.nonce,
+            &request_id,
+            &saved.tenant_id,
+            &saved.repository_id,
+            &saved.node_id,
+            &saved.public_key_fingerprint,
+        );
+        let signature = signing_key.sign(&proof_bytes).to_bytes().to_vec();
+        let response = enrollment_client
+            .activate_enrollment(Request::new(v1::EnrollmentActivationProof {
+                request_id: request_id.clone(),
+                tenant_id: saved.tenant_id.clone(),
+                repository_id: saved.repository_id.clone(),
+                proposed_node_id: saved.node_id.clone(),
+                public_key_fingerprint: saved.public_key_fingerprint.clone(),
+                nonce: challenge.nonce.clone(),
+                signature,
+            }))
+            .await
+            .map_err(|error| format!("activate_enrollment failed: {error}"))?
+            .into_inner();
+        saved.grpc_endpoint = grpc_endpoint.clone();
+        saved.record_activation(&state, &response)?;
+    }
+    let activation = saved
+        .activation
+        .as_ref()
+        .ok_or("no recorded activation identity")?;
+    println!(
+        "recorded activation: signing_key_id={} enrolment_receipt_id={}; current authority is verified by NodeSync",
+        activation.signing_key_id, activation.enrolment_receipt_id
     );
-    let signature = signing_key.sign(&proof_bytes).to_bytes().to_vec();
-    let activation = enrollment_client
-        .activate_enrollment(Request::new(v1::EnrollmentActivationProof {
-            request_id: request_id.clone(),
-            tenant_id: saved.tenant_id.clone(),
-            repository_id: saved.repository_id.clone(),
-            proposed_node_id: saved.node_id.clone(),
-            public_key_fingerprint: saved.public_key_fingerprint.clone(),
-            nonce: challenge.nonce.clone(),
-            signature,
-        }))
-        .await
-        .map_err(|error| format!("activate_enrollment failed: {error}"))?
-        .into_inner();
-    println!("activated: {activation:?}");
 
     if flags.contains_key("skip-sync") {
         return Ok(());
