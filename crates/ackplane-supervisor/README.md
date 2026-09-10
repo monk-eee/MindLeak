@@ -117,16 +117,22 @@ only after fixing the previous one.
 - **Connection dropped or acknowledgement stalled** - reconnects after a short
   delay. Acknowledgement waits are bounded to ten seconds. Active leases are
   renewed; failed renewal stops the owned worker rather than inventing authority.
+  Frames accepted by the server whose acknowledgements were lost remain in the
+  outbox and are replayed idempotently, including during shutdown.
 - **Unaccounted previous run** - refuses to reuse that worker slot. Its
   `<slot>.worker-run.json` marker identifies the session, workspace and durable
   queue files. Preserve that evidence and inspect the old process tree and
   receipts before operator recovery; deleting the marker is not proof the old
   worker stopped. Automatic recovery after process loss is not implemented.
-- **`Ackplane holds supervisor evidence this node cannot account for`** — stops
-  deliberately. The server has accepted more than this supervisor's durable
-  state can describe, which means local state was lost (restored from an older
-  copy, or truncated). Reconnecting cannot restore it, and resuming would hide
-  it, so the daemon reports and exits for a person to investigate.
+- **Server position outside the recoverable outbox interval** - stops
+  deliberately. A position beyond the last locally enqueued frame means local
+  evidence was lost; a position below the acknowledged boundary means the server
+  needs frames already pruned locally. Retained frames alone cannot repair either
+  gap, so the daemon preserves state for operator recovery.
+
+Normal worker completion cleans up its owned process group before a terminal
+lifecycle is reported. A parent process exiting does not permit a remaining
+descendant to continue writing after the task lease is released.
 
 ## Verify The Loop
 

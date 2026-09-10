@@ -96,3 +96,73 @@ fn checkpoint_pause_and_drain_are_honestly_unsupported_not_approximated() {
     assert_eq!(adapter.drain("w1"), Err(AdapterError::Unsupported("drain")));
     adapter.terminate("w1").unwrap();
 }
+
+/// A reaped leader left its descendant running after completion and termination,
+/// allowing writes to continue after the supervisor released the worker's lease.
+#[cfg(unix)]
+#[test]
+fn an_exited_group_leader_does_not_leave_a_live_descendant() {
+    use std::{
+        io::{ErrorKind, Read, Write},
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut adapter = ProcessWorkerAdapter::new();
+    adapter
+        .start(WorkerAssignment {
+            worker_id: "parent".into(),
+            command: sleep_worker().into(),
+            args: vec![
+                "--spawn-descendant".into(),
+                listener.local_addr().unwrap().to_string(),
+            ],
+            working_directory: std::env::temp_dir(),
+        })
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "descendant never connected");
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("fixture accept failed: {error}"),
+        }
+    };
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut response = [0_u8; 1];
+    stream.read_exact(&mut response).unwrap();
+    assert_eq!(&response, b"R");
+    while adapter.observe("parent").unwrap() == SupervisorWorkerState::Started {
+        assert!(Instant::now() < deadline, "group leader did not exit");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        adapter.observe("parent").unwrap(),
+        SupervisorWorkerState::Completed
+    );
+    let _ = stream.write_all(b"?");
+    match stream.read(&mut response) {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
+            ) => {}
+        other => panic!("descendant survived completed worker cleanup: {other:?}"),
+    }
+    assert_eq!(
+        adapter.observe("parent").unwrap(),
+        SupervisorWorkerState::Completed
+    );
+    adapter.terminate("parent").unwrap();
+}

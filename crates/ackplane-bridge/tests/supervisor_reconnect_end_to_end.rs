@@ -402,6 +402,7 @@ async fn a_supervisor_that_lost_durable_state_reports_a_gap_rather_than_resuming
         outcome,
         Reconciliation::IncompleteEvidence {
             local_acknowledged: 0,
+            local_last_enqueued: 0,
             server_accepted: 5
         }
     );

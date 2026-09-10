@@ -40,6 +40,7 @@ pub enum DaemonExit {
     /// rather than resumed (ADR-0116 decision 3); an operator decides.
     IncompleteEvidence {
         local_acknowledged: u64,
+        local_last_enqueued: u64,
         server_accepted: u64,
     },
 }
@@ -196,16 +197,19 @@ async fn serve_once(
         match reconcile(positions, server_accepted) {
             Reconciliation::IncompleteEvidence {
                 local_acknowledged,
+                local_last_enqueued,
                 server_accepted,
             } => {
                 tracing::error!(
                     local_acknowledged,
+                    local_last_enqueued,
                     server_accepted,
-                    "Ackplane has durably accepted supervisor frames this outbox cannot \
-                     account for; stopping rather than resuming on incomplete evidence"
+                    "Ackplane's receipt position is outside this outbox's recoverable \
+                     interval; stopping rather than resuming on incomplete evidence"
                 );
                 return Ok(DaemonExit::IncompleteEvidence {
                     local_acknowledged,
+                    local_last_enqueued,
                     server_accepted,
                 });
             }
@@ -434,17 +438,20 @@ async fn run_session(
             }
             DaemonExit::IncompleteEvidence {
                 local_acknowledged,
+                local_last_enqueued,
                 server_accepted,
             } => {
                 tracing::error!(
                     local_acknowledged,
+                    local_last_enqueued,
                     server_accepted,
-                    missing = server_accepted.saturating_sub(local_acknowledged),
-                    "Ackplane holds supervisor evidence this node cannot account for; \
+                    missing = server_accepted.saturating_sub(local_last_enqueued)
+                        + local_acknowledged.saturating_sub(server_accepted),
+                    "Ackplane and this outbox cannot reconcile retained supervisor evidence; \
                      refusing to resume. Investigate the durable state before restarting."
                 );
                 return Err(DaemonError::Worker(
-                    "server evidence is ahead of this runtime's durable state".into(),
+                    "server evidence is outside this runtime's recoverable interval".into(),
                 ));
             }
         }

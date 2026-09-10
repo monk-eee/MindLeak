@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 use ackplane_protocol::supervisor::SupervisorWorkerState;
 use command_group::{CommandGroup, GroupChild};
@@ -92,7 +92,52 @@ pub trait WorkerAdapter {
 /// the trait's default refusal rather than approximate them.
 #[derive(Default)]
 pub struct ProcessWorkerAdapter {
-    workers: HashMap<String, GroupChild>,
+    workers: HashMap<String, WorkerProcess>,
+}
+
+enum WorkerProcess {
+    Running(GroupChild),
+    Finished(ExitStatus),
+}
+
+impl WorkerProcess {
+    fn stop(&mut self) -> Result<(), AdapterError> {
+        let Self::Running(child) = self else {
+            return Ok(());
+        };
+        if let Err(error) = child.kill() {
+            #[cfg(unix)]
+            let group_gone = error.raw_os_error() == Some(nix::errno::Errno::ESRCH as i32);
+            #[cfg(not(unix))]
+            let group_gone = error.kind() == std::io::ErrorKind::InvalidInput;
+            if !group_gone {
+                return Err(AdapterError::SpawnFailed(error.to_string()));
+            }
+        }
+        let status = child
+            .wait()
+            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
+        *self = Self::Finished(status);
+        Ok(())
+    }
+
+    fn observe(&mut self) -> Result<SupervisorWorkerState, AdapterError> {
+        if let Self::Running(child) = self {
+            if child
+                .try_wait()
+                .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?
+                .is_none()
+            {
+                return Ok(SupervisorWorkerState::Started);
+            }
+            self.stop()?;
+        }
+        match self {
+            Self::Finished(status) if status.success() => Ok(SupervisorWorkerState::Completed),
+            Self::Finished(_) => Ok(SupervisorWorkerState::Failed),
+            Self::Running(_) => Ok(SupervisorWorkerState::Started),
+        }
+    }
 }
 
 impl ProcessWorkerAdapter {
@@ -120,42 +165,23 @@ impl WorkerAdapter for ProcessWorkerAdapter {
             }))
             .group_spawn()
             .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
-        self.workers.insert(assignment.worker_id, child);
+        self.workers
+            .insert(assignment.worker_id, WorkerProcess::Running(child));
         Ok(())
     }
 
     fn observe(&mut self, worker_id: &str) -> Result<SupervisorWorkerState, AdapterError> {
-        let child = self
-            .workers
+        self.workers
             .get_mut(worker_id)
-            .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?;
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => Ok(SupervisorWorkerState::Completed),
-            Ok(Some(_)) => Ok(SupervisorWorkerState::Failed),
-            Ok(None) => Ok(SupervisorWorkerState::Started),
-            Err(error) => Err(AdapterError::SpawnFailed(error.to_string())),
-        }
+            .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?
+            .observe()
     }
 
     fn terminate(&mut self, worker_id: &str) -> Result<(), AdapterError> {
-        let child = self
-            .workers
+        self.workers
             .get_mut(worker_id)
-            .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?;
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            // Already exited, and `try_wait` reaped it on the way past.
-            self.workers.remove(worker_id);
-            return Ok(());
-        }
-        child
-            .kill()
-            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
-        // `kill` only signals. Without this the child stays a zombie on Unix,
-        // because `Child`'s `Drop` does not reap either.
-        child
-            .wait()
-            .map(|_| ())
-            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
+            .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?
+            .stop()?;
         self.workers.remove(worker_id);
         Ok(())
     }
@@ -163,9 +189,8 @@ impl WorkerAdapter for ProcessWorkerAdapter {
 
 impl Drop for ProcessWorkerAdapter {
     fn drop(&mut self) {
-        for child in self.workers.values_mut() {
-            let _ = child.kill();
-            let _ = child.wait();
+        for worker in self.workers.values_mut() {
+            let _ = worker.stop();
         }
     }
 }
@@ -188,7 +213,10 @@ mod tests {
                 working_directory: std::env::temp_dir(),
             })
             .expect("a long-running child should spawn");
-        let pid = adapter.workers["w1"].id();
+        let WorkerProcess::Running(child) = &adapter.workers["w1"] else {
+            panic!("fixture worker should still be running");
+        };
+        let pid = child.id();
 
         adapter.terminate("w1").expect("terminate should succeed");
 
