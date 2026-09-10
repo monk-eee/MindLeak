@@ -37,7 +37,6 @@ use std::{
 };
 
 use ed25519_dalek::Signer;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tonic::Request;
 
@@ -48,18 +47,6 @@ use ackplane_server::enrollment_store::{EnrollmentApproval, EnrollmentStore};
 use ackplane_server::envelope_signature::envelope_signing_bytes;
 
 const DEFAULT_GRPC_ENDPOINT: &str = "http://127.0.0.1:8443";
-
-/// Enrollment state `request` saves and `activate` reads back, so the node
-/// only has to type its request id a second time, never re-derive anything.
-#[derive(Serialize, Deserialize)]
-struct SavedRequest {
-    request_id: String,
-    tenant_id: String,
-    repository_id: String,
-    node_id: String,
-    public_key_fingerprint: String,
-    grpc_endpoint: String,
-}
 
 fn now_rfc3339() -> String {
     time::OffsetDateTime::now_utc()
@@ -90,7 +77,9 @@ fn parse_flags(args: &[String]) -> HashMap<String, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if let Some(name) = arg.strip_prefix("--") {
-            if let Some(value) = iter.next() {
+            if name == "skip-sync" {
+                flags.insert(name.to_string(), String::new());
+            } else if let Some(value) = iter.next() {
                 flags.insert(name.to_string(), value.clone());
             }
         }
@@ -140,8 +129,10 @@ fn resolve_tenant_id(flags: &HashMap<String, String>) -> Result<String, String> 
 
 mod commands;
 mod keys;
+mod state;
 
 use keys::{load_key, load_or_generate_key};
+use state::SavedRequest;
 
 fn print_usage() {
     eprintln!(
@@ -157,6 +148,9 @@ fn print_usage() {
          `--key-path` defaults to the same repository-local path on every subcommand\n\
          (see `ackplane_client::identity::DEFAULT_KEY_PATH`; override with\n\
          `MINDLEAK_ACKPLANE_KEY_PATH` or an explicit flag).\n\n\
+         Activation saves the assigned key ID and receipt before attempting NodeSync.\n\
+         Repeating `activate` reuses that record; `--skip-sync` reports recorded activation\n\
+         only and does not verify that the node is currently live or authorized.\n\n\
          `--tenant-name` + `--salt-path` derive the same tenant id the Bridge queries for --\n\
          use it, or the enrolled repository will never appear there.\n\
          `--tenant-id` is a raw override for a deployment that assigns tenant ids some other way.\n\n\
@@ -211,6 +205,22 @@ mod tests {
         assert_eq!(flags.get("repo").map(String::as_str), Some("r"));
         assert_eq!(flags.get("node").map(String::as_str), Some("n"));
         assert_eq!(flags.len(), 2);
+    }
+
+    #[test]
+    fn parse_flags_keeps_skip_sync_separate_from_value_flags() {
+        for args in [
+            ["--skip-sync", "--request-id", "request-test"],
+            ["--request-id", "request-test", "--skip-sync"],
+        ] {
+            let flags = parse_flags(&args.map(str::to_string));
+            assert!(flags.contains_key("skip-sync"));
+            assert_eq!(
+                flags.get("request-id").map(String::as_str),
+                Some("request-test")
+            );
+            assert_eq!(flags.len(), 2);
+        }
     }
 
     #[test]
@@ -371,6 +381,7 @@ mod tests {
                     &approved.verifying_key().to_bytes(),
                 ),
                 grpc_endpoint: "http://127.0.0.1:1".to_string(),
+                activation: None,
             };
             let saved_bytes = serde_json::to_vec(&saved).unwrap();
             std::fs::write(&state, &saved_bytes).unwrap();
