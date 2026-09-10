@@ -36,7 +36,7 @@ use std::{
     process::ExitCode,
 };
 
-use ed25519_dalek::{Signer, SigningKey};
+use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tonic::Request;
@@ -138,25 +138,10 @@ fn resolve_tenant_id(flags: &HashMap<String, String>) -> Result<String, String> 
     Ok(dev_tenant_token(&salt, tenant_name))
 }
 
-fn load_or_generate_key(path: &Path) -> std::io::Result<SigningKey> {
-    if let Ok(existing) = std::fs::read(path) {
-        if let Ok(seed) = <[u8; 32]>::try_from(existing.as_slice()) {
-            return Ok(SigningKey::from_bytes(&seed));
-        }
-    }
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    let mut seed = [0_u8; 32];
-    getrandom::getrandom(&mut seed)
-        .map_err(|error| std::io::Error::other(format!("could not generate a key: {error}")))?;
-    std::fs::write(path, seed)?;
-    Ok(SigningKey::from_bytes(&seed))
-}
-
 mod commands;
+mod keys;
+
+use keys::{load_key, load_or_generate_key};
 
 fn print_usage() {
     eprintln!(
@@ -342,5 +327,78 @@ mod tests {
         assert_eq!(first.to_bytes(), second.to_bytes());
 
         std::fs::remove_file(&path).ok();
+    }
+
+    // A corrupt key used to be overwritten, changing an enrolled identity without consent.
+    #[test]
+    fn load_or_generate_key_preserves_a_corrupt_existing_seed() {
+        let path = std::env::temp_dir().join(format!(
+            "register-me-corrupt-key-test-{}.key",
+            std::process::id()
+        ));
+        let corrupt = b"damaged-enrollment-key";
+        std::fs::write(&path, corrupt).expect("write corrupt fixture");
+
+        let result = load_or_generate_key(&path);
+        let preserved = std::fs::read(&path).expect("read fixture") == corrupt;
+        std::fs::remove_file(&path).expect("remove fixture");
+
+        assert!(preserved, "an invalid persistent key must not be replaced");
+        assert_eq!(
+            result.err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::InvalidData)
+        );
+    }
+
+    // Activation must use the approved key, never silently generate a different identity.
+    #[tokio::test]
+    async fn activation_preserves_missing_corrupt_and_mismatched_approved_keys() {
+        let approved = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        for (existing, expected_error) in [
+            (None, "key"),
+            (Some(vec![7; 3]), "32-byte Ed25519 seed"),
+            (Some(vec![8; 32]), "saved enrollment fingerprint"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("node.key");
+            let state = state_path(&path);
+            let saved = SavedRequest {
+                request_id: "request-test".to_string(),
+                tenant_id: "tenant-test".to_string(),
+                repository_id: "repository-test".to_string(),
+                node_id: "node-test".to_string(),
+                public_key_fingerprint: public_key_fingerprint(
+                    &approved.verifying_key().to_bytes(),
+                ),
+                grpc_endpoint: "http://127.0.0.1:1".to_string(),
+            };
+            let saved_bytes = serde_json::to_vec(&saved).unwrap();
+            std::fs::write(&state, &saved_bytes).unwrap();
+            if let Some(bytes) = &existing {
+                std::fs::write(&path, bytes).unwrap();
+            }
+            let flags = HashMap::from([
+                ("request-id".to_string(), saved.request_id),
+                ("key-path".to_string(), path.to_string_lossy().into_owned()),
+            ]);
+
+            let error = commands::run_activate(flags)
+                .await
+                .expect_err("must refuse the key");
+
+            assert!(error.contains(expected_error));
+            assert!(
+                !error.contains("could not reach"),
+                "refuse before contacting Ackplane"
+            );
+            match existing {
+                Some(bytes) => assert_eq!(std::fs::read(&path).unwrap(), bytes),
+                None => assert!(
+                    !path.exists(),
+                    "activation must not create a replacement key"
+                ),
+            }
+            assert_eq!(std::fs::read(&state).unwrap(), saved_bytes);
+        }
     }
 }

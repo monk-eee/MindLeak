@@ -144,7 +144,15 @@ pub(super) async fn run_activate(flags: HashMap<String, String>) -> Result<(), S
         .cloned()
         .unwrap_or(saved.grpc_endpoint);
     let signing_key =
-        load_or_generate_key(&path).map_err(|error| format!("key {}: {error}", path.display()))?;
+        load_key(&path).map_err(|error| format!("key {}: {error}", path.display()))?;
+    if public_key_fingerprint(&signing_key.verifying_key().to_bytes())
+        != saved.public_key_fingerprint
+    {
+        return Err(format!(
+            "key {} does not match the saved enrollment fingerprint; restore the approved key before activating",
+            path.display()
+        ));
+    }
 
     let channel = ackplane_client::connect_channel(&grpc_endpoint)
         .await
