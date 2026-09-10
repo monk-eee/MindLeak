@@ -193,9 +193,8 @@ let boardReadable = false;
 let tasks = [];
 let overlaps = [];
 let declaredBranch = null;
-// Shared with the post-push record: the files this push makes visible to the
-// fleet are the same ones the overlap notice reasons about, and recomputing
-// them afterwards would let the two disagree.
+// Branch-wide scope is for overlap, not mutation attribution. The publication
+// recorder reads the exact commit's own Git facts independently.
 let changed = [];
 
 if (server && /^[0-9a-f]{32}$/.test(sessionId)) {
@@ -400,11 +399,12 @@ if (mergedNotice) {
   console.warn(`canonical-push: ${mergedNotice}`);
 }
 
+const publishedSha = git(["rev-parse", "HEAD"]);
 const promise = publishPromisedBranch({
   number: armed,
   disarm: (number) => disarmPullRequest(number, repoRoot),
   push: () =>
-    run(["push", remote, `HEAD:refs/heads/${branch}`], {
+    run(["push", remote, `${publishedSha}:refs/heads/${branch}`], {
       cwd: repoRoot,
       env: { ...process.env, MINDLEAK_CANONICAL_PUBLISH: "1" },
     }),
@@ -425,9 +425,7 @@ if (promise.cycled && !promise.rearmed) {
 const unrecorded = recordPublication({
   repoRoot,
   sessionId,
-  sha: git(["rev-parse", "HEAD"]),
-  message: git(["log", "-1", "--pretty=%B"]),
-  changedFiles: changed,
+  sha: publishedSha,
 });
 if (unrecorded) {
   console.warn(`canonical-push: ${unrecorded}`);
