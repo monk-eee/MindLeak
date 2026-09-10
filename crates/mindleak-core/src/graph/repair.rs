@@ -1,4 +1,4 @@
-//! Collapse duplicate node identities onto one id.
+//! Repair stored identities and verified commit attribution.
 //!
 //! Node ids are repo-relative by contract, but absolute paths reached the graph
 //! for as long as nothing made them relative. Every worktree of a repository
@@ -23,9 +23,15 @@ use crate::Result;
 pub use crate::graph::types::RepairOutcome;
 
 mod collapse;
+mod commit;
+
+pub use commit::CommitRepairOutcome;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod commit_tests;
 
 impl GraphStore {
     /// Rewrite every node id that spells its path absolutely under `root` to the

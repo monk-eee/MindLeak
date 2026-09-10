@@ -22,7 +22,7 @@ pub fn ensure_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Append one event. Callers treat failures as non-fatal.
+/// Append one event. Instrumentation may ignore failure; required mutation audits must propagate it.
 pub fn record(
     conn: &Connection,
     ts: i64,

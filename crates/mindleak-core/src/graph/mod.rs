@@ -17,6 +17,7 @@ mod test_support;
 mod types;
 mod writes;
 
+pub use repair::CommitRepairOutcome;
 pub use types::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, BudgetReport, CompiledContext,
     ConformanceEvidence, Digest, DigestSourceSnapshot, DigestStatus, DigestStatusReport, Direction,

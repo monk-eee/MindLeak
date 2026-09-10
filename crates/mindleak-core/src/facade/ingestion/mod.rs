@@ -78,6 +78,48 @@ impl MindLeak {
         Ok(outcome)
     }
 
+    /// Correct stored attribution using a trusted repository reader, never caller-supplied facts.
+    pub fn repair_commit_attribution_for_agent(
+        &self,
+        agent: &str,
+        sha: &str,
+        reason: &str,
+        read_commit: impl FnOnce(&str, &str) -> Result<CommitRecord>,
+    ) -> Result<crate::CommitRepairOutcome> {
+        let sha = sha.trim().to_ascii_lowercase();
+        let reason = reason.trim();
+        if !ingest::git::is_full_commit_sha(&sha) {
+            return Err(crate::MindLeakError::InvalidArgument(
+                "commit repair requires a full commit hash".into(),
+            ));
+        }
+        if agent.trim().is_empty() || reason.is_empty() || reason.len() > 2048 {
+            return Err(crate::MindLeakError::InvalidArgument(
+                "commit repair requires an agent and a nonblank reason of at most 2048 bytes"
+                    .into(),
+            ));
+        }
+        let root = self.workspace_root.as_deref().ok_or_else(|| {
+            crate::MindLeakError::InvalidArgument(
+                "commit repair requires a configured repository workspace".into(),
+            )
+        })?;
+        let verified = read_commit(root, &sha)?;
+        if verified.sha.as_deref() != Some(sha.as_str()) {
+            return Err(crate::MindLeakError::InvalidArgument(
+                "Git returned a different commit than requested; nothing repaired".into(),
+            ));
+        }
+        let roots = self.roots();
+        self.store.repair_commit_attribution(
+            agent.trim(),
+            &verified,
+            reason,
+            now_unix(),
+            &crate::borrowed(&roots),
+        )
+    }
+
     pub fn ingest_tool_invocation(&self, rec: &ToolInvocationRecord) -> Result<WriteOutcome> {
         ingest::tool_invocation::ingest_tool_invocation(&self.store, rec)
     }
@@ -105,5 +147,125 @@ impl MindLeak {
             self.observe(agent, &[id.to_string()], now)?;
         }
         Ok(boosted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MindLeakError;
+
+    fn repair_fixture() -> (MindLeak, CommitRecord) {
+        let engine = MindLeak::open_in_memory()
+            .unwrap()
+            .with_workspace_root("/fixture");
+        let verified = CommitRecord {
+            sha: Some("a".repeat(40)),
+            message: "fix: verified".into(),
+            changed_files: vec!["correct.rs".into()],
+            timestamp: 100,
+        };
+        engine
+            .ingest_commit_for_agent(
+                "author",
+                &CommitRecord {
+                    message: "wrong publication".into(),
+                    changed_files: vec!["wrong.rs".into()],
+                    timestamp: 900,
+                    ..verified.clone()
+                },
+            )
+            .unwrap();
+        (engine, verified)
+    }
+
+    #[test]
+    fn commit_repair_reads_the_configured_repository_without_stealing_authorship() {
+        let (engine, verified) = repair_fixture();
+        let sha = verified.sha.clone().unwrap();
+        let outcome = engine
+            .repair_commit_attribution_for_agent(
+                "repairer",
+                &sha.to_uppercase(),
+                "wrong branch scope",
+                |root, requested| {
+                    assert_eq!(root, "/fixture");
+                    assert_eq!(requested, sha);
+                    Ok(verified)
+                },
+            )
+            .unwrap();
+        assert_eq!(outcome.removed_edges, 1);
+        assert_eq!(outcome.added_edges, 1);
+        assert!(outcome.audit_id.is_some());
+        assert!(engine.store().get_node("agent:repairer").unwrap().is_none());
+        assert!(engine.store().get_node("agent:author").unwrap().is_some());
+    }
+
+    #[test]
+    fn commit_repair_refuses_unavailable_or_mismatched_git_facts_without_mutation() {
+        let (engine, verified) = repair_fixture();
+        let sha = verified.sha.clone().unwrap();
+        for response in [
+            Err(MindLeakError::Other("Git unavailable".into())),
+            Ok(CommitRecord {
+                sha: Some("b".repeat(40)),
+                ..verified.clone()
+            }),
+        ] {
+            assert!(engine
+                .repair_commit_attribution_for_agent(
+                    "repairer",
+                    &sha,
+                    "correct attribution",
+                    |_, _| response
+                )
+                .is_err());
+            assert_eq!(
+                engine
+                    .store()
+                    .get_node(&format!("intent:{sha}"))
+                    .unwrap()
+                    .unwrap()
+                    .created_at,
+                900
+            );
+            assert!(engine
+                .store()
+                .get_node("artifact:correct.rs")
+                .unwrap()
+                .is_none());
+        }
+        assert_eq!(
+            crate::telemetry::snapshot(&engine.store().conn, 10)
+                .unwrap()
+                .total_events,
+            0
+        );
+    }
+
+    #[test]
+    fn invalid_commit_repair_requests_are_refused_before_reading_git() {
+        let (engine, verified) = repair_fixture();
+        let sha = verified.sha.unwrap();
+        let oversized = "x".repeat(2049);
+        for (agent, requested, reason) in [
+            ("repairer", "HEAD", "reason"),
+            ("", sha.as_str(), "reason"),
+            ("repairer", sha.as_str(), " "),
+            ("repairer", sha.as_str(), oversized.as_str()),
+        ] {
+            assert!(engine
+                .repair_commit_attribution_for_agent(agent, requested, reason, |_, _| panic!(
+                    "invalid requests must not read Git"
+                ))
+                .is_err());
+        }
+        let engine = engine.with_workspace_root("");
+        assert!(engine
+            .repair_commit_attribution_for_agent("repairer", &sha, "reason", |_, _| panic!(
+                "an unconfigured workspace must not read Git"
+            ))
+            .is_err());
     }
 }

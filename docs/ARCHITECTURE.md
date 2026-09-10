@@ -70,6 +70,11 @@ one-shot legacy migration lock; `platform` resolves the OS state root;
 `worktree` lists sibling checkouts; and `fs` holds the git-process and
 filesystem helpers.
 
+`repository/commit` verifies commit identities and reads exact Git commit facts
+for explicit evidence repair. It refuses shallow or unavailable history,
+ignores replacement refs, and uses NUL-delimited paths with authored
+combined-merge deltas. Git processes stay here, outside the graph engine.
+
 ### `mindleak-session` (library)
 
 The shared ADR-0030 request identity contract. It validates client-minted
@@ -96,6 +101,18 @@ The engine. Modules:
 | [`net.rs`](../crates/mindleak-core/src/net.rs) | Network resilience for optional HTTP (ADR-0010): timeouts, bounded retry with backoff, per-endpoint circuit breaker. |
 | [`telemetry/`](../crates/mindleak-core/src/telemetry/mod.rs) | Observability (ADR-0010): durable `telemetry_events` audit trail, metrics snapshot, stderr-only `tracing` init. |
 | [`lib.rs`](../crates/mindleak-core/src/lib.rs) | `MindLeak` facade wiring; behavior is grouped under `facade/`: `ingestion`, `query`, `observability`, `lifecycle`, and `consolidation`. |
+
+`graph/repair/commit` performs explicit commit-attribution correction in one
+immediate transaction. It shares `ingest::git::CommitRecord` node/path building,
+preserves unrelated history and original authorship, and records complete
+before/after snapshots with the repairer's identity and reason in the existing
+non-decaying telemetry store. The audit is mandatory: a failed insert rolls
+back the correction. The facade accepts an injected trusted repository reader;
+the MCP `repair_commit_attribution` handler supplies the Git implementation and
+accepts no replacement facts from the client. `telemetry_snapshot(event_id)`
+retrieves the returned audit id beyond the recent-events window. This path does
+not certify tasks or rewrite prior conformance records; see
+[ADR-0149](adr/0149-commit-attribution-repair-is-verified-and-audited.md).
 
 ### `mindleak-mcp` (binary)
 

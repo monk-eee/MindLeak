@@ -6,6 +6,8 @@ use mindleak_core::ingest::tool_invocation::ToolInvocationRecord;
 use mindleak_core::{now_unix, MindLeak};
 use serde_json::{json, Value};
 
+mod commit_repair;
+
 pub(super) fn definitions() -> Vec<Value> {
     vec![
         json!({
@@ -50,6 +52,7 @@ pub(super) fn definitions() -> Vec<Value> {
                 "required": ["message"]
             }
         }),
+        commit_repair::definition(),
         json!({
             "name": "ingest_tool_invocation",
             "description": "Deterministically ingest one agent tool call as passive evidence (ADR-0127): creates a tool_invocation node and classifies the argument excerpt against a committed shell-hygiene pattern list (a piped PowerShell cmdlet around a native command, $LASTEXITCODE). Never self-reported as a claim -- the caller records what actually ran, not an assertion about it.",
@@ -123,6 +126,7 @@ pub(super) fn dispatch(
     args: &Value,
 ) -> Option<Result<Value, String>> {
     match name {
+        "repair_commit_attribution" => Some(commit_repair::dispatch(engine, args)),
         "record_architectural_decision" => Some((|| {
             let agent = req_str(args, "agent")?;
             let text = req_str(args, "decision_text")?;
