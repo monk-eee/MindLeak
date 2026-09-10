@@ -189,6 +189,44 @@ jobs:
       - name: Build the server image
         run: docker build -f crates/ackplane-server/Dockerfile -t ackplane-server:ci .
 
+  industrial:
+    name: Industrial (database and recovery)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: ackplane
+          POSTGRES_PASSWORD: ackplane-development-only-not-for-production
+          POSTGRES_DB: ackplane_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ackplane -d ackplane_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Install PostgreSQL 16 recovery tools
+        run: sudo -n apt-get install --yes postgresql-client-16
+      - name: Test the industrial runner
+        run: node --test scripts/industrial-test.test.mjs
+      - name: Build, migrate and test industrial integration
+        env:
+          ACKPLANE_TEST_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@127.0.0.1:5432/ackplane_test
+          ACKPLANE_TEST_REHEARSAL_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@127.0.0.1:5432/ackplane_test
+        run: node scripts/industrial-test.mjs
+
   extension:
     name: VS Code extension (lint · compile)
     runs-on: ubuntu-latest
