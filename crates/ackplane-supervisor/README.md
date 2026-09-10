@@ -128,6 +128,12 @@ continue to give every slot a separate checkout or worktree.
   processes, releases active leases and flushes durable receipts. Shutdown has
   a thirty-second deadline; failed acknowledgement exits unsuccessfully and
   retains the run marker and queue evidence for recovery.
+  Confirmed leases are tracked before context preparation, so stopping while
+  awaiting a context reply also releases them without starting a worker or
+  reporting a lifecycle for a process that never ran. A failed preparation
+  release remains tracked and is retried between directives while the daemon
+  is running. Requests whose grant was never confirmed and abrupt process loss
+  remain subject to the server lease expiry and operator recovery boundaries.
 - **Connection dropped or acknowledgement stalled** - reconnects after a short
   delay. Acknowledgement waits are bounded to ten seconds. Active leases are
   renewed; failed renewal stops the owned worker rather than inventing authority.
@@ -161,7 +167,10 @@ cargo test --locked -p ackplane-server --lib context_service::tests
 The first test starts a real authenticated gRPC server and the supervisor binary
 with two concurrent fixture executables, checks their distinct memory-informed
 prompts, credential separation, Work transitions, durable outcome receipts, and
-orderly shutdown of two active workers on Unix.
+orderly shutdown of two active workers on Unix. It also holds both context
+replies after the real server has compiled them and verifies that shutdown
+releases the confirmed leases without spawning workers or inventing lifecycle
+receipts.
 The second tests graph input, lesson activation, retry feedback and refusal of
 cross-session or unleased requests. Without the database variable these gated
 tests skip; a skipped run is not verification. The fixtures test the runtime

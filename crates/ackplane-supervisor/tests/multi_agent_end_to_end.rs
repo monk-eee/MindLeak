@@ -3,6 +3,7 @@ use std::{
     fs,
     future::Future,
     process::{Command, Stdio},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -28,14 +29,74 @@ use ackplane_server::{
 };
 use ackplane_supervisor::WorkerCommand;
 use command_group::{CommandGroup, GroupChild};
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::{
+    wrappers::{ReceiverStream, TcpListenerStream},
+    StreamExt,
+};
 
 struct Daemon(GroupChild);
+
+impl Daemon {
+    async fn shutdown(&mut self) {
+        #[cfg(unix)]
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(self.0.id() as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        )
+        .unwrap();
+        let exit = wait_for("orderly supervisor shutdown", || {
+            let exit = self.0.try_wait().unwrap();
+            async move { exit }
+        })
+        .await;
+        assert!(
+            exit.success(),
+            "supervisor did not shut down cleanly: {exit}"
+        );
+    }
+}
 
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+    }
+}
+
+struct ContextReplyGate {
+    service: NodeSyncService,
+    held_contexts: Option<Arc<tokio::sync::Semaphore>>,
+}
+
+#[tonic::async_trait]
+impl v1::node_sync_service_server::NodeSyncService for ContextReplyGate {
+    type SynchronizeStream = ReceiverStream<Result<v1::AckplaneFrame, tonic::Status>>;
+
+    async fn synchronize(
+        &self,
+        request: tonic::Request<tonic::Streaming<v1::NodeFrame>>,
+    ) -> Result<tonic::Response<Self::SynchronizeStream>, tonic::Status> {
+        let mut stream = self.service.synchronize(request).await?.into_inner();
+        let (sender, receiver) = tokio::sync::mpsc::channel(16);
+        let held_contexts = self.held_contexts.clone();
+        tokio::spawn(async move {
+            while let Some(frame) = stream.next().await {
+                if let (Some(held), Ok(reply)) = (&held_contexts, &frame) {
+                    if matches!(
+                        reply.frame.as_ref(),
+                        Some(v1::ackplane_frame::Frame::ContextPacketReply(_))
+                    ) {
+                        held.add_permits(1);
+                        sender.closed().await;
+                        return;
+                    }
+                }
+                if sender.send(frame).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(tonic::Response::new(ReceiverStream::new(receiver)))
     }
 }
 
@@ -125,17 +186,25 @@ async fn assign(
 
 #[tokio::test]
 async fn server_runs_two_agents_with_separate_memory_prompts_and_durable_outcomes() {
-    exercise_two_workers(false).await;
+    exercise_two_workers(false, false).await;
 }
 
 /// Stopping the supervisor used to abandon active processes and their durable receipts.
 #[cfg(unix)]
 #[tokio::test]
 async fn shutdown_stops_both_workers_releases_leases_and_flushes_receipts() {
-    exercise_two_workers(true).await;
+    exercise_two_workers(true, false).await;
 }
 
-async fn exercise_two_workers(stop_while_active: bool) {
+// Shutdown during context preparation used to report success but leave confirmed
+// leases held for five minutes because no worker had become active yet.
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_before_context_delivery_releases_confirmed_leases_without_spawning() {
+    exercise_two_workers(true, true).await;
+}
+
+async fn exercise_two_workers(stop_while_active: bool, stop_before_spawn: bool) {
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
@@ -278,6 +347,11 @@ async fn exercise_two_workers(stop_while_active: bool) {
     )
     .with_context_service(context)
     .with_work_command_service(WorkCommandService::connect(&pool).await.unwrap());
+    let held_contexts = stop_before_spawn.then(|| Arc::new(tokio::sync::Semaphore::new(0)));
+    let node_sync = ContextReplyGate {
+        service: node_sync,
+        held_contexts: held_contexts.clone(),
+    };
     let claims = ClaimDelegationService::new(ClaimStore::connect(&pool).await.unwrap());
     let query = WorkQueryService::new(WorkStore::connect(&pool).await.unwrap());
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
@@ -368,6 +442,52 @@ async fn exercise_two_workers(stop_while_active: bool) {
         .await;
         sessions.push(session);
     }
+    if let Some(held_contexts) = held_contexts {
+        let _held = tokio::time::timeout(Duration::from_secs(10), held_contexts.acquire_many(2))
+            .await
+            .expect("both context replies must be held before shutdown")
+            .unwrap();
+        let claims = ClaimStore::connect(&pool).await.unwrap();
+        assert_eq!(
+            claims
+                .list_active(&tenant, repository, SystemTime::now())
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        daemon.shutdown().await;
+
+        assert!(
+            claims
+                .list_active(&tenant, repository, SystemTime::now())
+                .await
+                .unwrap()
+                .is_empty(),
+            "shutdown left confirmed preparation leases held without starting workers"
+        );
+        for (index, name) in ["first", "second"].iter().enumerate() {
+            assert!(!root.path().join(name).join("prompt.json").exists());
+            assert!(!root
+                .path()
+                .join("state")
+                .join(format!("{name}.worker-run.json"))
+                .exists());
+            assert!(
+                supervisors
+                    .lifecycle_history(&tenant, repository, &sessions[index].session_id)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "an unstarted worker must not receive fabricated lifecycle receipts"
+            );
+        }
+        drop(daemon);
+        let _ = shutdown.send(());
+        server.await.unwrap();
+        return;
+    }
     wait_for("both workers to receive their prompts", || async {
         ["first", "second"]
             .iter()
@@ -411,22 +531,8 @@ async fn exercise_two_workers(stop_while_active: bool) {
         .await;
     }
     let expected_state = if stop_while_active {
-        #[cfg(unix)]
-        nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(daemon.0.id() as i32),
-            nix::sys::signal::Signal::SIGTERM,
-        )
-        .unwrap();
-        let exit = wait_for("orderly supervisor shutdown", || {
-            let exit = daemon.0.try_wait().unwrap();
-            async move { exit }
-        })
-        .await;
+        daemon.shutdown().await;
         fs::write(&gate, "finish").unwrap();
-        assert!(
-            exit.success(),
-            "supervisor did not shut down cleanly: {exit}"
-        );
         SupervisorWorkerState::Terminated
     } else {
         fs::write(&gate, "finish").unwrap();

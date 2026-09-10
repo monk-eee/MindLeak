@@ -24,14 +24,14 @@ pub(super) struct WorkerRuntime {
     pub signer: Box<dyn ClaimSigner>,
     adapter: ProcessWorkerAdapter,
     command: Option<WorkerCommand>,
-    active: Option<ActiveWorker>,
+    pub(super) lease: Option<WorkerLease>,
+    active: Option<ContextPacket>,
     run_path: Option<PathBuf>,
     pub finished: bool,
 }
 
-struct ActiveWorker {
-    task_id: String,
-    packet: ContextPacket,
+pub(super) struct WorkerLease {
+    pub(super) task_id: String,
     expires_at: OffsetDateTime,
     next_renewal: Instant,
 }
@@ -58,6 +58,7 @@ impl WorkerRuntime {
             signer: signer(config)?,
             adapter: ProcessWorkerAdapter::new(),
             command: config.workers.values().next().cloned(),
+            lease: None,
             active: None,
             run_path: None,
             finished: false,
@@ -92,7 +93,7 @@ impl WorkerRuntime {
                 if self
                     .active
                     .as_ref()
-                    .is_none_or(|active| active.task_id != directive.task_id)
+                    .is_none_or(|packet| packet.scope.task_id != directive.task_id)
                 {
                     return self.refuse(directive, "termination does not address the active task");
                 }
@@ -130,7 +131,7 @@ impl WorkerRuntime {
         connection: &mut NodeSyncConnection,
         directive: &v1::AgentDirective,
     ) -> Result<v1::DirectiveReceipt, DaemonError> {
-        if self.active.is_some() || self.finished {
+        if self.lease.is_some() || self.active.is_some() || self.finished {
             return self.refuse(directive, "this session already has an assignment");
         }
         let Some(command) = self.command.clone() else {
@@ -148,6 +149,11 @@ impl WorkerRuntime {
                 return self.refuse(directive, "claim request timed out; no worker was started")
             }
         };
+        self.lease = Some(WorkerLease {
+            task_id: directive.task_id.clone(),
+            expires_at,
+            next_renewal: Instant::now() + Duration::from_secs(60),
+        });
         let packet = match tokio::time::timeout(
             Duration::from_secs(15),
             connection.request_context_packet(v1::ContextPacketRequest {
@@ -241,12 +247,7 @@ impl WorkerRuntime {
             self.queue_use(&packet, ContextPacketUseStatus::Accepted)?;
             self.queue_lifecycle(SupervisorWorkerState::Started)?;
             tracing::info!(worker_id = %self.session.worker_id, task_id = %directive.task_id, packet_id = %packet.packet_id, "worker started with scoped context");
-            self.active = Some(ActiveWorker {
-                task_id: directive.task_id.clone(),
-                packet,
-                expires_at,
-                next_renewal: Instant::now() + Duration::from_secs(60),
-            });
+            self.active = Some(packet);
         } else {
             let _ = tokio::time::timeout(
                 Duration::from_secs(10),
@@ -337,19 +338,19 @@ impl WorkerRuntime {
                 }
             }
         }
-        if let Some(active) = self.active.take() {
+        if let Some(packet) = self.active.take() {
             self.queue_lifecycle(state)?;
             self.finished = true;
-            tracing::info!(worker_id = %self.session.worker_id, task_id = %active.task_id, packet_id = %active.packet.packet_id, ?state, "worker ended; task completion still requires evidence review");
-            match tokio::time::timeout(
-                Duration::from_secs(10),
-                self.release(config, &active.task_id),
-            )
-            .await
+            tracing::info!(worker_id = %self.session.worker_id, task_id = %packet.scope.task_id, packet_id = %packet.packet_id, ?state, "worker ended; task completion still requires evidence review");
+        }
+        if let Some(lease) = &self.lease {
+            let task_id = lease.task_id.clone();
+            match tokio::time::timeout(Duration::from_secs(10), self.release(config, &task_id))
+                .await
             {
                 Ok(Ok(())) => {}
                 _ => {
-                    tracing::warn!(task_id = %active.task_id, "lease release could not be confirmed; the existing lease will expire")
+                    tracing::warn!(%task_id, "lease release could not be confirmed; the existing lease will expire")
                 }
             }
         }
@@ -364,9 +365,9 @@ impl WorkerRuntime {
     }
 
     pub async fn observe(&mut self, config: &SupervisorConfig) -> Result<(), DaemonError> {
-        let Some(active) = &self.active else {
-            return Ok(());
-        };
+        if self.active.is_none() {
+            return self.finish(config, SupervisorWorkerState::Failed).await;
+        }
         let state = self
             .adapter
             .observe(&self.session.worker_id)
@@ -374,17 +375,20 @@ impl WorkerRuntime {
         if state != SupervisorWorkerState::Started {
             return self.finish(config, state).await;
         }
-        if active.expires_at <= OffsetDateTime::now_utc() + time::Duration::seconds(15) {
+        let Some(lease) = &self.lease else {
+            return self.finish(config, SupervisorWorkerState::Failed).await;
+        };
+        if lease.expires_at <= OffsetDateTime::now_utc() + time::Duration::seconds(15) {
             return self.finish(config, SupervisorWorkerState::Failed).await;
         }
-        if active.next_renewal <= Instant::now() {
-            let task_id = active.task_id.clone();
+        if lease.next_renewal <= Instant::now() {
+            let task_id = lease.task_id.clone();
             match tokio::time::timeout(Duration::from_secs(10), self.renew(config, &task_id)).await
             {
                 Ok(Ok(expiry)) => {
-                    if let Some(active) = &mut self.active {
-                        active.expires_at = expiry;
-                        active.next_renewal = Instant::now() + Duration::from_secs(60);
+                    if let Some(lease) = &mut self.lease {
+                        lease.expires_at = expiry;
+                        lease.next_renewal = Instant::now() + Duration::from_secs(60);
                     }
                 }
                 _ => return self.finish(config, SupervisorWorkerState::Failed).await,

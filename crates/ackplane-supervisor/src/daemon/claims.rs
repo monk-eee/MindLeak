@@ -151,6 +151,13 @@ impl WorkerRuntime {
             })
             .await
             .map_err(Box::new)?;
+        if self
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.task_id == task_id)
+        {
+            self.lease = None;
+        }
         Ok(())
     }
 }
