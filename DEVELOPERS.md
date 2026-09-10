@@ -169,6 +169,25 @@ npm --prefix editors/vscode run compile
 make coverage
 ```
 
+## Industrial validation
+
+Industrial changes also run `node scripts/industrial-test.mjs` (or
+`make industrial-test`). This gate requires explicit
+`ACKPLANE_TEST_DATABASE_URL` and `ACKPLANE_TEST_REHEARSAL_DATABASE_URL`, plus
+PostgreSQL 16 `pg_dump` and `pg_restore` on `PATH`. Use disposable databases
+only: the runner applies migrations and the tests write fixtures and create
+scratch recovery databases. It never starts or resets the live Compose stack.
+
+The runner builds every workspace test target with all features, migrates the
+test database, and runs the workspace suite with both database gates enabled.
+Missing prerequisites and failing commands stop it instead of silently skipping
+database coverage. CI's **Industrial (database and recovery)** job runs the same
+command against an ephemeral pgvector/PostgreSQL service. The ordinary local-only
+test command remains independent of PostgreSQL.
+
+See [Industrial stabilization](docs/INDUSTRIAL-STABILIZATION.md) for the ordered
+tasks, database setup contract, acceptance criteria and remaining release gates.
+
 ## The delivery queue
 
 `main` requires branches to be up to date before merging. With several armed

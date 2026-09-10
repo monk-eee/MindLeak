@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit binding-audit queue queue-watch sweep board-health control-coverage stranded-report migration-audit status reingest tool-surface build test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit binding-audit queue queue-watch sweep board-health control-coverage stranded-report migration-audit status reingest tool-surface build test industrial-test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -96,6 +96,9 @@ build: ## Build the workspace (debug)
 
 test: ## Run the Rust test suite
 	cargo test --all
+
+industrial-test: ## Run the all-feature workspace suite with explicit test and recovery databases
+	node scripts/industrial-test.mjs
 
 script-test: ## Run the repository's own script tests
 	node scripts/script-tests.mjs
