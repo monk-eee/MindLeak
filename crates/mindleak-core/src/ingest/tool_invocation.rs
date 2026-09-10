@@ -165,7 +165,7 @@ pub fn ingest_tool_invocation(
     )
     .with_content(content);
 
-    let mut outcome = store.upsert_facts(&[node], &[])?;
+    let mut outcome = store.upsert_facts(&[node], &[], None)?;
     outcome.node_ids.push(invocation_id);
     outcome.violation = violation.map(|v| v.as_str().to_string());
     Ok(outcome)

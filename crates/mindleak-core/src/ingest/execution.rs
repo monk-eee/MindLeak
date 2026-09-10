@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use crate::error::Result;
-use crate::graph::GraphStore;
+use crate::graph::{GraphStore, Observation};
 use crate::ingest::{
     clamp, is_absolute_path, is_ignored_path, normalize_path, repo_relative, short_hash,
 };
@@ -84,6 +84,7 @@ pub fn ingest_execution(
     rec: &ExecutionRecord,
     now: i64,
     roots: &[&str],
+    agent: Option<&str>,
 ) -> Result<crate::graph::WriteOutcome> {
     let exec_id = format!(
         "execution:{}",
@@ -151,7 +152,12 @@ pub fn ingest_execution(
         }
     }
 
-    let mut outcome = store.upsert_facts(&nodes, &edges)?;
+    let observation = agent.map(|agent| Observation {
+        agent,
+        ids: std::slice::from_ref(&exec_id),
+        now,
+    });
+    let mut outcome = store.upsert_facts(&nodes, &edges, observation)?;
     outcome.node_ids.push(exec_id);
     Ok(outcome)
 }
@@ -195,7 +201,7 @@ mod tests {
             changed_files: vec![],
             timestamp: 1,
         };
-        ingest_execution(&store, &record, 999, &roots).unwrap();
+        ingest_execution(&store, &record, 999, &roots, None).unwrap();
 
         assert!(store.get_node("artifact:src/lib.rs").unwrap().is_some());
         assert!(store
@@ -220,7 +226,7 @@ mod tests {
             changed_files: vec![],
             timestamp: 1,
         };
-        ingest_execution(&store, &record, 999, &roots).unwrap();
+        ingest_execution(&store, &record, 999, &roots, None).unwrap();
 
         assert!(store.get_node("artifact:src/graph.rs").unwrap().is_some());
         assert!(store
@@ -245,7 +251,7 @@ mod tests {
             changed_files: vec![],
             timestamp: 1,
         };
-        let outcome = ingest_execution(&store, &record, 999, &roots).unwrap();
+        let outcome = ingest_execution(&store, &record, 999, &roots, None).unwrap();
 
         // Only the execution node was created -- no artifact node at all for
         // the unplaceable absolute path.
@@ -269,7 +275,7 @@ mod tests {
             changed_files: vec![],
             timestamp: 1,
         };
-        ingest_execution(&store, &record, 999, &[]).unwrap();
+        ingest_execution(&store, &record, 999, &[], None).unwrap();
 
         assert!(store.get_node("artifact:src/graph.rs").unwrap().is_some());
     }
@@ -289,7 +295,7 @@ mod tests {
             changed_files: vec!["/home/agent/Repos/OtherRepo/src/lib.rs".to_string()],
             timestamp: 1,
         };
-        let outcome = ingest_execution(&store, &record, 999, &roots).unwrap();
+        let outcome = ingest_execution(&store, &record, 999, &roots, None).unwrap();
 
         assert_eq!(outcome.nodes_created, 1);
         assert!(store
@@ -309,7 +315,7 @@ mod tests {
             changed_files: vec!["src/lib.rs".to_string()],
             timestamp: 123,
         };
-        let outcome = ingest_execution(&store, &record, 999, &[]).unwrap();
+        let outcome = ingest_execution(&store, &record, 999, &[], None).unwrap();
 
         let graph = store
             .traverse(

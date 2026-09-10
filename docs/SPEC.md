@@ -110,6 +110,14 @@ Episodic edges are append-and-reinforce: re-ingesting one raises its weight
 authoritative per-artifact snapshot: re-ingestion transactionally retracts owned
 facts absent from the latest source before orphan cleanup (ADR-0007).
 
+Attributed execution ingestion commits the execution, its mutation/failure
+facts, and its agent observation in one immediate SQLite transaction. A failed
+observation rolls back the entire batch; concurrent maintenance cannot see a
+newly committed execution without its attribution, including commands that
+changed no files. Event clocks, observation half-lives and reported fact counts
+are unchanged. Un-attributed ingestion still creates no observer and remains
+subject to the ordinary orphan-reaping policy.
+
 ### Explicit commit-attribution repair
 
 `repair_commit_attribution(sha, reason, session_id)` is an explicit exception

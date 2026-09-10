@@ -1,39 +1,19 @@
+use crate::graph::Observation;
 use crate::ingest::execution::ExecutionRecord;
 use crate::ingest::git::CommitRecord;
 use crate::ingest::tool_invocation::ToolInvocationRecord;
-use crate::{ingest, now_unix, Edge, MindLeak, Node, NodeType, RelationType, Result, WriteOutcome};
+use crate::{ingest, now_unix, MindLeak, Result, WriteOutcome};
 
 mod file;
 mod reconcile;
 
+#[cfg(test)]
+mod execution_tests;
+
 impl MindLeak {
     /// Record that one explicit session agent observed these nodes.
     pub(super) fn observe(&self, agent: &str, ids: &[String], now: i64) -> Result<()> {
-        let agent = agent.trim().strip_prefix("agent:").unwrap_or(agent.trim());
-        if agent.is_empty() {
-            return Ok(());
-        }
-        let agent_id = format!("agent:{agent}");
-        self.store
-            .upsert_node(&Node::new(&agent_id, NodeType::Agent, agent, now))?;
-        for id in ids {
-            if id == &agent_id {
-                continue;
-            }
-            let mut edge = Edge::new(&agent_id, id, RelationType::Observed, now);
-            // Attribution of a transient execution must not outlive the
-            // execution's own evidence. Left at the generic `observed` half-life
-            // (48h) the attribution edge pins the execution in the graph for
-            // roughly twice as long as its 24h `modified` evidence, so prune
-            // cannot reap the spent execution until ~9 days out. Cap execution
-            // attribution to the execution decay tier so both fade together and
-            // the orphaned execution is reaped promptly (ADR-0021 / ADR-0003).
-            if id.starts_with("execution:") || id.starts_with("tool_invocation:") {
-                edge.half_life_hours = RelationType::Modified.default_half_life_hours();
-            }
-            self.store.upsert_edge(&edge)?;
-        }
-        Ok(())
+        self.store.observe(Observation { agent, ids, now })
     }
 
     // ---- ingestion ----------------------------------------------------------
@@ -41,7 +21,7 @@ impl MindLeak {
     pub fn ingest_execution(&self, rec: &ExecutionRecord) -> Result<WriteOutcome> {
         let now = now_unix();
         let roots = self.roots();
-        ingest::execution::ingest_execution(&self.store, rec, now, &crate::borrowed(&roots))
+        ingest::execution::ingest_execution(&self.store, rec, now, &crate::borrowed(&roots), None)
     }
 
     pub fn ingest_execution_for_agent(
@@ -51,10 +31,13 @@ impl MindLeak {
     ) -> Result<WriteOutcome> {
         let now = now_unix();
         let roots = self.roots();
-        let outcome =
-            ingest::execution::ingest_execution(&self.store, rec, now, &crate::borrowed(&roots))?;
-        self.observe(agent, &outcome.node_ids, now)?;
-        Ok(outcome)
+        ingest::execution::ingest_execution(
+            &self.store,
+            rec,
+            now,
+            &crate::borrowed(&roots),
+            Some(agent),
+        )
     }
 
     /// One ingest path for both entry points, reporting the `now` it used so

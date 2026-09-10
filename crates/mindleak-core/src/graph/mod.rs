@@ -26,6 +26,7 @@ pub use types::{
     SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
     WeightedEdge, WorkingSetItem, WriteOutcome, STRUCTURE_EXTRACTOR_VERSION,
 };
+pub(crate) use writes::Observation;
 
 /// The persistent graph store.
 pub struct GraphStore {

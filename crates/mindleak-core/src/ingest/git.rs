@@ -140,7 +140,7 @@ pub fn ingest_commit(
         ));
     }
 
-    let mut outcome = store.upsert_facts(&nodes, &edges)?;
+    let mut outcome = store.upsert_facts(&nodes, &edges, None)?;
     outcome.node_ids.push(intent_id);
     Ok(outcome)
 }
