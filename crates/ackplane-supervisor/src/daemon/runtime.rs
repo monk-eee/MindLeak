@@ -234,7 +234,11 @@ impl WorkerRuntime {
                     .and_then(|_| file.sync_all())
                     .map_err(|error| AdapterError::InvalidAssignment(error.to_string()))?;
                 match self.adapter.start(assignment) {
-                    Ok(()) => Ok(()),
+                    Ok(()) => {
+                        self.run_path = Some(run_path.clone());
+                        self.active = Some(packet.clone());
+                        Ok(())
+                    }
                     Err(error) => {
                         let _ = std::fs::remove_file(&run_path);
                         Err(error)
@@ -243,11 +247,9 @@ impl WorkerRuntime {
             },
         )?;
         if receipt.status == v1::DirectiveReceiptStatus::Applied as i32 {
-            self.run_path = Some(run_path);
             self.queue_use(&packet, ContextPacketUseStatus::Accepted)?;
             self.queue_lifecycle(SupervisorWorkerState::Started)?;
             tracing::info!(worker_id = %self.session.worker_id, task_id = %directive.task_id, packet_id = %packet.packet_id, "worker started with scoped context");
-            self.active = Some(packet);
         } else {
             let _ = tokio::time::timeout(
                 Duration::from_secs(10),
@@ -338,10 +340,11 @@ impl WorkerRuntime {
                 }
             }
         }
-        if let Some(packet) = self.active.take() {
+        if let Some(packet) = &self.active {
             self.queue_lifecycle(state)?;
             self.finished = true;
             tracing::info!(worker_id = %self.session.worker_id, task_id = %packet.scope.task_id, packet_id = %packet.packet_id, ?state, "worker ended; task completion still requires evidence review");
+            self.active = None;
         }
         if let Some(lease) = &self.lease {
             let task_id = lease.task_id.clone();

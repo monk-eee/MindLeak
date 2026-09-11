@@ -32,6 +32,7 @@ use ackplane_server::{
 };
 use ackplane_supervisor::{OutboxPositions, SupervisorOutbox, WorkerCommand};
 use command_group::{CommandGroup, GroupChild};
+use prost::Message;
 use tokio_stream::{
     wrappers::{ReceiverStream, TcpListenerStream},
     StreamExt,
@@ -45,6 +46,15 @@ struct Scenario {
     stop_before_spawn: bool,
     release_failures: usize,
     fail_first_slot: bool,
+    spawn_evidence_failure: Option<SpawnEvidenceFailure>,
+}
+
+#[derive(Clone, Copy)]
+enum SpawnEvidenceFailure {
+    ContextUse,
+    StartedLifecycle,
+    AppliedEffect,
+    TerminalLifecycle,
 }
 
 #[derive(Clone)]
@@ -333,12 +343,53 @@ async fn a_failed_slot_retries_lease_release_without_losing_rejected_evidence() 
     .await;
 }
 
+// A successful spawn was not tracked until its receipt writes succeeded, so a
+// failed outbox write released the lease without explicitly stopping the worker.
+#[tokio::test]
+async fn failed_spawn_evidence_retains_the_lease_until_terminal_evidence_is_durable() {
+    exercise_two_workers(Scenario {
+        spawn_evidence_failure: Some(SpawnEvidenceFailure::ContextUse),
+        ..Scenario::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn failed_started_lifecycle_write_preserves_context_use_and_the_lease() {
+    exercise_two_workers(Scenario {
+        spawn_evidence_failure: Some(SpawnEvidenceFailure::StartedLifecycle),
+        ..Scenario::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn failed_applied_effect_write_stops_the_spawn_and_queues_terminal_evidence() {
+    exercise_two_workers(Scenario {
+        spawn_evidence_failure: Some(SpawnEvidenceFailure::AppliedEffect),
+        ..Scenario::default()
+    })
+    .await;
+}
+
+// Taking active state before terminal persistence let the fatal cleanup retry
+// forget the missing receipt and release the lease after a failed write.
+#[tokio::test]
+async fn failed_terminal_lifecycle_write_keeps_the_lease_after_cleanup_retry() {
+    exercise_two_workers(Scenario {
+        spawn_evidence_failure: Some(SpawnEvidenceFailure::TerminalLifecycle),
+        ..Scenario::default()
+    })
+    .await;
+}
+
 async fn exercise_two_workers(scenario: Scenario) {
     let Scenario {
         stop_while_active,
         stop_before_spawn,
         release_failures,
         fail_first_slot,
+        spawn_evidence_failure,
     } = scenario;
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
@@ -538,7 +589,7 @@ async fn exercise_two_workers(scenario: Scenario) {
             .env("RUST_LOG", "warn")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
-            .stderr(if fail_first_slot {
+            .stderr(if fail_first_slot || spawn_evidence_failure.is_some() {
                 Stdio::from(fs::File::create(&daemon_log).unwrap())
             } else {
                 Stdio::inherit()
@@ -578,6 +629,34 @@ async fn exercise_two_workers(scenario: Scenario) {
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'),
             "generated supervisor id must be safe as a queue filename"
         );
+        if let Some(failure) = spawn_evidence_failure.filter(|_| name == "first") {
+            let (queue, trigger) = match failure {
+                SpawnEvidenceFailure::ContextUse => ("outbox", "BEFORE INSERT ON outbound_frames"),
+                SpawnEvidenceFailure::StartedLifecycle => (
+                    "outbox",
+                    "BEFORE INSERT ON outbound_frames WHEN NEW.sequence = 2",
+                ),
+                SpawnEvidenceFailure::AppliedEffect => {
+                    ("inbox", "BEFORE UPDATE ON directive_effects")
+                }
+                SpawnEvidenceFailure::TerminalLifecycle => (
+                    "outbox",
+                    "BEFORE INSERT ON outbound_frames WHEN NEW.sequence = 4",
+                ),
+            };
+            let connection = rusqlite::Connection::open(
+                root.path()
+                    .join("state")
+                    .join(format!("{}.{queue}.db", session.supervisor_id)),
+            )
+            .unwrap();
+            connection
+                .execute_batch(&format!(
+                    "CREATE TRIGGER reject_spawn_evidence {trigger}
+                     BEGIN SELECT RAISE(ABORT, 'injected post-spawn evidence write failure'); END;"
+                ))
+                .unwrap();
+        }
         assign(
             &pool,
             &tenant,
@@ -588,6 +667,135 @@ async fn exercise_two_workers(scenario: Scenario) {
         )
         .await;
         sessions.push(session);
+    }
+    if let Some(failure) = spawn_evidence_failure {
+        if matches!(failure, SpawnEvidenceFailure::TerminalLifecycle) {
+            wait_for(
+                "applied assignment before terminal evidence failure",
+                || async {
+                    (work
+                        .task_detail(&tenant, repository, "task:first")
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .task
+                        .state
+                        == WorkTaskState::Claimed)
+                        .then_some(())
+                },
+            )
+            .await;
+            fs::write(&gate, "finish").unwrap();
+        }
+        let exit = daemon.wait().await;
+        assert!(
+            !exit.success(),
+            "failed evidence persistence must fail the supervisor"
+        );
+        let diagnostic = fs::read_to_string(&daemon_log).unwrap();
+        assert!(
+            diagnostic.contains("injected post-spawn evidence write failure"),
+            "{diagnostic}"
+        );
+        let marker: serde_json::Value = serde_json::from_slice(
+            &fs::read(root.path().join("state/first.worker-run.json")).unwrap(),
+        )
+        .unwrap();
+        let failed = &sessions[0];
+        assert_eq!(marker["session_id"], failed.session_id);
+        assert_eq!(marker["task_id"], "task:first");
+        let registration = supervisors
+            .list_supervisors(&tenant, repository)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.registration.supervisor_id == failed.supervisor_id)
+            .unwrap()
+            .registration;
+        let outbox = SupervisorOutbox::open(
+            marker["outbox"].as_str().unwrap(),
+            registration,
+            failed.clone(),
+        )
+        .unwrap();
+        let pending = outbox.pending(10).unwrap();
+        let (acknowledged, last_enqueued) = match failure {
+            SpawnEvidenceFailure::ContextUse => (0, 0),
+            SpawnEvidenceFailure::StartedLifecycle | SpawnEvidenceFailure::AppliedEffect => (0, 1),
+            SpawnEvidenceFailure::TerminalLifecycle => (3, 3),
+        };
+        assert_eq!(
+            outbox.positions().unwrap(),
+            OutboxPositions {
+                acknowledged,
+                last_enqueued,
+            }
+        );
+        assert_eq!(pending.len() as u64, last_enqueued - acknowledged);
+        match failure {
+            SpawnEvidenceFailure::ContextUse | SpawnEvidenceFailure::TerminalLifecycle => {}
+            SpawnEvidenceFailure::StartedLifecycle => assert!(matches!(
+                &pending[0].frame.frame,
+                Some(v1::node_frame::Frame::ContextPacketUseReport(_))
+            )),
+            SpawnEvidenceFailure::AppliedEffect => {
+                let Some(v1::node_frame::Frame::SupervisorLifecycleReceipt(receipt)) =
+                    &pending[0].frame.frame
+                else {
+                    panic!("a tracked spawn must queue terminal evidence before lease release");
+                };
+                assert_eq!(receipt.state, v1::SupervisorWorkerState::Terminated as i32);
+                assert_eq!(receipt.session_id, failed.session_id);
+            }
+        }
+        let inbox = rusqlite::Connection::open(marker["inbox"].as_str().unwrap()).unwrap();
+        let bytes: Vec<u8> = inbox
+            .query_row("SELECT receipt FROM directive_effects", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let effect = v1::DirectiveReceipt::decode(bytes.as_slice()).unwrap();
+        assert_eq!(
+            effect.status,
+            match failure {
+                SpawnEvidenceFailure::AppliedEffect => v1::DirectiveReceiptStatus::Failed,
+                SpawnEvidenceFailure::ContextUse
+                | SpawnEvidenceFailure::StartedLifecycle
+                | SpawnEvidenceFailure::TerminalLifecycle => {
+                    v1::DirectiveReceiptStatus::Applied
+                }
+            } as i32,
+            "uncertain effects must not become successful assignments or replayable spawns"
+        );
+        let claims = ClaimStore::connect(&pool)
+            .await
+            .unwrap()
+            .list_active(&tenant, repository, SystemTime::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            claims.iter().any(|claim| claim.task_id == "task:first"),
+            !matches!(failure, SpawnEvidenceFailure::AppliedEffect),
+            "post-spawn persistence failure released the lease without durable terminal evidence"
+        );
+        let history = supervisors
+            .lifecycle_history(&tenant, repository, &failed.session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            history.len(),
+            usize::from(matches!(failure, SpawnEvidenceFailure::TerminalLifecycle)),
+            "failed local writes must not become server lifecycle receipts",
+        );
+        assert!(history
+            .iter()
+            .all(|entry| entry.receipt.state == SupervisorWorkerState::Started));
+        drop(inbox);
+        drop(outbox);
+        drop(daemon);
+        let _ = shutdown.send(());
+        server.await.unwrap();
+        return;
     }
     if let Some(held_contexts) = held_contexts {
         let _held = tokio::time::timeout(Duration::from_secs(10), held_contexts.acquire_many(2))

@@ -1,0 +1,1 @@
+- Supervisors now track a successful worker spawn before fallible inbox or outbox writes, so receipt failures still trigger explicit process termination. Cleanup retains active state until terminal evidence is durable and does not release a lease after forgetting a failed terminal write. Recovery markers and the surviving receipt prefix remain intact.

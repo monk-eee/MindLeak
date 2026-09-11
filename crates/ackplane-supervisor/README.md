@@ -170,6 +170,14 @@ Normal worker completion cleans up its owned process group before a terminal
 lifecycle is reported. A parent process exiting does not permit a remaining
 descendant to continue writing after the task lease is released.
 
+Successful spawn is tracked before the inbox records its final effect or the
+outbox queues context-use and startup receipts. Failure at any of those writes
+therefore still reaches explicit worker termination. Active cleanup state is
+cleared only after terminal evidence is durably queued. If that write also
+fails, the lease is not released and the run marker remains for operator
+recovery; the server's existing lease expiry still applies. Cleanup neither
+fabricates the missing receipts nor treats an uncertain effect as a new spawn.
+
 The slot retains its session and run marker until its lease release is
 confirmed and all durable receipts are acknowledged. A release RPC failure
 leaves cleanup pending and is retried; a terminal worker is not announced as
@@ -201,7 +209,10 @@ failed slot releases its own lease and retains its recovery marker. The same
 case with transient release failures verifies retries without delaying the
 peer's stop signal. Reopening the failed outbox verifies its original queued
 frames remain unchanged and unacknowledged, followed by one unsent terminal
-receipt.
+receipt. Temporary local queue triggers also reject context-use, startup,
+applied-effect and terminal writes. Those cases verify the surviving receipt
+prefix, retained uncertainty and lease state, including a cleanup retry after
+terminal persistence fails.
 The second tests graph input, lesson activation, retry feedback and refusal of
 cross-session or unleased requests. Without the database variable these gated
 tests skip; a skipped run is not verification. The fixtures test the runtime
