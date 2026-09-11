@@ -77,21 +77,70 @@ fn current_user_sid() -> io::Result<String> {
 mod tests {
     use super::*;
     use interprocess::os::windows::security_descriptor::AsSecurityDescriptorExt;
-    use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION};
+    use windows_sys::Win32::{
+        Foundation::GENERIC_ALL,
+        Security::{EqualSid, GetAce, ACCESS_ALLOWED_ACE, ACCESS_DENIED_ACE, SE_DACL_PROTECTED},
+    };
 
+    // Windows may serialize a SID using an alias; compare the actual owner and ACEs, not SDDL text.
     #[test]
     fn pipe_access_names_the_process_user_not_the_default_owner_group() {
         let sid = current_user_sid().unwrap();
         let descriptor = descriptor().unwrap();
-        let sddl = descriptor
-            .serialize(
-                DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
-                U16CStr::to_string_lossy,
-            )
-            .unwrap();
-        assert!(sddl.contains(&format!("O:{sid}")));
-        assert!(sddl.contains(&format!("(A;;GA;;;{sid})")));
-        assert!(sddl.contains("(D;;GA;;;NU)"));
-        assert!(!sddl.contains(";;;OW)") && !sddl.contains(";;;BA)") && !sddl.contains(";;;WD)"));
+        let expected =
+            SecurityDescriptor::deserialize(&U16CString::from_str(format!("O:{sid}")).unwrap())
+                .unwrap();
+        let network =
+            SecurityDescriptor::deserialize(&U16CString::from_str("O:NU").unwrap()).unwrap();
+        let owner = descriptor.owner().unwrap().0;
+        let expected_owner = expected.owner().unwrap().0;
+        let network_identity = network.owner().unwrap().0;
+        let (acl, defaulted) = descriptor
+            .dacl()
+            .unwrap()
+            .expect("the pipe must have a DACL");
+        assert!(!owner.is_null() && !expected_owner.is_null() && !network_identity.is_null());
+        assert!(
+            !acl.is_null() && !defaulted,
+            "a null/default DACL could grant unintended access"
+        );
+        assert_ne!(
+            descriptor.control_and_revision().unwrap().0 & SE_DACL_PROTECTED,
+            0
+        );
+        // These pointers are owned by the live descriptors; GetAce returns an entry in that ACL.
+        unsafe {
+            assert_ne!(EqualSid(owner.cast_mut(), expected_owner.cast_mut()), 0);
+            assert_eq!(
+                (*acl).AceCount,
+                2,
+                "there must be no extra principal grants"
+            );
+            let mut entry = ptr::null_mut();
+            assert_ne!(GetAce(acl.cast_mut(), 0, &mut entry), 0);
+            let denied = &*entry.cast::<ACCESS_DENIED_ACE>();
+            assert_eq!(denied.Header.AceType, 1);
+            assert_eq!(denied.Header.AceFlags, 0);
+            assert_eq!(denied.Mask, GENERIC_ALL);
+            assert_ne!(
+                EqualSid(
+                    ptr::addr_of!(denied.SidStart).cast_mut().cast(),
+                    network_identity.cast_mut()
+                ),
+                0
+            );
+            assert_ne!(GetAce(acl.cast_mut(), 1, &mut entry), 0);
+            let allowed = &*entry.cast::<ACCESS_ALLOWED_ACE>();
+            assert_eq!(allowed.Header.AceType, 0);
+            assert_eq!(allowed.Header.AceFlags, 0);
+            assert_eq!(allowed.Mask, GENERIC_ALL);
+            assert_ne!(
+                EqualSid(
+                    ptr::addr_of!(allowed.SidStart).cast_mut().cast(),
+                    expected_owner.cast_mut()
+                ),
+                0
+            );
+        }
     }
 }
