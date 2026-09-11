@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     future::Future,
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -39,6 +39,14 @@ use tokio_stream::{
 
 struct Daemon(GroupChild);
 
+#[derive(Default)]
+struct Scenario {
+    stop_while_active: bool,
+    stop_before_spawn: bool,
+    release_failures: usize,
+    fail_first_slot: bool,
+}
+
 #[derive(Clone)]
 struct ReleaseFailures(Arc<AtomicUsize>);
 
@@ -68,15 +76,19 @@ impl Daemon {
             nix::sys::signal::Signal::SIGTERM,
         )
         .unwrap();
-        let exit = wait_for("orderly supervisor shutdown", || {
-            let exit = self.0.try_wait().unwrap();
-            async move { exit }
-        })
-        .await;
+        let exit = self.wait().await;
         assert!(
             exit.success(),
             "supervisor did not shut down cleanly: {exit}"
         );
+    }
+
+    async fn wait(&mut self) -> ExitStatus {
+        wait_for("supervisor exit", || {
+            let exit = self.0.try_wait().unwrap();
+            async move { exit }
+        })
+        .await
     }
 }
 
@@ -90,6 +102,7 @@ impl Drop for Daemon {
 struct ContextReplyGate {
     service: NodeSyncService,
     held_contexts: Option<Arc<tokio::sync::Semaphore>>,
+    reject_first_use: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[tonic::async_trait]
@@ -103,8 +116,45 @@ impl v1::node_sync_service_server::NodeSyncService for ContextReplyGate {
         let mut stream = self.service.synchronize(request).await?.into_inner();
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let held_contexts = self.held_contexts.clone();
+        let reject_first_use = self.reject_first_use.clone();
         tokio::spawn(async move {
+            let mut first_slot = false;
             while let Some(frame) = stream.next().await {
+                if let Ok(reply) = &frame {
+                    if let Some(v1::ackplane_frame::Frame::SupervisorFrameReceipt(receipt)) =
+                        reply.frame.as_ref()
+                    {
+                        first_slot = receipt.supervisor_id.starts_with("multi-agent-first-");
+                    }
+                    if first_slot
+                        && matches!(
+                            reply.frame.as_ref(),
+                            Some(v1::ackplane_frame::Frame::ContextPacketUseAck(_))
+                        )
+                    {
+                        if let Some(gate) = &reject_first_use {
+                            let permit = tokio::select! {
+                                _ = sender.closed() => return,
+                                permit = gate.acquire() => permit.unwrap(),
+                            };
+                            permit.forget();
+                            let _ = sender
+                                .send(Ok(v1::AckplaneFrame {
+                                    frame: Some(v1::ackplane_frame::Frame::Rejection(
+                                        v1::Rejection {
+                                            record_id: "first-slot-use".into(),
+                                            reason: v1::RejectionReason::Malformed as i32,
+                                            retryable: false,
+                                            diagnostic: "injected first-slot delivery rejection"
+                                                .into(),
+                                        },
+                                    )),
+                                }))
+                                .await;
+                            return;
+                        }
+                    }
+                }
                 if let (Some(held), Ok(reply)) = (&held_contexts, &frame) {
                     if matches!(
                         reply.frame.as_ref(),
@@ -210,14 +260,18 @@ async fn assign(
 
 #[tokio::test]
 async fn server_runs_two_agents_with_separate_memory_prompts_and_durable_outcomes() {
-    exercise_two_workers(false, false, 0).await;
+    exercise_two_workers(Scenario::default()).await;
 }
 
 /// Stopping the supervisor used to abandon active processes and their durable receipts.
 #[cfg(unix)]
 #[tokio::test]
 async fn shutdown_stops_both_workers_releases_leases_and_flushes_receipts() {
-    exercise_two_workers(true, false, 0).await;
+    exercise_two_workers(Scenario {
+        stop_while_active: true,
+        ..Scenario::default()
+    })
+    .await;
 }
 
 // Shutdown during context preparation used to report success but leave confirmed
@@ -225,27 +279,54 @@ async fn shutdown_stops_both_workers_releases_leases_and_flushes_receipts() {
 #[cfg(unix)]
 #[tokio::test]
 async fn shutdown_before_context_delivery_releases_confirmed_leases_without_spawning() {
-    exercise_two_workers(true, true, 0).await;
+    exercise_two_workers(Scenario {
+        stop_while_active: true,
+        stop_before_spawn: true,
+        ..Scenario::default()
+    })
+    .await;
 }
 
 // Completion cleared run markers after a release RPC failed, abandoning the
 // tracked leases. Retry release before declaring that the slots are reusable.
 #[tokio::test]
 async fn failed_lease_release_is_retried_before_worker_cleanup_finishes() {
-    exercise_two_workers(false, false, 2).await;
+    exercise_two_workers(Scenario {
+        release_failures: 2,
+        ..Scenario::default()
+    })
+    .await;
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn shutdown_retries_lease_release_before_discarding_run_markers() {
-    exercise_two_workers(true, false, 2).await;
+    exercise_two_workers(Scenario {
+        stop_while_active: true,
+        release_failures: 2,
+        ..Scenario::default()
+    })
+    .await;
 }
 
-async fn exercise_two_workers(
-    stop_while_active: bool,
-    stop_before_spawn: bool,
-    release_failures: usize,
-) {
+// A fatal slot result dropped the entire task group, bypassing active peers'
+// lease release and terminal receipts. Drain peers before returning the failure.
+#[tokio::test]
+async fn a_failed_slot_drains_its_active_peer_before_supervisor_exit() {
+    exercise_two_workers(Scenario {
+        fail_first_slot: true,
+        ..Scenario::default()
+    })
+    .await;
+}
+
+async fn exercise_two_workers(scenario: Scenario) {
+    let Scenario {
+        stop_while_active,
+        stop_before_spawn,
+        release_failures,
+        fail_first_slot,
+    } = scenario;
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
@@ -389,9 +470,11 @@ async fn exercise_two_workers(
     .with_context_service(context)
     .with_work_command_service(WorkCommandService::connect(&pool).await.unwrap());
     let held_contexts = stop_before_spawn.then(|| Arc::new(tokio::sync::Semaphore::new(0)));
+    let reject_first_use = fail_first_slot.then(|| Arc::new(tokio::sync::Semaphore::new(0)));
     let node_sync = ContextReplyGate {
         service: node_sync,
         held_contexts: held_contexts.clone(),
+        reject_first_use: reject_first_use.clone(),
     };
     let claims = ClaimDelegationService::new(ClaimStore::connect(&pool).await.unwrap());
     let query = WorkQueryService::new(WorkStore::connect(&pool).await.unwrap());
@@ -419,6 +502,7 @@ async fn exercise_two_workers(
             .unwrap();
     });
     let workers_file = root.path().join("workers.json");
+    let daemon_log = root.path().join("daemon.log");
     fs::write(&workers_file, serde_json::to_vec(&commands).unwrap()).unwrap();
     let mut daemon = Daemon(
         Command::new(env!("CARGO_BIN_EXE_ackplane-supervisor"))
@@ -441,7 +525,11 @@ async fn exercise_two_workers(
             .env("RUST_LOG", "warn")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
+            .stderr(if fail_first_slot {
+                Stdio::from(fs::File::create(&daemon_log).unwrap())
+            } else {
+                Stdio::inherit()
+            })
             .group_spawn()
             .unwrap(),
     );
@@ -575,6 +663,61 @@ async fn exercise_two_workers(
                 .then_some(())
         })
         .await;
+    }
+    if let Some(reject_first_use) = reject_first_use {
+        let peer = &sessions[1];
+        wait_for("healthy peer startup receipt", || async {
+            supervisors
+                .lifecycle_history(&tenant, repository, &peer.session_id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|entry| entry.receipt.state == SupervisorWorkerState::Started)
+                .then_some(())
+        })
+        .await;
+        reject_first_use.add_permits(1);
+        let exit = daemon.wait().await;
+        assert!(
+            !exit.success(),
+            "a fatal slot failure must not become a successful supervisor exit"
+        );
+        let diagnostic = fs::read_to_string(&daemon_log).unwrap();
+        assert!(
+            diagnostic.contains("injected first-slot delivery rejection"),
+            "{diagnostic}"
+        );
+        let claims = ClaimStore::connect(&pool)
+            .await
+            .unwrap()
+            .list_active(&tenant, repository, SystemTime::now())
+            .await
+            .unwrap();
+        assert!(
+            claims.iter().all(|claim| claim.task_id != "task:second"),
+            "the failed slot aborted its healthy peer without releasing the peer lease"
+        );
+        let history = supervisors
+            .lifecycle_history(&tenant, repository, &peer.session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            history.len(),
+            2,
+            "healthy peer shutdown must record exactly one terminal receipt"
+        );
+        assert!(history
+            .iter()
+            .any(|entry| entry.receipt.state == SupervisorWorkerState::Terminated));
+        assert!(!root.path().join("state/second.worker-run.json").exists());
+        assert!(
+            root.path().join("state/first.worker-run.json").exists(),
+            "the failed slot must retain its unacknowledged evidence"
+        );
+        drop(daemon);
+        let _ = shutdown.send(());
+        server.await.unwrap();
+        return;
     }
     remaining_release_failures.store(release_failures, Ordering::SeqCst);
     let expected_state = if stop_while_active {

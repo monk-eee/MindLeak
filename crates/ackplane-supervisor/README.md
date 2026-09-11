@@ -146,6 +146,13 @@ continue to give every slot a separate checkout or worktree.
   for operator recovery. A refusal is not an acknowledgement, and restarting
   does not repair invalid evidence. Retryable refusals retain the same bytes
   and follow the existing reconnect path.
+- **One worker slot fails** - requests shutdown of the remaining slots instead
+  of aborting them immediately. Peers use their normal process-stop, lease-release
+  and receipt-flush path, with up to thirty seconds to finish. The supervisor
+  still exits unsuccessfully with the original error; additional cleanup errors
+  are logged. The failed slot's unaccepted evidence remains for recovery, and
+  any peer that cannot finish within the deadline retains its existing recovery
+  state. This does not automatically restart failed work.
 - **Unaccounted previous run** - refuses to reuse that worker slot. Its
   `<slot>.worker-run.json` marker identifies the session, workspace and durable
   queue files. Preserve that evidence and inspect the old process tree and
@@ -186,6 +193,9 @@ replies after the real server has compiled them and verifies that shutdown
 releases the confirmed leases without spawning workers or inventing lifecycle
 receipts. Injected release RPC failures verify that both normal completion and
 shutdown retry before clearing run markers, without duplicate lifecycle receipts.
+An injected failure after both workers start verifies that a healthy peer
+finishes shutdown before the supervisor reports the original error, while the
+failed slot retains its recovery marker.
 The second tests graph input, lesson activation, retry feedback and refusal of
 cross-session or unleased requests. Without the database variable these gated
 tests skip; a skipped run is not verification. The fixtures test the runtime

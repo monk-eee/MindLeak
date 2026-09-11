@@ -72,6 +72,7 @@ pub enum DaemonError {
 /// machine it runs on; it does not claim a container or cloud runtime it has
 /// no way to verify.
 const RUNTIME: SupervisorRuntime = SupervisorRuntime::LocalMachine;
+const SLOT_SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
 /// Build the signer this configuration selected.
 ///
@@ -376,13 +377,15 @@ pub async fn run(
     }
     tokio::task::LocalSet::new()
         .run_until(async {
+            let mut stopping = stopping;
+            let (stop_workers, worker_stopping) = tokio::sync::watch::channel(*stopping.borrow());
             let mut workers: tokio::task::JoinSet<Result<(), DaemonError>> =
                 tokio::task::JoinSet::new();
             for (name, command) in &config.workers {
                 let mut config = config.clone();
                 let name = name.clone();
                 let command = command.clone();
-                let stopping = stopping.clone();
+                let stopping = worker_stopping.clone();
                 workers.spawn_local(async move {
                     let base = config.supervisor_id.clone();
                     while !*stopping.borrow() {
@@ -400,10 +403,43 @@ pub async fn run(
                     Ok(())
                 });
             }
-            while let Some(result) = workers.join_next().await {
-                result.map_err(|error| DaemonError::Worker(error.to_string()))??;
+            let mut first_error = None;
+            let mut shutdown_deadline = None;
+            while !workers.is_empty() {
+                let result = if let Some(deadline) = shutdown_deadline {
+                    match tokio::time::timeout_at(deadline, workers.join_next()).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            tracing::error!(remaining_slots = workers.len(), "worker shutdown deadline exceeded; unfinished recovery evidence is retained");
+                            return Err(first_error.unwrap_or_else(|| DaemonError::Worker(
+                                "worker shutdown deadline exceeded; unfinished recovery evidence is retained".into(),
+                            )));
+                        }
+                    }
+                } else {
+                    tokio::select! {
+                        result = workers.join_next() => result,
+                        _ = stopping.wait_for(|stop| *stop) => {
+                            stop_workers.send_replace(true);
+                            shutdown_deadline = Some(tokio::time::Instant::now() + SLOT_SHUTDOWN_GRACE);
+                            continue;
+                        }
+                    }
+                };
+                let Some(result) = result else { break; };
+                if let Err(error) = result
+                    .map_err(|error| DaemonError::Worker(error.to_string()))
+                    .and_then(|result| result)
+                {
+                    tracing::error!(%error, "worker slot failed; stopping remaining slots through their shutdown path");
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    stop_workers.send_replace(true);
+                    shutdown_deadline.get_or_insert_with(|| tokio::time::Instant::now() + SLOT_SHUTDOWN_GRACE);
+                }
             }
-            Ok(())
+            first_error.map_or(Ok(()), Err)
         })
         .await
 }
