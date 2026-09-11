@@ -133,7 +133,7 @@ impl WorkCommandService {
                     outcome: WorkCommandOutcome::PendingConfirmation,
                     reason: "A verified principal and policy basis passed initial scope checks; confirmation is required before effect.".to_string(),
                     evidence_refs: request.policy_refs,
-                    occurred_at: now,
+                    occurred_at: command.command.recorded_at,
                 },
                 now,
             )

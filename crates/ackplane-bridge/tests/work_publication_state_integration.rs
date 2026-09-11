@@ -308,41 +308,48 @@ async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositor
     assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
 }
 
+/// Command behavior is exercised by scripts/bridge-work-command-client.test.mjs
+/// and scripts/bridge-work-page.test.mjs; this guards their browser wiring and
+/// the read-only publication diagnostics that must remain available.
 #[test]
-fn work_page_renders_publication_and_disabled_command_availability_without_a_mutation_surface() {
+fn work_page_preserves_publication_diagnostics_and_wires_external_command_modules() {
+    const WORK_MODULE: &str = include_str!("../static/work-page.mjs");
+    const WORK_STYLES: &str = include_str!("../static/work-page.css");
+
     for required in [
         "id=\"publication\"",
-        "renderPublication(data)",
-        "claims_only_total",
-        "Industrial Work has not been published",
-        "Claims are published, but Work is not",
-        "Claims awaiting an Industrial Work record",
-        "id=\"commands\"",
-        "renderCommands(capabilities)",
-        "authorization_unavailable",
-        // The page must distinguish a command the API accepts from one it
-        // refuses, and must say why an accepted command's control is still
-        // disabled -- the page has no submit wiring, which is not the same
-        // claim as "no verified principal". Reporting both as a flat
-        // "unavailable" is the defect this guards.
-        "available_without_policy",
-        "This page does not submit them yet",
-        "no control wired to submit it",
-        "command-authorization-reason",
-        "control.disabled=true",
+        "id=\"publication-summary\"",
+        "id=\"claims-only-rows\"",
+        "id=\"doctor-link\"",
+        "id=\"state-filter\"",
+        "value=\"in_review\"",
+        "value=\"completed\"",
+        "id=\"task-detail\"",
+        "id=\"task-scope\"",
+        "id=\"task-waits\"",
+        "id=\"task-history\"",
         "class=\"table-scroll\"",
-        ".table-scroll table { min-width:720px; }",
+        "<link rel=\"stylesheet\" href=\"/static/work-page.css\">",
+        "<script type=\"module\" src=\"/static/work-page.mjs\"></script>",
     ] {
         assert!(
             WORK_PAGE.contains(required),
             "work.html is missing {required}"
         );
     }
-    assert_eq!(WORK_PAGE.matches("fetch(").count(), 1);
-    for mutating_verb in ["\"POST\"", "\"PUT\"", "\"PATCH\"", "\"DELETE\""] {
+    for required in [
+        "import { WorkCommandClient } from \"./work-command-client.mjs\";",
+        "claims_only_total",
+        "claims_only",
+        "not_published",
+        "/work/doctor",
+    ] {
         assert!(
-            !WORK_PAGE.contains(mutating_verb),
-            "work.html must not introduce a mutating request ({mutating_verb})"
+            WORK_MODULE.contains(required),
+            "work-page.mjs is missing {required}"
         );
     }
+    assert!(!WORK_PAGE.contains("fetch("));
+    assert!(WORK_STYLES.contains(".table-scroll"));
+    assert!(WORK_STYLES.contains("overflow-x: auto"));
 }

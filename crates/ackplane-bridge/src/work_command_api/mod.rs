@@ -154,6 +154,15 @@ async fn submit_work_command(
         expires_at_seconds,
         payload,
     } = request;
+    let issuing_principal_id = match (issuing_principal_id, &authorization) {
+        (Some(principal_id), _) => principal_id,
+        (None, WorkCommandAuthorization::Verified(principal)) => principal.principal_id.clone(),
+        (
+            None,
+            WorkCommandAuthorization::LoopbackDevelopment
+            | WorkCommandAuthorization::MissingPrincipal,
+        ) => return Err(StatusCode::FORBIDDEN),
+    };
     let payload = build_payload(payload)?;
     let kind = payload.kind();
     // The store requires `task_id: None` on the command itself for
