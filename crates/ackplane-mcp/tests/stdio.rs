@@ -14,6 +14,13 @@ fn exchange(environment: &[(&str, &str)], requests: &[Value]) -> Vec<Value> {
     command
         .env_remove("ACKPLANE_MCP_ENDPOINT")
         .env_remove("ACKPLANE_NODE_KEY_PATH")
+        .env_remove("MINDLEAK_ACKPLANE_STATE_DIR")
+        .env_remove("MINDLEAK_ACKPLANE_TENANT_ID")
+        .env_remove("MINDLEAK_ACKPLANE_REPOSITORY_ID")
+        .env_remove("MINDLEAK_ACKPLANE_NODE_ID")
+        .env_remove("MINDLEAK_ACKPLANE_SIGNING_KEY_ID")
+        .env_remove("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED")
+        .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -65,10 +72,9 @@ fn the_server_completes_a_handshake_and_advertises_its_tool_over_stdio() {
     assert_eq!(responses[1]["result"]["tools"][0]["name"], "open_session");
 }
 
-/// ADR-0137 clause 2 end to end: `open_session` works over the real process's
-/// stdio even with no Ackplane endpoint reachable, because it never dials one.
+/// Session registration must not bypass the front door's required node trust.
 #[test]
-fn open_session_returns_a_real_agent_id_over_stdio() {
+fn an_unconfigured_front_door_refuses_session_open_over_stdio() {
     let responses = exchange(
         &[("ACKPLANE_MCP_ENDPOINT", "http://127.0.0.1:8443")],
         &[request(
@@ -82,16 +88,12 @@ fn open_session_returns_a_real_agent_id_over_stdio() {
     );
 
     assert_eq!(responses.len(), 1, "got: {responses:?}");
-    assert_eq!(responses[0]["result"]["isError"], false);
-    let content: Value = responses[0]["result"]["content"][0]["text"]
+    assert_eq!(responses[0]["result"]["isError"], true);
+    let content = responses[0]["result"]["content"][0]["text"]
         .as_str()
-        .and_then(|text| serde_json::from_str(text).ok())
-        .expect("open_session's content is a JSON body");
+        .expect("the refusal is visible");
     assert!(
-        content["agent_id"]
-            .as_str()
-            .expect("agent_id is a string")
-            .starts_with("session:v1:"),
+        content.contains("MINDLEAK_ACKPLANE_STATE_DIR"),
         "got: {content}"
     );
 }

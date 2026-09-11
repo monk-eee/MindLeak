@@ -5,11 +5,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ackplane_client::{ClaimSigner, NodeSyncConnection};
+use ackplane_client::NodeSyncConnection;
 use ackplane_protocol::{context_packet::*, supervisor::*, v1};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use super::{registration, session, signer, DaemonError};
+use super::{registration, session, DaemonError};
 use crate::{
     config::SupervisorConfig, AdapterError, ProcessWorkerAdapter, SupervisorInbox,
     SupervisorOutbox, WorkerAdapter, WorkerCommand,
@@ -21,7 +21,6 @@ pub(super) struct WorkerRuntime {
     pub registration: SupervisorRegistration,
     pub inbox: SupervisorInbox,
     pub outbox: SupervisorOutbox,
-    pub signer: Box<dyn ClaimSigner>,
     adapter: ProcessWorkerAdapter,
     command: Option<WorkerCommand>,
     pub(super) lease: Option<WorkerLease>,
@@ -37,9 +36,9 @@ pub(super) struct WorkerLease {
 }
 
 impl WorkerRuntime {
-    pub fn new(config: &SupervisorConfig) -> Result<Self, DaemonError> {
+    pub fn new(config: &SupervisorConfig, node_id: &str) -> Result<Self, DaemonError> {
         let started_at = OffsetDateTime::now_utc();
-        let registration = registration(config);
+        let registration = registration(config, node_id);
         let session = session(config, started_at)?;
         Ok(Self {
             inbox: SupervisorInbox::open(
@@ -55,7 +54,6 @@ impl WorkerRuntime {
             session,
             registration,
             started_at,
-            signer: signer(config)?,
             adapter: ProcessWorkerAdapter::new(),
             command: config.workers.values().next().cloned(),
             lease: None,
@@ -185,8 +183,8 @@ impl WorkerRuntime {
             }
         };
         let scope = ContextPacketScope {
-            tenant_id: config.identity.tenant_id.clone(),
-            repository_id: config.identity.repository_id.clone(),
+            tenant_id: config.node.tenant_id.clone(),
+            repository_id: config.node.repository_id.clone(),
             task_id: directive.task_id.clone(),
             goal_id: task.goal_id,
             agent_session_id: self.session.session_id.clone(),

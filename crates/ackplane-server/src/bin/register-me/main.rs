@@ -13,17 +13,15 @@
 //! developer shortcut standing in for the not-yet-built approval surface,
 //! never a claim that this is how a real deployment's administrator works.
 //! `activate` proves possession of the approved key, then opens one real
-//! `NodeSync` stream and sends a single signed heartbeat event so the node
+//! `NodeSync` stream and sends one exactly replayable signed enrollment event so the node
 //! is visibly live (e.g. in the Bridge Fleet view). `EnrollmentActivationResult`
 //! returns the assigned `signing_key_id` directly, so `activate` needs no
 //! database access at all.
 //!
-//! `--key-path` defaults to `ackplane_client::identity::DEFAULT_KEY_PATH`
-//! (override with `MINDLEAK_ACKPLANE_KEY_PATH` or an explicit `--key-path`)
-//! so a single-node repository's identity lands somewhere
-//! `compiled_federation_readiness` already knows to look, without the node
-//! and the administrator needing to pass a path between each other by hand
-//! (closes `gaps.d/ackplane-client-cannot-detect-unenrolled-repositories.md`).
+//! `request` explicitly selects `credential-facility-software` and an absolute
+//! user-local `--state-dir`. The node provider owns the key, challenge and
+//! activation receipt; the CLI persists only its immutable public request.
+//! Raw key paths are refused rather than imported or used as a fallback.
 //!
 //! `--tenant-name` + `--salt-path` derive the same tenant id the Bridge
 //! queries for (ADR-0098 decision 3) -- use it, or an enrolled repository
@@ -36,23 +34,17 @@ use std::{
     process::ExitCode,
 };
 
-use ed25519_dalek::Signer;
 use sha2::{Digest, Sha256};
 use tonic::Request;
 
-use ackplane_client::{auth::SeedSigner, node_sync::NodeSyncConnection};
+use ackplane_node::{
+    CredentialCandidate, CredentialProvider, CredentialProviderError, NodeSigner, SigningBinding,
+};
 use ackplane_protocol::v1::{self, node_enrollment_service_client::NodeEnrollmentServiceClient};
-use ackplane_server::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::enrollment_store::{EnrollmentApproval, EnrollmentStore};
 use ackplane_server::envelope_signature::envelope_signing_bytes;
 
 const DEFAULT_GRPC_ENDPOINT: &str = "http://127.0.0.1:8443";
-
-fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .expect("format now")
-}
 
 /// The same `hex(SHA-256(salt || tenant_name))` the Bridge derives (ADR-0098
 /// decision 3). A node must enroll under this exact value, not the bare
@@ -72,52 +64,80 @@ fn dev_tenant_token(salt: &[u8], tenant_name: &str) -> String {
 /// Simple `--flag value` parser: no CLI-argument-parsing dependency exists
 /// anywhere in this workspace yet, and this surface is small enough not to
 /// be the reason to add one.
-fn parse_flags(args: &[String]) -> HashMap<String, String> {
+fn parse_flags(args: &[String]) -> Result<HashMap<String, String>, String> {
     let mut flags = HashMap::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
-        if let Some(name) = arg.strip_prefix("--") {
-            if name == "skip-sync" {
-                flags.insert(name.to_string(), String::new());
-            } else if let Some(value) = iter.next() {
-                flags.insert(name.to_string(), value.clone());
-            }
+        let name = arg.strip_prefix("--").ok_or("expected a named --flag")?;
+        if !matches!(
+            name,
+            "repo"
+                | "node"
+                | "tenant-id"
+                | "tenant-name"
+                | "salt-path"
+                | "grpc-endpoint"
+                | "display-name"
+                | "capability"
+                | "request-id"
+                | "fingerprint"
+                | "admin-database-url"
+                | "approved-by"
+                | "skip-sync"
+                | "provider"
+                | "state-dir"
+        ) {
+            return Err(format!(
+                "unsupported option --{name}; raw key options are not supported"
+            ));
+        }
+        let value = if name == "skip-sync" {
+            String::new()
+        } else {
+            iter.next()
+                .filter(|value| !value.starts_with("--"))
+                .ok_or_else(|| format!("--{name} requires a value"))?
+                .clone()
+        };
+        if flags.insert(name.to_string(), value).is_some() {
+            return Err(format!("--{name} may be specified only once"));
         }
     }
-    flags
+    Ok(flags)
 }
 
 fn require<'a>(flags: &'a HashMap<String, String>, name: &str) -> Result<&'a str, String> {
     flags
         .get(name)
         .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("--{name} is required"))
 }
 
-/// The key path this invocation should use: an explicit `--key-path`
-/// override, or the same repository-local default (and
-/// `MINDLEAK_ACKPLANE_KEY_PATH` override) `ackplane-core`'s
-/// `compiled_federation_readiness` resolves, so a single-node repository
-/// never has to pass a path from `request` to `activate` by hand.
-fn key_path(flags: &HashMap<String, String>) -> PathBuf {
-    flags
-        .get("key-path")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| ackplane_client::resolve_key_path(&|name| std::env::var(name).ok()))
+fn state_directory(flags: &HashMap<String, String>) -> Result<PathBuf, String> {
+    if flags.contains_key("key-path") {
+        return Err(
+            "--key-path is not supported; restore a provider identity instead of importing a seed"
+                .to_string(),
+        );
+    }
+    let path = PathBuf::from(require(flags, "state-dir")?);
+    if !path.is_absolute() {
+        return Err("--state-dir must be an absolute user-local directory".to_string());
+    }
+    Ok(path)
 }
 
-fn state_path(key_path: &Path) -> PathBuf {
-    let mut path = key_path.as_os_str().to_owned();
-    path.push(".enrollment.json");
-    PathBuf::from(path)
+fn state_path(directory: &Path) -> PathBuf {
+    directory.join("enrollment-request.json")
 }
 
 /// Resolve the wire `tenant_id`: derive it from `--tenant-name` + `--salt-path`
 /// (matches what the Bridge will query for), or take `--tenant-id` directly
 /// for a deployment that assigns tenant ids some other way (e.g. real OIDC).
 fn resolve_tenant_id(flags: &HashMap<String, String>) -> Result<String, String> {
-    if let Some(tenant_id) = flags.get("tenant-id") {
-        return Ok(tenant_id.clone());
+    if flags.contains_key("tenant-id") {
+        return Ok(require(flags, "tenant-id")?.to_string());
     }
     let tenant_name = require(flags, "tenant-name")
         .map_err(|_| "either --tenant-id or --tenant-name + --salt-path is required".to_string())?;
@@ -127,28 +147,31 @@ fn resolve_tenant_id(flags: &HashMap<String, String>) -> Result<String, String> 
     Ok(dev_tenant_token(&salt, tenant_name))
 }
 
-mod commands;
-mod keys;
-mod state;
+mod enrollment;
+mod provider;
+mod request;
+mod serve;
 
-use keys::{load_key, load_or_generate_key};
-use state::SavedRequest;
+use request::SavedRequest;
 
 fn print_usage() {
     eprintln!(
         "register-me: enroll a repository node with Ackplane\n\n\
          USAGE:\n\
          \x20 register-me request  --repo R --node N (--tenant-name T --salt-path PATH | --tenant-id ID)\n\
-         \x20                      [--grpc-endpoint URL] [--key-path PATH] [--display-name NAME]\n\
+         \x20                      --provider credential-facility-software --state-dir ABSOLUTE_PATH\n\
+         \x20                      [--grpc-endpoint URL] [--display-name NAME]\n\
          \x20                      [--capability C,C]\n\
          \x20 register-me approve  --request-id ID (--tenant-name T --salt-path PATH | --tenant-id ID)\n\
          \x20                      --repo R --fingerprint FP --admin-database-url URL\n\
          \x20                      [--approved-by NAME]\n\
-         \x20 register-me activate --request-id ID [--key-path PATH] [--grpc-endpoint URL] [--skip-sync]\n\n\
-         `--key-path` defaults to the same repository-local path on every subcommand\n\
-         (see `ackplane_client::identity::DEFAULT_KEY_PATH`; override with\n\
-         `MINDLEAK_ACKPLANE_KEY_PATH` or an explicit flag).\n\n\
-         Activation saves the assigned key ID and receipt before attempting NodeSync.\n\
+         \x20 register-me activate --request-id ID --state-dir ABSOLUTE_PATH [--grpc-endpoint URL] [--skip-sync]\n\n\
+         \x20 register-me serve --state-dir ABSOLUTE_PATH [--grpc-endpoint URL]\n\n\
+         Use one user-local state directory per repository. The explicitly selected software\n\
+         provider stores its key in the OS credential facility, never a seed file or dotenv.\n\
+         Raw key options and implicit replacement are refused. Repeating an identical pending\n\
+         request resumes it; changed enrollment parameters are refused.\n\n\
+         The provider saves the assigned key ID and receipt before attempting NodeSync.\n\
          Repeating `activate` reuses that record; `--skip-sync` reports recorded activation\n\
          only and does not verify that the node is currently live or authorized.\n\n\
          `--tenant-name` + `--salt-path` derive the same tenant id the Bridge queries for --\n\
@@ -157,7 +180,7 @@ fn print_usage() {
          `request` is the only step a real node runs unattended; `approve` is a separate\n\
          administrator action (a local-dev database shortcut standing in for the approval\n\
          RPC/UI that does not exist yet); `activate` proves possession and opens one real\n\
-         NodeSync stream with a signed heartbeat event, using the signing_key_id\n\
+         NodeSync stream with an exactly replayable signed enrollment event, using the signing_key_id\n\
          EnrollmentActivationResult returns directly -- no database access needed."
     );
 }
@@ -170,12 +193,19 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let command = args.remove(0);
-    let flags = parse_flags(&args);
+    let flags = match parse_flags(&args) {
+        Ok(flags) => flags,
+        Err(error) => {
+            eprintln!("register-me: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     let result = match command.as_str() {
-        "request" => commands::run_request(flags).await,
-        "approve" => commands::run_approve(flags).await,
-        "activate" => commands::run_activate(flags).await,
+        "request" => enrollment::run_request(flags).await,
+        "approve" => enrollment::run_approve(flags).await,
+        "activate" => enrollment::run_activate(flags).await,
+        "serve" => serve::run(flags).await,
         _ => {
             print_usage();
             return ExitCode::FAILURE;
@@ -192,225 +222,4 @@ async fn main() -> ExitCode {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_flags_reads_flag_value_pairs() {
-        let args: Vec<String> = ["--repo", "r", "--node", "n"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let flags = parse_flags(&args);
-        assert_eq!(flags.get("repo").map(String::as_str), Some("r"));
-        assert_eq!(flags.get("node").map(String::as_str), Some("n"));
-        assert_eq!(flags.len(), 2);
-    }
-
-    #[test]
-    fn parse_flags_keeps_skip_sync_separate_from_value_flags() {
-        for args in [
-            ["--skip-sync", "--request-id", "request-test"],
-            ["--request-id", "request-test", "--skip-sync"],
-        ] {
-            let flags = parse_flags(&args.map(str::to_string));
-            assert!(flags.contains_key("skip-sync"));
-            assert_eq!(
-                flags.get("request-id").map(String::as_str),
-                Some("request-test")
-            );
-            assert_eq!(flags.len(), 2);
-        }
-    }
-
-    #[test]
-    fn parse_flags_ignores_a_dangling_flag_with_no_value() {
-        let args: Vec<String> = ["--repo", "r", "--dangling"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
-        let flags = parse_flags(&args);
-        assert_eq!(flags.get("repo").map(String::as_str), Some("r"));
-        assert!(!flags.contains_key("dangling"));
-        assert_eq!(flags.len(), 1);
-    }
-
-    #[test]
-    fn require_reports_the_missing_flag_by_name() {
-        let flags = HashMap::new();
-        let error = require(&flags, "repo").expect_err("must be missing");
-        assert_eq!(error, "--repo is required");
-    }
-
-    #[test]
-    fn key_path_defaults_to_the_well_known_repository_local_path() {
-        let flags = HashMap::new();
-        assert_eq!(
-            key_path(&flags),
-            PathBuf::from(ackplane_client::DEFAULT_KEY_PATH)
-        );
-    }
-
-    #[test]
-    fn key_path_honors_an_explicit_override() {
-        let mut flags = HashMap::new();
-        flags.insert("key-path".to_string(), "/tmp/explicit.key".to_string());
-        assert_eq!(key_path(&flags), PathBuf::from("/tmp/explicit.key"));
-    }
-
-    #[test]
-    fn state_path_is_the_key_path_with_a_suffix() {
-        assert_eq!(
-            state_path(Path::new("register-me-my-node.key")),
-            PathBuf::from("register-me-my-node.key.enrollment.json")
-        );
-    }
-
-    #[test]
-    fn dev_tenant_token_is_stable_and_not_the_bare_name() {
-        let salt = b"a-fixed-test-salt";
-        let first = dev_tenant_token(salt, "demo-tenant");
-        let second = dev_tenant_token(salt, "demo-tenant");
-        assert_eq!(first, second);
-        assert_ne!(first, "demo-tenant");
-        assert_eq!(first.len(), 64);
-    }
-
-    #[test]
-    fn dev_tenant_token_differs_across_tenant_names_under_the_same_salt() {
-        let salt = b"a-fixed-test-salt";
-        assert_ne!(
-            dev_tenant_token(salt, "tenant-a"),
-            dev_tenant_token(salt, "tenant-b")
-        );
-    }
-
-    #[test]
-    fn resolve_tenant_id_prefers_an_explicit_tenant_id_override() {
-        let mut flags = HashMap::new();
-        flags.insert("tenant-id".to_string(), "raw-token".to_string());
-        // No --tenant-name/--salt-path supplied; if the override were not
-        // honoured this would fail trying to require --tenant-name.
-        assert_eq!(resolve_tenant_id(&flags).unwrap(), "raw-token");
-    }
-
-    #[test]
-    fn resolve_tenant_id_derives_from_name_and_salt_file() {
-        let salt_path =
-            std::env::temp_dir().join(format!("register-me-salt-test-{}.bin", std::process::id()));
-        std::fs::write(&salt_path, b"a-fixed-test-salt").expect("write salt");
-
-        let mut flags = HashMap::new();
-        flags.insert("tenant-name".to_string(), "demo-tenant".to_string());
-        flags.insert(
-            "salt-path".to_string(),
-            salt_path.to_string_lossy().into_owned(),
-        );
-
-        let resolved = resolve_tenant_id(&flags).expect("resolves");
-        assert_eq!(
-            resolved,
-            dev_tenant_token(b"a-fixed-test-salt", "demo-tenant")
-        );
-
-        std::fs::remove_file(&salt_path).ok();
-    }
-
-    #[test]
-    fn resolve_tenant_id_fails_without_either_form() {
-        let flags = HashMap::new();
-        let error = resolve_tenant_id(&flags).expect_err("must fail");
-        assert_eq!(
-            error,
-            "either --tenant-id or --tenant-name + --salt-path is required"
-        );
-    }
-
-    #[test]
-    fn load_or_generate_key_persists_and_reuses_the_same_seed() {
-        let path =
-            std::env::temp_dir().join(format!("register-me-key-test-{}.key", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-
-        let first = load_or_generate_key(&path).expect("generates a key");
-        let second = load_or_generate_key(&path).expect("reuses the key");
-        assert_eq!(first.to_bytes(), second.to_bytes());
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    // A corrupt key used to be overwritten, changing an enrolled identity without consent.
-    #[test]
-    fn load_or_generate_key_preserves_a_corrupt_existing_seed() {
-        let path = std::env::temp_dir().join(format!(
-            "register-me-corrupt-key-test-{}.key",
-            std::process::id()
-        ));
-        let corrupt = b"damaged-enrollment-key";
-        std::fs::write(&path, corrupt).expect("write corrupt fixture");
-
-        let result = load_or_generate_key(&path);
-        let preserved = std::fs::read(&path).expect("read fixture") == corrupt;
-        std::fs::remove_file(&path).expect("remove fixture");
-
-        assert!(preserved, "an invalid persistent key must not be replaced");
-        assert_eq!(
-            result.err().map(|error| error.kind()),
-            Some(std::io::ErrorKind::InvalidData)
-        );
-    }
-
-    // Activation must use the approved key, never silently generate a different identity.
-    #[tokio::test]
-    async fn activation_preserves_missing_corrupt_and_mismatched_approved_keys() {
-        let approved = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
-        for (existing, expected_error) in [
-            (None, "key"),
-            (Some(vec![7; 3]), "32-byte Ed25519 seed"),
-            (Some(vec![8; 32]), "saved enrollment fingerprint"),
-        ] {
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("node.key");
-            let state = state_path(&path);
-            let saved = SavedRequest {
-                request_id: "request-test".to_string(),
-                tenant_id: "tenant-test".to_string(),
-                repository_id: "repository-test".to_string(),
-                node_id: "node-test".to_string(),
-                public_key_fingerprint: public_key_fingerprint(
-                    &approved.verifying_key().to_bytes(),
-                ),
-                grpc_endpoint: "http://127.0.0.1:1".to_string(),
-                activation_nonce: None,
-                activation: None,
-            };
-            let saved_bytes = serde_json::to_vec(&saved).unwrap();
-            std::fs::write(&state, &saved_bytes).unwrap();
-            if let Some(bytes) = &existing {
-                std::fs::write(&path, bytes).unwrap();
-            }
-            let flags = HashMap::from([
-                ("request-id".to_string(), saved.request_id),
-                ("key-path".to_string(), path.to_string_lossy().into_owned()),
-            ]);
-
-            let error = commands::run_activate(flags)
-                .await
-                .expect_err("must refuse the key");
-
-            assert!(error.contains(expected_error));
-            assert!(
-                !error.contains("could not reach"),
-                "refuse before contacting Ackplane"
-            );
-            match existing {
-                Some(bytes) => assert_eq!(std::fs::read(&path).unwrap(), bytes),
-                None => assert!(
-                    !path.exists(),
-                    "activation must not create a replacement key"
-                ),
-            }
-            assert_eq!(std::fs::read(&state).unwrap(), saved_bytes);
-        }
-    }
-}
+mod tests;

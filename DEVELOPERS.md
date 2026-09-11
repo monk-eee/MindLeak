@@ -180,6 +180,12 @@ scratch recovery databases. It never starts or resets the live Compose stack.
 
 The runner builds every workspace test target with all features, migrates the
 test database, and runs the workspace suite with both database gates enabled.
+Native credential validation is also required. On Linux, install
+`dbus-run-session` and `gnome-keyring-daemon`; the runner uses a fresh D-Bus
+session and private temporary keyring directories, not the desktop session.
+macOS and Windows use Keychain and Credential Manager. The wrapper is also
+available as `node scripts/credential-test.mjs -- <command> [args...]` for a
+focused credential-dependent test or `make coverage` with database gates enabled.
 Missing prerequisites and failing commands stop it instead of silently skipping
 database coverage. CI's **Industrial (database and recovery)** job runs the same
 command against an ephemeral pgvector/PostgreSQL service. The ordinary local-only
@@ -187,6 +193,70 @@ test command remains independent of PostgreSQL.
 
 See [Industrial stabilization](docs/INDUSTRIAL-STABILIZATION.md) for the ordered
 tasks, database setup contract, acceptance criteria and remaining release gates.
+
+## Provider-backed enrollment
+
+`register-me` keeps node keys in the explicitly selected OS credential-backed
+software provider. Use an absolute, user-local state directory outside the
+repository, unique to this node. Replace the public identifiers and path in
+these commands with the deployment's values:
+
+```text
+cargo run --locked -p ackplane-server --bin register-me -- request --tenant-id TENANT_ID --repo REPOSITORY_ID --node NODE_ID --provider credential-facility-software --state-dir ABSOLUTE_STATE_DIR --grpc-endpoint https://ackplane.example:8443
+cargo run --locked -p ackplane-server --bin register-me -- activate --request-id REQUEST_ID --state-dir ABSOLUTE_STATE_DIR
+cargo run --locked -p ackplane-server --bin register-me -- serve --state-dir ABSOLUTE_STATE_DIR
+```
+
+Between those commands an independent administrator must approve the exact
+fingerprint. `register-me approve` is still only a local-development direct
+database shortcut, not production administrator authentication. For the
+development Bridge, `--tenant-name NAME --salt-path ABSOLUTE_SALT_PATH` derives
+the same tenant ID instead of supplying `--tenant-id`.
+
+The first command saves its public request before contacting Ackplane. Repeat
+the same request after a lost reply; changed parameters are refused. Activation
+and its proof-replay state belong to the node provider, and repeated activation
+reuses the same key ID, receipt and enrollment event. `--skip-sync` reports a
+recorded activation only, not current authority. An explicit `--grpc-endpoint`
+may be supplied on activation for a relocated authority using the same binding.
+
+The final command stays running and retains the provider's exclusive process
+lock. Use the same built `register-me` executable for enrollment and serving,
+including on macOS where credential access is associated with executables.
+`serve` verifies current authority before reporting readiness. An explicit
+`--grpc-endpoint` can select a relocated authority; TLS CA configuration belongs
+to this process, not its local consumers.
+
+Configure the supervisor, federated Lodestar and MCP front door with these
+non-secret values using your environment/task runner:
+
+| Variable | Value |
+| --- | --- |
+| `MINDLEAK_ACKPLANE_STATE_DIR` | The same absolute node state directory passed to `serve`. |
+| `MINDLEAK_ACKPLANE_TENANT_ID` | The enrolled tenant. |
+| `MINDLEAK_ACKPLANE_REPOSITORY_ID` | The enrolled repository. |
+
+The supervisor also needs `ACKPLANE_SUPERVISOR_ID` and its own durable state
+directory/worker configuration; see its [runner guide](crates/ackplane-supervisor/README.md).
+The MCP pilot still requires a loopback `ACKPLANE_MCP_ENDPOINT`, which must
+exactly match the companion's endpoint. An endpoint mismatch is refused on
+every call, not only at startup. Federated coordination retains its existing
+explicit mode/readiness configuration; standalone local planes need no companion.
+
+All private-key reads and outbound authenticated operations stay in the companion.
+Unix uses an owner-only state directory/socket; Windows uses a local named pipe
+whose protected DACL grants the process user only and denies network identities.
+There is no TCP listener, signing oracle or reusable bearer token. At most 32
+streams run concurrently, with separate capacity for short-lived control calls.
+
+Raw key paths and legacy runtime node/key/seed overrides are refused, not
+imported or used as fallbacks. Missing credentials must be restored, never
+replaced implicitly. The companion checks provider availability and opens a fresh
+authority handshake every second (five-second remote deadline); a failed check
+closes streams and exits unsuccessfully. The supervisor stops owned workers and
+retains unacknowledged evidence when the companion disappears. Restarting an idle
+companion preserves identity and recovers its stale socket; worker recovery
+markers still require the existing operator workflow.
 
 ## The delivery queue
 

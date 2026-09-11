@@ -10,9 +10,9 @@ use std::{
 };
 
 use ackplane_bridge::knowledge_api::{knowledge_routes, KnowledgeApiState};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
     db_pool::PgPool,
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

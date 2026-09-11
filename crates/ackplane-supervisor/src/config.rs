@@ -5,24 +5,21 @@
 //! supply a map. That keeps every refusal path — which is most of this module —
 //! exhaustively testable without a machine that happens to be misconfigured.
 //!
-//! Shared enrollment variables include `MINDLEAK_ACKPLANE_ENDPOINT`,
-//! `_TENANT_ID`, `_REPOSITORY_ID`, `_NODE_ID`, `_SIGNING_KEY_ID`,
-//! `_NODE_SIGNING_KEY_SEED` and `MINDLEAK_ACKPLANE_KEY_PATH` are the same names
-//! `lodestar-mcp`'s federated claim path and `register-me` already read, so an
-//! operator who has enrolled a node has already configured this daemon
-//! (ADR-0116). Named worker commands are explicit local operator configuration.
+//! Shared enrollment configuration names only the companion state directory,
+//! tenant, and repository. Named workers remain explicit local configuration.
 //!
 //! The enrolled node half of that set is resolved by
 //! [`ackplane_client::node_identity`], not re-implemented here. This module
-//! owns only what is genuinely the supervisor's: the endpoint, its own
+//! owns only what is genuinely the supervisor's: its own
 //! supervisor id, its state directory and its heartbeat interval.
 
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use crate::WorkerCommand;
-use ackplane_client::node_identity::{resolve_node_identity, NodeIdentity, NodeIdentityError};
-
-const ENDPOINT_ENV: &str = "MINDLEAK_ACKPLANE_ENDPOINT";
+use ackplane_client::{
+    companion::NodeClient,
+    node_identity::{resolve_node_client, NodeIdentityError},
+};
 
 /// This supervisor's own id. Distinct from the node id: one enrolled node may
 /// run several supervisors, and a directive is addressed to a supervisor's
@@ -40,10 +37,7 @@ const DEFAULT_HEARTBEAT_SECONDS: u64 = 30;
 /// Everything the daemon needs to run, once resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupervisorConfig {
-    pub endpoint: String,
-    /// Who this process authenticates as, resolved by the one shared
-    /// implementation every colocated process uses.
-    pub identity: NodeIdentity,
+    pub node: NodeClient,
     pub supervisor_id: String,
     pub state_dir: PathBuf,
     pub heartbeat_interval: Duration,
@@ -76,7 +70,7 @@ impl SupervisorConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
     Missing(Vec<&'static str>),
-    MalformedSeed,
+    Identity(NodeIdentityError),
     MalformedHeartbeat(String),
     InvalidSupervisorId,
     InvalidWorkers(String),
@@ -91,7 +85,7 @@ impl std::fmt::Display for ConfigError {
                  (`register-me`), then declare it here.",
                 names.join(", ")
             ),
-            Self::MalformedSeed => write!(formatter, "{}", NodeIdentityError::MalformedSeed),
+            Self::Identity(error) => write!(formatter, "{error}"),
             Self::InvalidSupervisorId => write!(
                 formatter,
                 "{SUPERVISOR_ID_ENV} must contain 1-64 letters, digits, hyphens or underscores"
@@ -126,14 +120,8 @@ where
 
     let mut missing = Vec::new();
 
-    // Ordered so a refusal reads endpoint, then node identity, then this
-    // supervisor's own id -- the order an operator configures them in.
-    let endpoint = read(ENDPOINT_ENV);
-    if endpoint.is_none() {
-        missing.push(ENDPOINT_ENV);
-    }
-    let identity = resolve_node_identity(&environment);
-    if let Err(NodeIdentityError::Missing(names)) = &identity {
+    let node = resolve_node_client(&environment);
+    if let Err(NodeIdentityError::Missing(names)) = &node {
         missing.extend(names.iter().copied());
     }
     let supervisor_id = read(SUPERVISOR_ID_ENV);
@@ -143,11 +131,7 @@ where
     if !missing.is_empty() {
         return Err(ConfigError::Missing(missing));
     }
-    // Only reachable once nothing is missing, so a half-configured operator
-    // is never told about the optional seed override instead of the
-    // variables they still have to set.
-    let identity = identity.map_err(|_| ConfigError::MalformedSeed)?;
-    let endpoint = endpoint.expect("endpoint is present once nothing is missing");
+    let node = node.map_err(ConfigError::Identity)?;
     let supervisor_id = supervisor_id.expect("supervisor id is present once nothing is missing");
     let valid_local_name = |value: &str| {
         !value.is_empty()
@@ -201,8 +185,7 @@ where
     }
 
     Ok(SupervisorConfig {
-        endpoint,
-        identity,
+        node,
         supervisor_id,
         state_dir: read(STATE_DIR_ENV)
             .map(PathBuf::from)
@@ -215,9 +198,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ackplane_client::companion::STATE_DIR_ENV as NODE_STATE_DIR_ENV;
     use ackplane_client::node_identity::{
-        NodeSignerSource, CREDENTIAL_FACILITY_SERVICE, NODE_ID_ENV, NODE_SIGNING_KEY_SEED_ENV,
-        REPOSITORY_ID_ENV, SIGNING_KEY_ID_ENV, TENANT_ID_ENV,
+        NODE_SIGNING_KEY_SEED_ENV, REPOSITORY_ID_ENV, TENANT_ID_ENV,
     };
     use std::collections::HashMap;
 
@@ -230,30 +213,25 @@ mod tests {
     }
 
     fn complete() -> Vec<(&'static str, &'static str)> {
+        #[cfg(windows)]
+        let directory = "C:\\node-state";
+        #[cfg(unix)]
+        let directory = "/node-state";
         vec![
-            (ENDPOINT_ENV, "http://127.0.0.1:8443"),
+            (NODE_STATE_DIR_ENV, directory),
             (TENANT_ID_ENV, "tenant-1"),
             (REPOSITORY_ID_ENV, "repository-1"),
-            (NODE_ID_ENV, "node-1"),
-            (SIGNING_KEY_ID_ENV, "signing-key-1"),
             (SUPERVISOR_ID_ENV, "supervisor-1"),
         ]
     }
 
     #[test]
-    fn a_complete_environment_resolves_with_the_credential_facility_by_default() {
+    fn a_complete_environment_resolves_only_the_companion() {
         let config = resolve(environment(&complete())).expect("configuration should resolve");
 
-        assert_eq!(config.endpoint, "http://127.0.0.1:8443");
+        assert!(config.node.state_dir.is_absolute());
         assert_eq!(config.supervisor_id, "supervisor-1");
-        assert_eq!(
-            config.identity.signer_source,
-            NodeSignerSource::CredentialFacility {
-                service: CREDENTIAL_FACILITY_SERVICE.to_string(),
-                account: "tenant-1:repository-1:node-1".to_string(),
-            },
-            "an unset seed selects the hardened path, not a failure"
-        );
+        assert_eq!(config.node.tenant_id, "tenant-1");
         assert_eq!(config.heartbeat_interval, Duration::from_secs(30));
         assert_eq!(config.state_dir, PathBuf::from(DEFAULT_STATE_DIR));
         assert!(config.workers.is_empty());
@@ -294,8 +272,8 @@ mod tests {
     /// into as many restarts as there are unset variables.
     #[test]
     fn every_missing_variable_is_reported_together() {
-        let error = resolve(environment(&[(ENDPOINT_ENV, "http://127.0.0.1:8443")]))
-            .expect_err("an incomplete environment must be refused");
+        let error =
+            resolve(environment(&[])).expect_err("an incomplete environment must be refused");
 
         let ConfigError::Missing(names) = &error else {
             panic!("expected a missing-variable refusal, got {error:?}");
@@ -303,16 +281,15 @@ mod tests {
         assert_eq!(
             names,
             &vec![
+                NODE_STATE_DIR_ENV,
                 TENANT_ID_ENV,
                 REPOSITORY_ID_ENV,
-                NODE_ID_ENV,
-                SIGNING_KEY_ID_ENV,
                 SUPERVISOR_ID_ENV
             ]
         );
         let message = error.to_string();
         assert!(
-            message.contains(NODE_ID_ENV),
+            message.contains(NODE_STATE_DIR_ENV),
             "the refusal must name the variables: {message}"
         );
     }
@@ -323,12 +300,12 @@ mod tests {
     #[test]
     fn a_blank_variable_counts_as_missing() {
         let mut pairs = complete();
-        pairs.retain(|(name, _)| *name != NODE_ID_ENV);
-        pairs.push((NODE_ID_ENV, "   "));
+        pairs.retain(|(name, _)| *name != NODE_STATE_DIR_ENV);
+        pairs.push((NODE_STATE_DIR_ENV, "   "));
 
         let error = resolve(environment(&pairs)).expect_err("a blank node id must be refused");
 
-        assert_eq!(error, ConfigError::Missing(vec![NODE_ID_ENV]));
+        assert_eq!(error, ConfigError::Missing(vec![NODE_STATE_DIR_ENV]));
     }
 
     /// Supervisor ids become local queue filenames and must not contain path separators or colons.
@@ -351,22 +328,20 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_seed_overrides_the_credential_facility() {
+    fn an_explicit_seed_is_refused_without_a_legacy_fallback() {
         let mut pairs = complete();
         let seed = "ab".repeat(32);
         pairs.push((NODE_SIGNING_KEY_SEED_ENV, seed.as_str()));
 
-        let config = resolve(environment(&pairs)).expect("configuration should resolve");
-
-        assert_eq!(
-            config.identity.signer_source,
-            NodeSignerSource::Seed(Box::new([0xab; 32]))
-        );
+        assert!(matches!(
+            resolve(environment(&pairs)),
+            Err(ConfigError::Identity(
+                NodeIdentityError::LegacyConfiguration(_)
+            ))
+        ));
     }
 
-    /// A truncated or mistyped seed must not silently fall back to the
-    /// credential facility: the operator asked for a specific key, and quietly
-    /// using a different one is worse than refusing.
+    /// Even malformed legacy settings must be removed, not silently ignored.
     #[test]
     fn a_malformed_seed_is_refused_rather_than_falling_back() {
         let mut pairs = complete();
@@ -374,7 +349,12 @@ mod tests {
 
         let error = resolve(environment(&pairs)).expect_err("a malformed seed must be refused");
 
-        assert_eq!(error, ConfigError::MalformedSeed);
+        assert_eq!(
+            error,
+            ConfigError::Identity(NodeIdentityError::LegacyConfiguration(vec![
+                NODE_SIGNING_KEY_SEED_ENV
+            ]))
+        );
     }
 
     #[test]

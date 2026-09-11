@@ -14,6 +14,7 @@
 //! ACKPLANE_TEST_DATABASE_URL=postgres://ackplane:ackplane-development-only-not-for-production@127.0.0.1:5432/ackplane cargo test -p ackplane-client --test enrollment_and_sync
 //! ```
 
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_protocol::v1::{
     self, node_enrollment_service_client::NodeEnrollmentServiceClient,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
@@ -21,10 +22,7 @@ use ackplane_protocol::v1::{
     node_sync_service_server::NodeSyncServiceServer,
 };
 use ackplane_server::{
-    enrollment::{
-        activation_challenge_bytes, connection_challenge_bytes, public_key_fingerprint,
-        ConnectionChallengeBinding,
-    },
+    enrollment::{connection_challenge_bytes, ConnectionChallengeBinding},
     enrollment_service::NodeEnrollmentService,
     enrollment_store::{EnrollmentApproval, EnrollmentStore},
     envelope_signature::envelope_signing_bytes,

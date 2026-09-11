@@ -18,13 +18,13 @@
 use std::time::SystemTime;
 
 use ackplane_client::{auth::SeedSigner, node_sync::NodeSyncConnection, ClientError};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_protocol::v1::{
     self, node_enrollment_service_client::NodeEnrollmentServiceClient,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer, RejectionReason,
 };
 use ackplane_server::{
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_service::NodeEnrollmentService,
     enrollment_store::{EnrollmentApproval, EnrollmentStore},
     envelope_signature::envelope_signing_bytes,

@@ -1,7 +1,7 @@
 //! A repository-scoped process lock (ADR-0100 decision 1): refuses a second
 //! concurrent `ackplane-node` instance for the same repository id.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -17,49 +17,48 @@ pub enum LockError {
     },
 }
 
-/// Held for the lifetime of this value; the lock file is removed on `Drop`.
-/// This is a best-effort, single-host lock: it does not detect or reclaim a
-/// lock left behind by a process that was killed without running its
-/// destructors. That is a deliberate simplification for this first slice, not
-/// an oversight — see ADR-0100 decision 1's "a repository-scoped process lock
-/// refuses a second active instance" for the invariant this satisfies.
+/// The kernel holds ownership for this file handle's lifetime, including
+/// releasing it after a process is killed. The file itself is never removed:
+/// unlinking it could let contenders lock different files at the same path.
 pub struct NodeProcessLock {
-    path: PathBuf,
+    _file: File,
 }
 
 impl NodeProcessLock {
     /// Acquires the lock under `repository_state_dir`, writing the current
-    /// process id into the lock file so an operator can identify the holder.
+    /// process id for diagnostics only after ownership is obtained. An existing
+    /// unlocked file is reused; its contents never authorize taking ownership.
     pub fn acquire(repository_state_dir: &Path) -> Result<Self, LockError> {
         fs::create_dir_all(repository_state_dir).map_err(|source| LockError::Io {
             path: repository_state_dir.to_path_buf(),
             source,
         })?;
         let path = repository_state_dir.join("ackplane-node.lock");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|source| {
-                if source.kind() == std::io::ErrorKind::AlreadyExists {
-                    LockError::AlreadyLocked(path.clone())
-                } else {
-                    LockError::Io {
-                        path: path.clone(),
-                        source,
-                    }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).map_err(|source| LockError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        fs2::FileExt::try_lock_exclusive(&file).map_err(|source| {
+            if source.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+                LockError::AlreadyLocked(path.clone())
+            } else {
+                LockError::Io {
+                    path: path.clone(),
+                    source,
                 }
-            })?;
-        // Best-effort diagnostic only; the file's exclusive creation above is
-        // what provides the actual exclusivity guarantee.
-        let _ = write!(file, "{}", std::process::id());
-        Ok(Self { path })
-    }
-}
-
-impl Drop for NodeProcessLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+            }
+        })?;
+        file.set_len(0)
+            .and_then(|()| write!(file, "{}", std::process::id()))
+            .map_err(|source| LockError::Io { path, source })?;
+        Ok(Self { _file: file })
     }
 }
 
