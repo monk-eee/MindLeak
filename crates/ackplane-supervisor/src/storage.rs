@@ -43,6 +43,27 @@ CREATE TABLE IF NOT EXISTS acknowledged_lifecycle_receipts (
     frame BLOB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS stopped_worker_run (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    marker BLOB NOT NULL,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    frame BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS worker_recovery_events (
+    confirmation_digest TEXT NOT NULL,
+    event TEXT NOT NULL CHECK (event IN ('started', 'completed')),
+    marker_digest TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    result_digest TEXT,
+    server_position INTEGER,
+    lease_released INTEGER,
+    PRIMARY KEY (confirmation_digest, event),
+    CHECK ((event = 'started' AND result_digest IS NULL AND server_position IS NULL AND lease_released IS NULL)
+        OR (event = 'completed' AND result_digest IS NOT NULL AND server_position >= 0 AND lease_released IN (0, 1)))
+);
+
 CREATE TABLE IF NOT EXISTS directive_effects (
     directive_id TEXT PRIMARY KEY REFERENCES directive_inbox(directive_id),
     receipt BLOB NOT NULL

@@ -142,7 +142,25 @@ fn every_bridge_page_bridges_the_neutral_chrome_tokens() {
     // chrome.css only ever reads --chrome-*; a page that forgets to map its
     // own palette onto these renders the shared nav and brand unstyled.
     let pages = discover_pages();
+    let static_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("static");
     for (name, html) in &pages {
+        let stylesheets: Vec<String> = fs::read_dir(&static_dir)
+            .expect("read page stylesheets")
+            .map(|entry| entry.expect("read stylesheet entry"))
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "css")
+            })
+            .filter(|entry| {
+                html.contains(&format!(
+                    r#"<link rel="stylesheet" href="/static/{}">"#,
+                    entry.file_name().to_string_lossy()
+                ))
+            })
+            .map(|entry| fs::read_to_string(entry.path()).expect("read linked page stylesheet"))
+            .collect();
         for token in [
             "--chrome-surface:",
             "--chrome-line:",
@@ -152,7 +170,7 @@ fn every_bridge_page_bridges_the_neutral_chrome_tokens() {
             "--chrome-focus:",
         ] {
             assert!(
-                html.contains(token),
+                html.contains(token) || stylesheets.iter().any(|css| css.contains(token)),
                 "{name} must bridge {token} onto its own palette for chrome.css to pick up"
             );
         }

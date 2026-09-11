@@ -44,6 +44,52 @@ node scripts/install-servers.mjs
 On systems with `make`, `make setup` does the hook + extension steps, and
 `make install-servers` does the last one.
 
+### Install Industrial host binaries
+
+The Local installer remains the default and installs only `mindleak-mcp` and
+`lodestar-mcp`. For an Industrial host, build and install the complete host set:
+
+```text
+make install-industrial
+```
+
+Without `make`, run the same two portable commands from the checkout root:
+
+```text
+cargo build --locked --release -p mindleak-mcp -p lodestar-mcp -p ackplane-mcp -p ackplane-supervisor -p ackplane-server -p ackplane-workctl --features mindleak-mcp/federation-client,lodestar-mcp/federation-client
+node scripts/install-servers.mjs --profile industrial
+```
+
+This installs `mindleak-mcp`, `lodestar-mcp`, `ackplane-mcp`,
+`ackplane-supervisor`, `register-me` (including the long-lived `serve` command),
+and `ackplane-workctl` into the existing user-local `~/.mindleak/bin` directory.
+Windows executable names end in `.exe`. Invoke that directory's binaries
+directly, or add it to your user's executable search path. Both local planes
+are built with federation support; their default runtime mode is still Local.
+
+The Industrial profile requires every binary in `target/release`; it never
+substitutes a debug build. `CARGO_TARGET_DIR` selects the same alternative build
+directory for Cargo and the installer (relative values resolve from the checkout
+root). All selected sources must be regular, readable files before replacement
+begins. Each replacement is copied and prepared before the current executable is
+moved aside; a failed copy leaves that command in place. Repeating a completed
+install replaces the same executable set and prunes unlocked superseded copies.
+The whole set is not a single filesystem transaction: if a later replacement
+fails, correct the error and repeat installation before restarting consumers.
+
+Stop the companion and consumers before upgrading, then restart them from the
+installed paths. Installation never terminates processes, starts services,
+changes enrollment state, or imports keys. Continue using the same installed
+`register-me` for enrollment and serving, especially on macOS where executable
+identity affects Keychain access. Existing provider metadata and credentials
+must be preserved through upgrades.
+
+The shared Ackplane server and Bridge still use the documented Compose topology;
+this is a source-built host installer, not a released Industrial archive or a
+production-authentication system. Continue with
+[provider-backed enrollment](#provider-backed-enrollment) using the installed
+`register-me` in place of `cargo run ... --` in those examples.
+
 ### Open a window on the worktree you are editing (ADR-0073)
 
 Node ids are repository-relative, and a file is made relative against the

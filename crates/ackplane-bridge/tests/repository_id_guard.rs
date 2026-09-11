@@ -117,6 +117,7 @@ const WORK_API_RS: &str = include_str!("../src/work_api/mod.rs");
 const WORK_API_LISTING_RS: &str = include_str!("../src/work_api/listing.rs");
 const WORK_API_DETAIL_RS: &str = include_str!("../src/work_api/detail.rs");
 const WORK_API_DOCTOR_RS: &str = include_str!("../src/work_api/doctor.rs");
+const WORK_COMMAND_API_RS: &str = include_str!("../src/work_command_api/mod.rs");
 const SHARED_ASSETS_RS: &str = include_str!("../src/shared_assets.rs");
 
 /// `FleetStore::connect` is the connection constructor, not a query or
@@ -165,6 +166,9 @@ const ROUTE_HANDLERS_WITHOUT_A_STORE_QUERY: &[&str] = &[
     "live_feed_page",
     "supervisor_dashboard_page",
     "work_page",
+    "work_command_client",
+    "work_page_module",
+    "work_page_css",
     "board_doctor_page",
     "chrome_css",
     "chrome_js",
@@ -217,6 +221,7 @@ const HANDLER_SOURCES: &[&str] = &[
     WORK_API_LISTING_RS,
     WORK_API_DETAIL_RS,
     WORK_API_DOCTOR_RS,
+    WORK_COMMAND_API_RS,
     SHARED_ASSETS_RS,
 ];
 
@@ -245,6 +250,7 @@ const ROUTE_SOURCES: &[&str] = &[
     SUPERVISOR_API_RS,
     SUPERVISOR_API_DASHBOARD_RS,
     WORK_API_RS,
+    WORK_COMMAND_API_RS,
     SHARED_ASSETS_RS,
 ];
 
@@ -393,6 +399,19 @@ fn every_knowledge_store_query_requires_an_explicit_tenant_id() {
             signature.contains("tenant_id: &str"),
             "KnowledgeStore::{name} does not take an explicit tenant_id: &str parameter \
              (ADR-0098 decision 5 requires every query/mutation to carry a tenant scope): {signature}"
+        );
+    }
+}
+
+// The Work command module was omitted from the source list, so mutations could
+// escape the tenant guard. Both command handlers must be part of its scan.
+#[test]
+fn tenant_route_guard_includes_work_command_mutations() {
+    let handlers = extract_route_handlers_from_any(ROUTE_SOURCES);
+    for expected in ["submit_work_command", "confirm_work_command"] {
+        assert!(
+            handlers.iter().any(|handler| handler == expected),
+            "the tenant route guard does not inspect {expected}"
         );
     }
 }

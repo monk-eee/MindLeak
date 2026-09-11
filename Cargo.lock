@@ -7,6 +7,7 @@ name = "ackplane-bridge"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "ackplane-server",
  "ackplane-supervisor",
@@ -170,6 +171,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "time",

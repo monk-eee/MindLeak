@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 
 mod claims;
 mod delivery;
-mod frames;
+pub(crate) mod frames;
 mod runtime;
 
 use delivery::enqueue_receipt;

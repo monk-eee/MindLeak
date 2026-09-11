@@ -12,7 +12,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use super::DaemonError;
 
-pub(super) fn registration_frame(registration: &SupervisorRegistration) -> v1::NodeFrame {
+pub(crate) fn registration_frame(registration: &SupervisorRegistration) -> v1::NodeFrame {
     v1::NodeFrame {
         frame: Some(v1::node_frame::Frame::SupervisorRegistration(
             v1::SupervisorRegistration {

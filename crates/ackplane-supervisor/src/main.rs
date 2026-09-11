@@ -21,7 +21,7 @@
 
 use std::{process::ExitCode, time::Duration};
 
-use ackplane_supervisor::{config, daemon};
+use ackplane_supervisor::{config, daemon, recovery};
 
 /// How long to wait before reconnecting a dropped connection. Fixed rather
 /// than configurable for now: a supervisor that reconnects too eagerly is a
@@ -33,6 +33,7 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -40,13 +41,23 @@ async fn main() -> ExitCode {
         .init();
 
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
-    let workers = match arguments.as_slice() {
-        [] => None,
-        [flag] if flag == "--help" || flag == "-h" => {
-            println!("usage: ackplane-supervisor [--workers <workers.json>]\nWorker definitions name an executable, argument vector with one {{prompt}}, absolute working_directory, and branch. Enrollment and endpoint use the MINDLEAK_ACKPLANE_* environment variables.");
-            return ExitCode::SUCCESS;
-        }
-        [flag, path] if flag == "--workers" => match std::fs::read_to_string(path) {
+    let (workers_path, operation) = match arguments.as_slice() {
+        [flag, path, rest @ ..] if flag == "--workers" => (Some(path), rest),
+        rest => (None, rest),
+    };
+    if matches!(operation, [flag] if flag == "--help" || flag == "-h") {
+        println!("{}\nWorker definitions name an executable, argument vector with one {{prompt}}, absolute working_directory, and branch. Enrollment and endpoint use the MINDLEAK_ACKPLANE_* environment variables.", recovery::USAGE);
+        return ExitCode::SUCCESS;
+    }
+    if operation
+        .first()
+        .is_some_and(|argument| argument != "recover")
+    {
+        eprintln!("{}", recovery::USAGE);
+        return ExitCode::FAILURE;
+    }
+    let workers = match workers_path {
+        Some(path) => match std::fs::read_to_string(path) {
             Ok(json) if json.len() <= 64 * 1024 => Some(json),
             Ok(_) => {
                 eprintln!("ackplane-supervisor: worker configuration exceeds 64 KiB");
@@ -57,10 +68,7 @@ async fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
-        _ => {
-            eprintln!("usage: ackplane-supervisor [--workers <workers.json>]");
-            return ExitCode::FAILURE;
-        }
+        None => None,
     };
     let config = match config::resolve(|name| {
         if name == config::WORKERS_ENV {
@@ -75,6 +83,25 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if !operation.is_empty() {
+        return match recovery::execute(&config, operation).await {
+            Ok(preview) => match serde_json::to_string_pretty(&preview) {
+                Ok(json) => {
+                    println!("{json}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("ackplane-supervisor: {error}");
+                    ExitCode::FAILURE
+                }
+            },
+            Err(error) => {
+                eprintln!("ackplane-supervisor: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     tracing::info!(
         node_state_dir = %config.node.state_dir.display(),

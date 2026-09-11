@@ -161,6 +161,13 @@ continue to give every slot a separate checkout or worktree.
   does not repair invalid evidence. Retryable refusals retain the same bytes
   and follow the existing reconnect path. Fatal cleanup queues its terminal
   receipt locally without attempting delivery past the rejection.
+- **Stored frame cannot be replayed identically** - pending, archived and
+  recovery reads refuse valid protobuf encodings whose decode/re-encode cycle
+  changes the original bytes, including unknown fields from a newer version.
+  The error names the sequence. The sender stops before transmitting its loaded
+  batch; stored bytes and acknowledgement positions remain unchanged. Preserve
+  the queues and use a version that supports their encoding. Do not strip fields,
+  rewrite the record or delete evidence to make an older reader accept it.
 - **One worker slot fails** - signals the remaining slots before attempting its
   own cleanup. The failed slot stops its owned worker and retries confirmed
   lease release for up to thirty seconds, preserving its run marker and queued
@@ -171,9 +178,10 @@ continue to give every slot a separate checkout or worktree.
   does not automatically restart failed work or repair invalid evidence.
 - **Unaccounted previous run** - refuses to reuse that worker slot. Its
   `<slot>.worker-run.json` marker identifies the session, workspace and durable
-  queue files. Preserve that evidence and inspect the old process tree and
-  receipts before operator recovery; deleting the marker is not proof the old
-  worker stopped. Automatic recovery after process loss is not implemented.
+  queue files. Preserve that evidence and use the stopped-run recovery command
+  below. Deleting the marker is not proof the old worker stopped. Runs without
+  positive stop provenance still require investigation; automatic recovery of
+  live or unproven workers is not implemented.
 - **Server position outside the recoverable outbox interval** - stops
   deliberately. A position beyond the last locally enqueued frame means local
   evidence was lost; a position below the acknowledged boundary means the server
@@ -217,11 +225,10 @@ returns pages in sequence order, capped at 100 records; start with cursor zero
 and continue after the last returned sequence. Records remain in that session's
 outbox database and remain protected by its original identity binding.
 
-This retention is a prerequisite for recovery inspection, not a recovery command.
-An archived report does not establish current process liveness, grant authority,
-or certify task completion. Upgrading preserves lifecycle frames still pending
-when they are acknowledged, but cannot reconstruct older pruned receipts. Missing
-history remains unknown, and automatic recovery after process loss is unchanged.
+The archive alone does not establish process termination, grant authority, or
+certify task completion. Upgrading preserves lifecycle frames still pending
+when they are acknowledged, but cannot reconstruct older pruned receipts.
+Missing history remains unknown.
 
 Use `SupervisorOutbox::open_read_only(path, registration, session)` for library
 inspection of an existing outbox. It validates the stored identity/session without
@@ -232,6 +239,68 @@ records still in the log; it does not use immutable-file mode. Missing or corrup
 databases are refused. An older outbox can expose its existing pending frames and
 positions, but reading an absent lifecycle archive reports a schema error rather
 than creating an empty history. No process control or lease operation is performed.
+
+## Recover A Stopped Run
+
+This command finishes interrupted cleanup for a worker that the original
+supervisor positively stopped. It never starts, adopts, or signals a process.
+Keep the original worker configuration, supervisor ID, state directory and
+repository scope. Stop the old supervisor first; keep the enrolled node
+companion running for confirmation.
+
+```text
+ackplane-supervisor --workers workers.json recover inspect copilot-a
+```
+
+Inspection is local and read-only. Its JSON includes the recorded node,
+session, worker, task, workspace and declared branch, `stopped`, the outbox
+positions, `run_id`, and `confirmation_digest`. It does not need a running
+companion. Review the target and use the returned run ID and confirmation
+digest in the explicit cleanup command:
+
+```text
+ackplane-supervisor --workers workers.json recover confirm copilot-a RUN_ID CONFIRMATION_DIGEST --reason "Receipt delivery failed during shutdown"
+```
+
+Confirmation holds the same exclusive state-directory lock as the daemon and
+rechecks the preview before acting. It requires all of the following:
+
+- A version-1 marker with the original registration, session, directive,
+  context packet, queue locations, workspace and declared branch.
+- A positive adapter-stop record bound to the exact marker bytes and committed
+  atomically with its terminal receipt. A `completed`, `failed` or `terminated`
+  label alone, a dead supervisor, PID absence, or expired lease is insufficient.
+- Consistent identity-bound inbox/outbox evidence. Marker and queue files must
+  be regular files in their derived state-directory locations. Inspection is
+  bounded to a 64 KiB marker, 1 MiB original effect, and 1024 retained frames
+  totalling at most 4 MiB. Unknown wire fields that cannot be replayed
+  identically are refused rather than silently discarded.
+- The original node companion and an independent server receipt position
+  within the retained outbox interval. The handshake's echoed position is not
+  accepted as this proof; omitted or inconsistent positions stop cleanup.
+
+The command registers the historical supervisor scope, replays only its exact
+pending frames, and releases only the recorded task/session owner. It does not
+announce the worker as started, dispatch an old directive, acquire or renew a
+claim, complete Work, or release a replacement owner's lease. A confirmed
+release no-op is recorded as such. Remote operations share a thirty-second
+deadline; disconnects and permanent refusals retain pending evidence and the
+marker. JSON results go to stdout, diagnostics to stderr.
+
+`worker_recovery_events` retains each confirmed snapshot's original reason
+and start time, then its completed result, final receipt position and release
+outcome. Completion is durable before removal of the matching marker. If the
+response is lost, retry the same run ID and confirmation digest: a completed
+audit resolves the result even after marker removal, but never removes a
+replacement marker. If evidence progressed during an incomplete attempt,
+inspect again and explicitly confirm its new digest.
+
+Old or partial markers and missing stop records remain refused; the command
+does not backfill proof from old lifecycle labels or repair inconsistent
+history. Preserve those files for investigation. After successful cleanup,
+restart the supervisor normally and issue a separately authorized assignment.
+The local lock coordinates cooperating processes, not hostile same-user file
+replacement, and the native worker sandbox boundary remains unchanged.
 
 ## Verify The Loop
 
@@ -267,10 +336,22 @@ prefix, retained uncertainty and lease state, including a cleanup retry after
 terminal persistence fails.
 An additional companion-loss case verifies worker termination and retained
 unconfirmed cleanup evidence when local custody disappears.
+The Unix recovery cases kill the supervisor after two real workers stop,
+then exercise the CLI through the authenticated companion. They lose replies,
+kill recovery after server acceptance, reject completion-audit writes, and
+check omitted or out-of-range server positions, permanent refusal, unchanged
+queued bytes, one terminal server history, replacement-owner protection, and
+exactly one fresh separately authorized execution. A separate crash while both
+workers are live verifies refusal without signalling or releasing them.
 The second tests graph input, lesson activation, retry feedback and refusal of
 cross-session or unleased requests. Without the database variable these gated
 tests skip; a skipped run is not verification. The fixtures test the runtime
 contract, not a live vendor model or its login/tool-permission configuration.
+
+`cargo test --locked -p ackplane-supervisor --lib recovery::` needs no server.
+It checks atomic stop/frame rollback, retained stop proof after acknowledgement,
+immutable attempts, changed-preview refusal, old/corrupt/oversized evidence,
+path confinement, state-lock exclusion, and crash retries around marker removal.
 
 `cargo test --locked -p ackplane-supervisor --test instance_ownership` needs no
 database or live server. It launches real supervisor processes to verify
@@ -280,7 +361,8 @@ directory concurrency.
 `cargo test --locked -p ackplane-supervisor --test outbox_rejection` uses the
 isolated database to verify real authenticated permanent and retryable server
 refusals, the accepted position, and byte-preserving outbox reopen. It confirms
-that a rejected frame cannot be skipped to transmit later evidence.
+that a rejected frame cannot be skipped to transmit later evidence, and that
+lossy decoding is refused locally before sending any frame in the loaded batch.
 
 `cargo test --locked -p ackplane-supervisor --test outbox` also needs no server.
 It verifies exact lifecycle retention across acknowledgement and reopen, bounded
@@ -288,6 +370,8 @@ cursor paging, identity isolation, rollback on an injected archive failure,
 corrupt-frame preservation, and honest handling of older outboxes. Its read-only
 tests also check mutation refusal, current WAL visibility, missing/corrupt files,
 unchanged old schema and journal mode, and refusal to adopt a missing identity.
+Pending and archived reads reject unknown wire fields without changing their
+bytes or positions, through both writable and read-only handles.
 
 `cargo test --locked -p ackplane-supervisor --lib worker_adapter::tests`
 includes a macOS/Linux regression that waits for a real child's exit without

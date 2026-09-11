@@ -183,7 +183,8 @@ pub(super) fn build_payload(
 
 #[derive(Deserialize)]
 pub(super) struct SubmitWorkCommandRequest {
-    pub(super) issuing_principal_id: String,
+    #[serde(default)]
+    pub(super) issuing_principal_id: Option<String>,
     pub(super) idempotency_key: String,
     pub(super) rationale: String,
     #[serde(default)]
@@ -208,4 +209,33 @@ pub(super) struct SubmitWorkCommandRequest {
 pub(super) struct ConfirmWorkCommandRequest {
     #[serde(flatten)]
     pub(super) payload: WorkCommandPayloadRequest,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SubmitWorkCommandRequest;
+    use serde_json::json;
+
+    /// Browser requests omit the server-held principal; the handler resolves it.
+    #[test]
+    fn browser_command_does_not_require_a_client_supplied_principal() {
+        let mut payload = json!({
+            "kind": "create_work",
+            "task_id": "browser-task",
+            "title": "Browser work",
+            "acceptance": "Confirmed through the existing command service",
+            "idempotency_key": "browser-create",
+            "rationale": "Create work from the Work page",
+            "expires_at_seconds": 2_000_000_000_u64,
+        });
+        let request = serde_json::from_value::<SubmitWorkCommandRequest>(payload.clone())
+            .expect("browser requests must not need the server-held principal");
+        assert!(request.issuing_principal_id.is_none());
+        for principal_id in ["verified-principal", "forged-principal", ""] {
+            payload["issuing_principal_id"] = json!(principal_id);
+            let request = serde_json::from_value::<SubmitWorkCommandRequest>(payload.clone())
+                .expect("explicit principal strings should reach the authorization check");
+            assert_eq!(request.issuing_principal_id.as_deref(), Some(principal_id));
+        }
+    }
 }

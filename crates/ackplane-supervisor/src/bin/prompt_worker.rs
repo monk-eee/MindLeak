@@ -2,6 +2,7 @@ use std::{
     env,
     error::Error,
     fs,
+    io::Write,
     path::Path,
     thread,
     time::{Duration, Instant},
@@ -11,6 +12,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = env::args().skip(1);
     let prompt = arguments.next().ok_or("missing prompt")?;
     let gate = arguments.next().ok_or("missing completion gate")?;
+    let process_id = std::process::id();
+    writeln!(
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("worker-starts.txt")?,
+        "{process_id}"
+    )?;
     let inherited_control_settings = env::vars_os().any(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
         name.starts_with("ACKPLANE_") || name.starts_with("MINDLEAK_ACKPLANE_")
@@ -18,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::write(
         "environment.json",
         serde_json::to_vec(
-            &serde_json::json!({"inherited_control_settings":inherited_control_settings}),
+            &serde_json::json!({"inherited_control_settings":inherited_control_settings,"process_id":process_id}),
         )?,
     )?;
     fs::write("prompt.json", prompt)?;

@@ -26,6 +26,7 @@ pub(super) struct WorkerRuntime {
     pub(super) lease: Option<WorkerLease>,
     active: Option<ContextPacket>,
     run_path: Option<PathBuf>,
+    run_record: Option<Vec<u8>>,
     pub finished: bool,
 }
 
@@ -59,6 +60,7 @@ impl WorkerRuntime {
             lease: None,
             active: None,
             run_path: None,
+            run_record: None,
             finished: false,
         })
     }
@@ -201,16 +203,34 @@ impl WorkerRuntime {
             .next()
             .map(|name| config.worker_run_path(name))
             .ok_or_else(|| DaemonError::Worker("worker run path is missing".into()))?;
-        let marker = serde_json::to_vec(&serde_json::json!({
-            "supervisor_id": self.session.supervisor_id,
-            "session_id": self.session.session_id,
-            "worker_id": self.session.worker_id,
-            "task_id": directive.task_id,
-            "packet_id": packet.packet_id,
-            "working_directory": command.working_directory,
-            "inbox": config.inbox_path(),
-            "outbox": config.outbox_path(),
-        }))
+        let marker = serde_json::to_vec(&crate::recovery::record::RunRecord {
+            version: 1,
+            slot: config
+                .workers
+                .keys()
+                .next()
+                .cloned()
+                .ok_or_else(|| DaemonError::Worker("worker slot is missing".into()))?,
+            registration: self.registration.clone(),
+            session: self.session.clone(),
+            task_id: directive.task_id.clone(),
+            directive_id: directive.directive_id.clone(),
+            directive_digest: directive.payload_digest.clone(),
+            packet_id: packet.packet_id.clone(),
+            working_directory: command
+                .working_directory
+                .canonicalize()
+                .map_err(|error| DaemonError::Worker(error.to_string()))?,
+            branch: command.branch.clone(),
+            inbox: config
+                .inbox_path()
+                .canonicalize()
+                .map_err(|error| DaemonError::Worker(error.to_string()))?,
+            outbox: config
+                .outbox_path()
+                .canonicalize()
+                .map_err(|error| DaemonError::Worker(error.to_string()))?,
+        })
         .map_err(|error| DaemonError::Worker(error.to_string()))?;
         let receipt = self.inbox.apply(
             directive,
@@ -234,6 +254,7 @@ impl WorkerRuntime {
                 match self.adapter.start(assignment) {
                     Ok(()) => {
                         self.run_path = Some(run_path.clone());
+                        self.run_record = Some(marker.clone());
                         self.active = Some(packet.clone());
                         Ok(())
                     }
@@ -307,22 +328,32 @@ impl WorkerRuntime {
                 ))
             }
         };
-        self.outbox.enqueue_next(v1::NodeFrame {
-            frame: Some(v1::node_frame::Frame::SupervisorLifecycleReceipt(
-                v1::SupervisorLifecycleReceipt {
-                    supervisor_id: self.session.supervisor_id.clone(),
-                    session_id: self.session.session_id.clone(),
-                    worker_id: self.session.worker_id.clone(),
-                    occurred_at: OffsetDateTime::now_utc()
-                        .format(&Rfc3339)
-                        .map_err(|_| DaemonError::Clock)?,
-                    state: state as i32,
-                    reason: reason as i32,
-                    idempotency_key: format!("{}:{state:?}", self.session.session_id),
-                    outbox_sequence: None,
-                },
-            )),
-        })?;
+        let marker = if state == v1::SupervisorWorkerState::Started {
+            None
+        } else {
+            Some(self.run_record.as_deref().ok_or_else(|| {
+                DaemonError::Worker("stopped worker has no original run record".into())
+            })?)
+        };
+        self.outbox.enqueue_with_stop(
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::SupervisorLifecycleReceipt(
+                    v1::SupervisorLifecycleReceipt {
+                        supervisor_id: self.session.supervisor_id.clone(),
+                        session_id: self.session.session_id.clone(),
+                        worker_id: self.session.worker_id.clone(),
+                        occurred_at: OffsetDateTime::now_utc()
+                            .format(&Rfc3339)
+                            .map_err(|_| DaemonError::Clock)?,
+                        state: state as i32,
+                        reason: reason as i32,
+                        idempotency_key: format!("{}:{state:?}", self.session.session_id),
+                        outbox_sequence: None,
+                    },
+                )),
+            },
+            marker,
+        )?;
         Ok(())
     }
 
@@ -332,11 +363,9 @@ impl WorkerRuntime {
         state: SupervisorWorkerState,
     ) -> Result<(), DaemonError> {
         if self.active.is_some() {
-            if let Err(error) = self.adapter.terminate(&self.session.worker_id) {
-                if !matches!(error, AdapterError::UnknownWorker(_)) {
-                    return Err(DaemonError::Worker(error.to_string()));
-                }
-            }
+            self.adapter
+                .terminate(&self.session.worker_id)
+                .map_err(|error| DaemonError::Worker(error.to_string()))?;
         }
         if let Some(packet) = &self.active {
             self.queue_lifecycle(state)?;
