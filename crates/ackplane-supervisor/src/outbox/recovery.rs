@@ -23,19 +23,6 @@ pub(crate) struct RecoveryEvidence {
     pub completed: Option<String>,
 }
 
-impl QueuedFrame {
-    fn decode_exact((sequence, bytes): (u64, Vec<u8>)) -> Result<Self, OutboxError> {
-        use prost::Message;
-        let frame = Self::decode((sequence, bytes.clone()))?;
-        if frame.frame.encode_to_vec() != bytes {
-            return Err(OutboxError::RecoveryEvidence(
-                "stored wire bytes cannot be replayed identically by this version".into(),
-            ));
-        }
-        Ok(frame)
-    }
-}
-
 impl SupervisorOutbox {
     pub(crate) fn recovery_snapshot(&self) -> Result<RecoveryEvidence, OutboxError> {
         use prost::Message;
@@ -74,7 +61,7 @@ impl SupervisorOutbox {
         stored.extend(pending);
         let frames = stored
             .into_iter()
-            .map(QueuedFrame::decode_exact)
+            .map(QueuedFrame::decode)
             .collect::<Result<Vec<_>, _>>()?;
         let stop = self.stopped_run()?;
         if let Some((_, stopped)) = &stop {
@@ -125,9 +112,7 @@ impl SupervisorOutbox {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).optional()?;
         record
-            .map(|(marker, sequence, bytes)| {
-                Ok((marker, QueuedFrame::decode_exact((sequence, bytes))?))
-            })
+            .map(|(marker, sequence, bytes)| Ok((marker, QueuedFrame::decode((sequence, bytes))?)))
             .transpose()
     }
 

@@ -12,7 +12,9 @@ use ackplane_server::{
     signing_keys::{self, SigningKeyRecord},
     supervisor_store::SupervisorStore,
 };
-use ackplane_supervisor::{config::SupervisorConfig, daemon, OutboxPositions, SupervisorOutbox};
+use ackplane_supervisor::{
+    config::SupervisorConfig, daemon, OutboxError, OutboxPositions, SupervisorOutbox,
+};
 use prost::Message;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio_stream::wrappers::TcpListenerStream;
@@ -21,15 +23,29 @@ use tokio_stream::wrappers::TcpListenerStream;
 // letting later receipts hide the missing evidence. Preserve it and stop instead.
 #[tokio::test]
 async fn permanent_rejection_preserves_the_unaccepted_outbox_tail_after_reopen() {
-    exercise_rejection(true).await;
+    exercise_rejection(Rejection::Permanent).await;
 }
 
 #[tokio::test]
 async fn retryable_rejection_preserves_the_queue_and_requests_reconnect() {
-    exercise_rejection(false).await;
+    exercise_rejection(Rejection::Retryable).await;
 }
 
-async fn exercise_rejection(permanent: bool) {
+// Unknown fields used to disappear before transport, changing durable evidence.
+// Refuse the entire loaded batch before any frame is sent or acknowledged.
+#[tokio::test]
+async fn unreplayable_wire_bytes_stop_the_sender_without_sending_or_pruning_any_frame() {
+    exercise_rejection(Rejection::UnsupportedEncoding).await;
+}
+
+enum Rejection {
+    Permanent,
+    Retryable,
+    UnsupportedEncoding,
+}
+
+async fn exercise_rejection(rejection: Rejection) {
+    let permanent = !matches!(rejection, Rejection::Retryable);
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
@@ -191,6 +207,26 @@ async fn exercise_rejection(permanent: bool) {
             "terminated",
         ))
         .unwrap();
+    let mut stored = outbox
+        .pending(10)
+        .unwrap()
+        .into_iter()
+        .map(|queued| (queued.sequence, queued.frame.encode_to_vec()))
+        .collect::<Vec<_>>();
+    if matches!(rejection, Rejection::UnsupportedEncoding) {
+        stored[0].1.extend_from_slice(&[0x98, 0x06, 0x01]);
+        assert_eq!(
+            v1::NodeFrame::decode(stored[0].1.as_slice()).unwrap(),
+            first.frame
+        );
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE outbound_frames SET frame = ?1 WHERE sequence = 1",
+                [&stored[0].1],
+            )
+            .unwrap();
+    }
     let expected = if permanent {
         vec![rejected, tail]
     } else {
@@ -226,7 +262,43 @@ async fn exercise_rejection(permanent: bool) {
         .unwrap()
         .unwrap();
     drop(outbox);
-    let reopened = SupervisorOutbox::open(path, registration, session).unwrap();
+    let reopened = SupervisorOutbox::open(&path, registration, session).unwrap();
+
+    if matches!(rejection, Rejection::UnsupportedEncoding) {
+        assert!(matches!(
+            result,
+            Err(daemon::DaemonError::Outbox(
+                OutboxError::UnsupportedStoredEncoding { sequence: 1 }
+            ))
+        ));
+        assert_eq!(server_position, None, "no sequenced receipt was accepted");
+        assert!(history.is_empty());
+        assert_eq!(
+            reopened.positions().unwrap(),
+            OutboxPositions {
+                acknowledged: 0,
+                last_enqueued: 3
+            }
+        );
+        assert!(matches!(
+            reopened.pending(10),
+            Err(OutboxError::UnsupportedStoredEncoding { sequence: 1 })
+        ));
+        assert!(reopened
+            .acknowledged_lifecycle_receipts(0, 10)
+            .unwrap()
+            .is_empty());
+        let database = rusqlite::Connection::open(&path).unwrap();
+        let retained: Vec<(u64, Vec<u8>)> = database
+            .prepare("SELECT sequence, frame FROM outbound_frames ORDER BY sequence")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(retained, stored);
+        return;
+    }
 
     assert_eq!(
         reopened.positions().unwrap(),
