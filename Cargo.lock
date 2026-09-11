@@ -118,14 +118,17 @@ name = "ackplane-server"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "chacha20poly1305",
  "deadpool-postgres",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "keyring",
  "mindleak-model",
  "pgvector",
  "prost",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2 0.10.9",

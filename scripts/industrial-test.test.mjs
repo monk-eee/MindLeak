@@ -63,7 +63,7 @@ test("the gate checks recovery tools, builds every target, migrates, then tests 
   assert.equal(result, 0);
   assert.deepEqual(
     calls.map(({ command }) => command),
-    ["pg_dump", "pg_restore", "cargo", "cargo", "cargo"],
+    ["pg_dump", "pg_restore", "cargo", "cargo", process.execPath],
   );
   assert.deepEqual(calls[2].args, [
     "test",
@@ -86,6 +86,9 @@ test("the gate checks recovery tools, builds every target, migrates, then tests 
     "2",
   ]);
   assert.deepEqual(calls[4].args, [
+    fileURLToPath(new URL("./credential-test.mjs", import.meta.url)),
+    "--",
+    "cargo",
     "test",
     "--workspace",
     "--all-features",
@@ -96,6 +99,7 @@ test("the gate checks recovery tools, builds every target, migrates, then tests 
     "--test-threads=4",
   ]);
   for (const { options } of calls) {
+    assert.equal(options.env.MINDLEAK_REQUIRE_CREDENTIAL_FACILITY, "1");
     assert.equal(
       options.env.ACKPLANE_DATABASE_URL,
       environment.ACKPLANE_TEST_DATABASE_URL,

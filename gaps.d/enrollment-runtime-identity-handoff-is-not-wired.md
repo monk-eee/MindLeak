@@ -1,7 +1,9 @@
-- **Enrollment activation does not provision a restart-capable runtime identity - OPEN, STAB-02.**
-  `crates/ackplane-server/src/bin/register-me/commands.rs::run_activate` now
-  preserves the assigned public key ID and receipt, but it does not provision
-  the signer that `crates/ackplane-client/src/node_identity.rs::resolve_node_identity`
+- **Provider-backed CLI enrollment is not yet adopted by the supervisor and local planes - OPEN, STAB-02.**
+  `crates/ackplane-server/src/bin/register-me/enrollment.rs::run_activate` now
+  uses the persistent node provider, with request-before-RPC persistence,
+  accepted key/receipt binding and native cross-process restart. It does not
+  populate the legacy signer that
+  `crates/ackplane-client/src/node_identity.rs::resolve_node_identity`
   expects. That resolver still needs explicit identity environment variables
   and an already populated OS credential entry (or the explicitly non-hardened
   seed override). The accepted owner in ADR-0100 is `ackplane-node`. It now has
@@ -20,8 +22,11 @@
   authentication and credential loss. The erased signer retains `Send + Sync`,
   verified by a failing-then-passing runtime-worker future regression. This
   signing boundary was fixed this run.
-  The CLI and supervisor do not yet call these capabilities, and no companion
-  yet owns provider retention or monitors loss on already-authenticated streams.
+  The CLI now calls these capabilities and retains provider ownership through
+  its NodeSync connection. The supervisor and MCP enrollment-status loader do
+  not yet adopt provider state, and no long-lived companion owns retention or
+  monitors loss on already-authenticated streams. CLI adoption was fixed this
+  run; the remaining runtime handoff is not fixed.
   An operator can therefore finish enrollment yet still fail to start the
   supervisor with the same identity. Wire the persistent provider and
   non-secret binding handoff through the existing signer/IPC contracts; verify
