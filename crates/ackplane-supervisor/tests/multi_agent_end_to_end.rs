@@ -10,7 +10,10 @@ use std::{
     time::{Duration, SystemTime},
 };
 #[cfg(unix)]
-use std::{sync::Mutex, time::Instant};
+use std::{
+    sync::{atomic::AtomicBool, Mutex},
+    time::Instant,
+};
 
 use ackplane_protocol::{
     context_packet::ContextPacketUseStatus, supervisor::SupervisorWorkerState, v1,
@@ -35,6 +38,9 @@ use ackplane_server::{
 use ackplane_supervisor::{OutboxPositions, SupervisorOutbox, WorkerCommand};
 #[path = "../../ackplane-node/tests/support/companion.rs"]
 mod companion;
+#[cfg(unix)]
+#[path = "multi_agent_end_to_end/recovery.rs"]
+mod recovery;
 use command_group::{CommandGroup, GroupChild};
 use prost::Message;
 use tokio_stream::{
@@ -56,6 +62,8 @@ async fn companion_loss_stops_workers_and_retains_unconfirmed_cleanup_evidence()
 
 #[derive(Default)]
 struct Scenario {
+    #[cfg(unix)]
+    recovery_case: Option<recovery::Case>,
     companion_loss: bool,
     stop_while_active: bool,
     stop_before_spawn: bool,
@@ -146,6 +154,12 @@ struct ContextReplyGate {
     shutdown_receipt_fault: Option<ShutdownReceiptFault>,
     #[cfg(unix)]
     shutdown_receipt_attempts: Arc<Mutex<BTreeMap<String, usize>>>,
+    #[cfg(unix)]
+    shutdown_receipt_fault_enabled: Arc<AtomicBool>,
+    #[cfg(unix)]
+    recovering: bool,
+    #[cfg(unix)]
+    recovery_faults: Arc<recovery::Faults>,
 }
 
 #[tonic::async_trait]
@@ -164,16 +178,40 @@ impl v1::node_sync_service_server::NodeSyncService for ContextReplyGate {
         let shutdown_receipt_fault = self.shutdown_receipt_fault;
         #[cfg(unix)]
         let shutdown_receipt_attempts = self.shutdown_receipt_attempts.clone();
+        #[cfg(unix)]
+        let shutdown_receipt_fault_enabled = self.shutdown_receipt_fault_enabled.clone();
+        #[cfg(unix)]
+        let recovering = self.recovering;
+        #[cfg(unix)]
+        let recovery_faults = self.recovery_faults.clone();
         tokio::spawn(async move {
             let mut first_slot = false;
-            while let Some(frame) = stream.next().await {
-                if let Ok(reply) = &frame {
+            while let Some(mut frame) = stream.next().await {
+                if let Ok(reply) = &mut frame {
                     if let Some(v1::ackplane_frame::Frame::SupervisorFrameReceipt(receipt)) =
-                        reply.frame.as_ref()
+                        reply.frame.as_mut()
                     {
                         first_slot = receipt.supervisor_id.starts_with("multi-agent-first-");
                         #[cfg(unix)]
-                        if receipt.accepted_outbox_sequence == Some(4) {
+                        if receipt.session_id.is_empty() {
+                            match recovery_faults.position.load(Ordering::SeqCst) {
+                                1 => receipt.accepted_outbox_sequence = None,
+                                2 => receipt.accepted_outbox_sequence = Some(0),
+                                3 => receipt.accepted_outbox_sequence = Some(u64::MAX),
+                                _ => {}
+                            }
+                        } else if receipt.accepted_outbox_sequence == Some(4)
+                            && recovery_faults.hold_reply.load(Ordering::SeqCst)
+                        {
+                            recovery_faults.reply_held.add_permits(1);
+                            sender.closed().await;
+                            return;
+                        }
+                        #[cfg(unix)]
+                        if receipt.accepted_outbox_sequence == Some(4)
+                            && shutdown_receipt_fault_enabled.load(Ordering::SeqCst)
+                            && (!recovering || !receipt.session_id.is_empty())
+                        {
                             if let Some(fault) = shutdown_receipt_fault {
                                 let first_attempt = {
                                     let mut attempts = shutdown_receipt_attempts.lock().unwrap();
@@ -492,6 +530,8 @@ async fn failed_terminal_lifecycle_write_keeps_the_lease_after_cleanup_retry() {
 
 async fn exercise_two_workers(scenario: Scenario) {
     let Scenario {
+        #[cfg(unix)]
+        recovery_case,
         companion_loss,
         stop_while_active,
         stop_before_spawn,
@@ -647,6 +687,10 @@ async fn exercise_two_workers(scenario: Scenario) {
     let reject_first_use = fail_first_slot.then(|| Arc::new(tokio::sync::Semaphore::new(0)));
     #[cfg(unix)]
     let shutdown_receipt_attempts = Arc::new(Mutex::new(BTreeMap::new()));
+    #[cfg(unix)]
+    let shutdown_receipt_fault_enabled = Arc::new(AtomicBool::new(true));
+    #[cfg(unix)]
+    let recovery_faults = Arc::new(recovery::Faults::default());
     let node_sync = ContextReplyGate {
         service: node_sync,
         held_contexts: held_contexts.clone(),
@@ -655,6 +699,12 @@ async fn exercise_two_workers(scenario: Scenario) {
         shutdown_receipt_fault,
         #[cfg(unix)]
         shutdown_receipt_attempts: shutdown_receipt_attempts.clone(),
+        #[cfg(unix)]
+        shutdown_receipt_fault_enabled: shutdown_receipt_fault_enabled.clone(),
+        #[cfg(unix)]
+        recovering: recovery_case.is_some(),
+        #[cfg(unix)]
+        recovery_faults: recovery_faults.clone(),
     };
     let claims = ClaimDelegationService::new(ClaimStore::connect(&pool).await.unwrap());
     let query = WorkQueryService::new(WorkStore::connect(&pool).await.unwrap());
@@ -700,33 +750,31 @@ async fn exercise_two_workers(scenario: Scenario) {
     #[cfg(unix)]
     let capture_stderr = capture_stderr || shutdown_receipt_fault.is_some();
     fs::write(&workers_file, serde_json::to_vec(&commands).unwrap()).unwrap();
-    let mut daemon = Daemon(
-        Command::new(env!("CARGO_BIN_EXE_ackplane-supervisor"))
-            .arg("--workers")
-            .arg(&workers_file)
-            .env("MINDLEAK_ACKPLANE_STATE_DIR", &node_directory)
-            .env("MINDLEAK_ACKPLANE_TENANT_ID", &tenant)
-            .env("MINDLEAK_ACKPLANE_REPOSITORY_ID", repository)
-            .env_remove("MINDLEAK_ACKPLANE_NODE_ID")
-            .env_remove("MINDLEAK_ACKPLANE_SIGNING_KEY_ID")
-            .env_remove("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED")
-            .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
-            .env_remove("MINDLEAK_ACKPLANE_TLS_CA_PATH")
-            .env("ACKPLANE_SUPERVISOR_ID", "multi-agent")
-            .env("ACKPLANE_SUPERVISOR_STATE_DIR", root.path().join("state"))
-            .env("ACKPLANE_SUPERVISOR_HEARTBEAT_SECONDS", "1")
-            .env_remove("ACKPLANE_SUPERVISOR_WORKERS")
-            .env("RUST_LOG", "warn")
-            .stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(if capture_stderr {
-                Stdio::from(fs::File::create(&daemon_log).unwrap())
-            } else {
-                Stdio::inherit()
-            })
-            .group_spawn()
-            .unwrap(),
-    );
+    let mut daemon_command = Command::new(env!("CARGO_BIN_EXE_ackplane-supervisor"));
+    daemon_command
+        .arg("--workers")
+        .arg(&workers_file)
+        .env("MINDLEAK_ACKPLANE_STATE_DIR", &node_directory)
+        .env("MINDLEAK_ACKPLANE_TENANT_ID", &tenant)
+        .env("MINDLEAK_ACKPLANE_REPOSITORY_ID", repository)
+        .env_remove("MINDLEAK_ACKPLANE_NODE_ID")
+        .env_remove("MINDLEAK_ACKPLANE_SIGNING_KEY_ID")
+        .env_remove("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED")
+        .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
+        .env_remove("MINDLEAK_ACKPLANE_TLS_CA_PATH")
+        .env("ACKPLANE_SUPERVISOR_ID", "multi-agent")
+        .env("ACKPLANE_SUPERVISOR_STATE_DIR", root.path().join("state"))
+        .env("ACKPLANE_SUPERVISOR_HEARTBEAT_SECONDS", "1")
+        .env_remove("ACKPLANE_SUPERVISOR_WORKERS")
+        .env("RUST_LOG", "warn")
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
+        .stderr(if capture_stderr {
+            Stdio::from(fs::File::create(&daemon_log).unwrap())
+        } else {
+            Stdio::inherit()
+        });
+    let mut daemon = Daemon(daemon_command.group_spawn().unwrap());
 
     let mut sessions = Vec::new();
     for name in ["first", "second"] {
@@ -832,7 +880,7 @@ async fn exercise_two_workers(scenario: Scenario) {
         )
         .unwrap();
         let failed = &sessions[0];
-        assert_eq!(marker["session_id"], failed.session_id);
+        assert_eq!(marker["session"]["session_id"], failed.session_id);
         assert_eq!(marker["task_id"], "task:first");
         let registration = supervisors
             .list_supervisors(&tenant, repository)
@@ -1016,6 +1064,31 @@ async fn exercise_two_workers(scenario: Scenario) {
                 .then_some(())
         })
         .await;
+    }
+    #[cfg(unix)]
+    if let Some(case) = recovery_case {
+        recovery::Fixture {
+            root: root.path(),
+            pool: &pool,
+            tenant: &tenant,
+            repository,
+            node,
+            node_directory: &node_directory,
+            supervisors: &supervisors,
+            work: &work,
+            sessions: &sessions,
+            fault_enabled: &shutdown_receipt_fault_enabled,
+            release_failures: &remaining_release_failures,
+            faults: &recovery_faults,
+            daemon_command: &mut daemon_command,
+        }
+        .run(case, &mut daemon)
+        .await;
+        drop(daemon);
+        drop(companion);
+        let _ = shutdown.send(());
+        server.await.unwrap();
+        return;
     }
     if let Some(reject_first_use) = reject_first_use {
         let peer = &sessions[1];

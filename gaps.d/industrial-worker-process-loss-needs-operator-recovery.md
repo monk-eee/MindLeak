@@ -1,11 +1,15 @@
-- **Automatic reconciliation after supervisor process loss is not implemented.**
+- **Recovery of live or unproven workers after supervisor loss remains unimplemented.**
   In `crates/ackplane-supervisor/src/daemon/runtime.rs` and `daemon/mod.rs`,
   a durable worker-run marker prevents a new process from silently reusing a
   workspace whose old worker or pending receipts are unaccounted for. Ordinary
-  connection reconnects resend the existing outbox; process loss instead stops
-  for an operator to inspect the named session, process tree and queues. This
-  avoids duplicate execution but requires manual recovery before that slot can
-  run again. Fixed this run: fail-closed slot reuse, tested by
-  `an_unaccounted_worker_run_refuses_startup_before_reusing_its_workspace`.
-  Left for later: an explicit recovery operation that reconciles old receipts
-  and establishes worker termination without attaching to unrelated processes.
+  connection reconnects resend the existing outbox. Fixed this run:
+  `recovery::inspect` and `recovery::confirm` finish cleanup for versioned runs
+  with positive adapter-stop provenance, exact receipt replay, original-owner
+  release and durable completion before marker removal. The real two-worker
+  `stopped_run_recovery_survives_supervisor_crash_lost_replies_and_completion_write_failure`
+  test covers supervisor/recovery crashes and fresh authorized execution.
+  Left for later: a trustworthy external process-ownership mechanism for live
+  or unproven workers, old markers and missing stop records. PID absence, lease
+  expiry and lifecycle labels do not prove termination. The live-worker
+  recovery test confirms refusal without signalling or releasing those workers;
+  automatic slot reuse and inconsistent-history repair remain intentionally blocked.
