@@ -144,6 +144,7 @@ dependencies = [
  "nix 0.27.1",
  "prost",
  "rusqlite",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",

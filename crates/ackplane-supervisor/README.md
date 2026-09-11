@@ -170,6 +170,14 @@ Normal worker completion cleans up its owned process group before a terminal
 lifecycle is reported. A parent process exiting does not permit a remaining
 descendant to continue writing after the task lease is released.
 
+On macOS, signalling a group whose leader exited but has not been reaped can
+return `EPERM`. On a Unix permission error, cleanup checks the leader with a
+nonblocking wait and retries the group signal once only if that wait confirms
+the leader exited. It still signals any surviving descendants. A permission
+error while the leader is live, or from the retry, remains a cleanup failure;
+it is never treated as proof that the group is gone. Diagnostics distinguish
+spawn, stop and wait failures, which remain failed, non-replayable effects.
+
 Successful spawn is tracked before the inbox records its final effect or the
 outbox queues context-use and startup receipts. Failure at any of those writes
 therefore still reaches explicit worker termination. Active cleanup state is
@@ -227,6 +235,13 @@ directory concurrency.
 isolated database to verify real authenticated permanent and retryable server
 refusals, the accepted position, and byte-preserving outbox reopen. It confirms
 that a rejected frame cannot be skipped to transmit later evidence.
+
+`cargo test --locked -p ackplane-supervisor --lib worker_adapter::tests`
+includes a macOS/Linux regression that waits for a real child's exit without
+reaping it, then checks cleanup and stable terminal status for both unreaped
+and already-reaped groups. It uses the safe `rustix` test API rather than a
+fixed delay. The existing `worker_adapter` integration test also verifies that
+a reaped leader cannot leave its owned descendant running.
 
 ### Live Agent Check
 

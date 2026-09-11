@@ -229,8 +229,13 @@ impl SupervisorInbox {
             }
             Err(error) => {
                 receipt.status = match error {
-                    crate::AdapterError::SpawnFailed(_) => v1::DirectiveReceiptStatus::Failed,
-                    _ => v1::DirectiveReceiptStatus::Refused,
+                    crate::AdapterError::SpawnFailed(_)
+                    | crate::AdapterError::StopFailed(_)
+                    | crate::AdapterError::WaitFailed(_) => v1::DirectiveReceiptStatus::Failed,
+                    crate::AdapterError::InvalidAssignment(_)
+                    | crate::AdapterError::UnknownWorker(_)
+                    | crate::AdapterError::DuplicateWorker(_)
+                    | crate::AdapterError::Unsupported(_) => v1::DirectiveReceiptStatus::Refused,
                 } as i32;
                 receipt.reason = v1::DirectiveReceiptReason::InvalidState as i32;
                 receipt.diagnostic = error.to_string();

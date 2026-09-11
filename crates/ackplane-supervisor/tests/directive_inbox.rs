@@ -161,28 +161,44 @@ fn a_worker_effect_is_not_executed_twice_after_redelivery_or_reopen() {
     );
 }
 
+// Stop and wait errors used the spawn diagnostic. Preserve their actual operation
+// while keeping every failed process effect durable and non-replayable.
 #[test]
-fn a_failed_spawn_is_durable_and_never_reported_as_applied() {
-    let inbox = SupervisorInbox::open_in_memory(
-        registration(vec![SupervisorDirectiveCapability::Prompt]),
-        session(),
-    )
-    .unwrap();
-    let directive = directive(1, now() + Duration::minutes(10));
-    let failed = inbox
-        .apply(&directive, now(), vec![], || {
-            Err(AdapterError::SpawnFailed("missing executable".into()))
-        })
+fn process_failures_keep_their_operation_and_are_never_reported_as_applied() {
+    for (error, diagnostic) in [
+        (
+            AdapterError::SpawnFailed("missing executable".into()),
+            "failed to start worker: missing executable",
+        ),
+        (
+            AdapterError::StopFailed("permission denied".into()),
+            "failed to stop worker process group: permission denied",
+        ),
+        (
+            AdapterError::WaitFailed("no child process".into()),
+            "failed to wait for worker process group: no child process",
+        ),
+    ] {
+        let inbox = SupervisorInbox::open_in_memory(
+            registration(vec![SupervisorDirectiveCapability::Prompt]),
+            session(),
+        )
         .unwrap();
-    assert_eq!(failed.status, v1::DirectiveReceiptStatus::Failed as i32);
-    assert_eq!(
-        inbox
-            .apply(&directive, now(), vec![], || panic!(
-                "a failed directive ran again"
-            ))
-            .unwrap(),
-        failed
-    );
+        let directive = directive(1, now() + Duration::minutes(10));
+        let failed = inbox
+            .apply(&directive, now(), vec![], || Err(error))
+            .unwrap();
+        assert_eq!(failed.status, v1::DirectiveReceiptStatus::Failed as i32);
+        assert_eq!(failed.diagnostic, diagnostic);
+        assert_eq!(
+            inbox
+                .apply(&directive, now(), vec![], || panic!(
+                    "a failed directive ran again"
+                ))
+                .unwrap(),
+            failed
+        );
+    }
 }
 
 #[test]

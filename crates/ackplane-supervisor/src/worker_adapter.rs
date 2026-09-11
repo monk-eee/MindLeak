@@ -39,6 +39,10 @@ pub enum AdapterError {
     DuplicateWorker(String),
     #[error("failed to start worker: {0}")]
     SpawnFailed(String),
+    #[error("failed to stop worker process group: {0}")]
+    StopFailed(String),
+    #[error("failed to wait for worker process group: {0}")]
+    WaitFailed(String),
     #[error("this adapter cannot honestly enforce {0} for a generic process worker")]
     Unsupported(&'static str),
 }
@@ -105,18 +109,33 @@ impl WorkerProcess {
         let Self::Running(child) = self else {
             return Ok(());
         };
-        if let Err(error) = child.kill() {
+        let signal_result = match child.kill() {
+            #[cfg(unix)]
+            Err(error) if error.raw_os_error() == Some(nix::errno::Errno::EPERM as i32) => {
+                if child
+                    .try_wait()
+                    .map_err(|error| AdapterError::WaitFailed(error.to_string()))?
+                    .is_some()
+                {
+                    child.kill()
+                } else {
+                    Err(error)
+                }
+            }
+            result => result,
+        };
+        if let Err(error) = signal_result {
             #[cfg(unix)]
             let group_gone = error.raw_os_error() == Some(nix::errno::Errno::ESRCH as i32);
             #[cfg(not(unix))]
             let group_gone = error.kind() == std::io::ErrorKind::InvalidInput;
             if !group_gone {
-                return Err(AdapterError::SpawnFailed(error.to_string()));
+                return Err(AdapterError::StopFailed(error.to_string()));
             }
         }
         let status = child
             .wait()
-            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
+            .map_err(|error| AdapterError::WaitFailed(error.to_string()))?;
         *self = Self::Finished(status);
         Ok(())
     }
@@ -125,7 +144,7 @@ impl WorkerProcess {
         if let Self::Running(child) = self {
             if child
                 .try_wait()
-                .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?
+                .map_err(|error| AdapterError::WaitFailed(error.to_string()))?
                 .is_none()
             {
                 return Ok(SupervisorWorkerState::Started);
@@ -195,13 +214,48 @@ impl Drop for ProcessWorkerAdapter {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    // macOS returned EPERM for an exited but unreaped group leader, withholding
+    // terminal receipts and lease release. Confirm the exit before retrying the signal.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn stopping_exited_leaders_handles_reaped_and_unreaped_groups() {
+        for reaped in [false, true] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .arg("--list")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .group_spawn()
+                .unwrap();
+            let group_id = child.id();
+            if reaped {
+                assert!(child.wait().unwrap().success());
+            } else {
+                use rustix::process::{waitid, Pid, WaitId, WaitIdOptions};
+                let status = waitid(
+                    WaitId::Pid(Pid::from_raw(group_id as i32).unwrap()),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(status.exit_status(), Some(0));
+            }
+            let mut worker = WorkerProcess::Running(child);
+            assert_eq!(worker.stop(), Ok(()), "group {group_id}, reaped={reaped}");
+            assert_eq!(worker.observe(), Ok(SupervisorWorkerState::Completed));
+            assert_eq!(worker.observe(), Ok(SupervisorWorkerState::Completed));
+            worker.stop().unwrap();
+        }
+    }
 
     /// Reads `/proc` directly rather than asserting `terminate` returned `Ok`:
     /// the un-reaped case also returns `Ok`, so only the process table can
     /// tell the fix from the bug.
+    #[cfg(target_os = "linux")]
     #[test]
     fn terminate_reaps_the_child_rather_than_leaving_a_zombie() {
         let mut adapter = ProcessWorkerAdapter::new();
