@@ -10,7 +10,7 @@ async fn a_lost_request_response_replays_without_a_new_identity() {
     let pool = build_pool(&database_url, TEST_POOL_MAX_SIZE).unwrap();
     let dropped = Arc::new(Mutex::new(None));
     let (endpoint, shutdown, server) =
-        start_server(&pool, false, None, Some(dropped.clone())).await;
+        start_server(&pool, false, None, Some(dropped.clone()), None).await;
     let directory = TestIdentity::new();
     let tenant = format!(
         "request-{}",
@@ -29,12 +29,12 @@ async fn a_lost_request_response_replays_without_a_new_identity() {
         "--grpc-endpoint",
         &endpoint,
     ];
-    let first = run_cli(directory.path(), &args).await;
+    let first = directory.run(&args, None).await;
     assert!(!first.status.success());
     assert!(String::from_utf8_lossy(&first.stderr).contains("request response lost after commit"));
     let request = std::fs::read(directory.path().join("enrollment-request.json")).unwrap();
     let identity = std::fs::read(directory.path().join("enrolment.json")).unwrap();
-    let retried = run_cli(directory.path(), &args).await;
+    let retried = directory.run(&args, None).await;
     assert!(
         retried.status.success(),
         "{}",
@@ -86,7 +86,7 @@ async fn native_cli_request_recovers_the_same_credential_without_a_seed_file() {
         "--grpc-endpoint",
         "http://127.0.0.1:1",
     ];
-    let first = run_cli(directory.path(), &args).await;
+    let first = directory.run(&args, None).await;
     assert!(!first.status.success());
     assert!(
         String::from_utf8_lossy(&first.stderr).contains("request is saved for retry"),
@@ -95,7 +95,7 @@ async fn native_cli_request_recovers_the_same_credential_without_a_seed_file() {
     );
     let metadata = std::fs::read(directory.path().join("enrolment.json")).unwrap();
     let request = std::fs::read(directory.path().join("enrollment-request.json")).unwrap();
-    let second = run_cli(directory.path(), &args).await;
+    let second = directory.run(&args, None).await;
     assert!(!second.status.success());
     assert!(String::from_utf8_lossy(&second.stderr).contains("request is saved for retry"));
     assert_eq!(
@@ -113,11 +113,11 @@ async fn native_cli_request_recovers_the_same_credential_without_a_seed_file() {
     let mut changed = args.to_vec();
     changed.extend(["--display-name", "changed-name"]);
     assert!(
-        String::from_utf8_lossy(&run_cli(directory.path(), &changed).await.stderr)
+        String::from_utf8_lossy(&directory.run(&changed, None).await.stderr)
             .contains("differs from these parameters")
     );
     directory.remove_credential().unwrap();
-    let lost = run_cli(directory.path(), &args).await;
+    let lost = directory.run(&args, None).await;
     assert!(!lost.status.success());
     assert!(String::from_utf8_lossy(&lost.stderr).contains("credential facility"));
     assert_eq!(
