@@ -246,8 +246,14 @@ that a rejected frame cannot be skipped to transmit later evidence.
 includes a macOS/Linux regression that waits for a real child's exit without
 reaping it, then checks cleanup and stable terminal status for both unreaped
 and already-reaped groups. It uses the safe `rustix` test API rather than a
-fixed delay. The existing `worker_adapter` integration test also verifies that
-a reaped leader cannot leave its owned descendant running.
+fixed delay.
+
+`cargo test --locked -p ackplane-supervisor --test worker_adapter` verifies
+running-to-completed state using the existing TCP fixture: wait for readiness,
+observe the held worker, close its connection to release it, and observe exit
+within a bounded deadline. It does not infer completion from a fixed sleep.
+The same readiness and exit helpers support the descendant-cleanup regression;
+adapter ownership still cleans up child processes if an assertion fails.
 
 ### Live Agent Check
 
