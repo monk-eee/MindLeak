@@ -1,0 +1,1 @@
+- Supervisor startup now rejects worker workspace paths that resolve to regular files instead of directories, before registering slots or acquiring task leases. The error identifies the affected worker and path.

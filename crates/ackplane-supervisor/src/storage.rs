@@ -6,6 +6,7 @@ use ackplane_protocol::{
     supervisor::{SupervisorIdentity, SupervisorSession},
     v1,
 };
+use prost::Message;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 pub(crate) const SCHEMA: &str = r#"
@@ -33,6 +34,11 @@ CREATE TABLE IF NOT EXISTS directive_inbox (
 );
 
 CREATE TABLE IF NOT EXISTS outbound_frames (
+    sequence INTEGER PRIMARY KEY,
+    frame BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS acknowledged_lifecycle_receipts (
     sequence INTEGER PRIMARY KEY,
     frame BLOB NOT NULL
 );
@@ -143,6 +149,9 @@ pub(crate) fn ensure_supervisor_identity(
             return Ok(false);
         }
         return Ok(true);
+    }
+    if conn.is_readonly(rusqlite::DatabaseName::Main)? {
+        return Ok(false);
     }
     conn.execute(
         "INSERT INTO inbox_identity (singleton, tenant_id, repository_id, node_id, supervisor_id, session_id) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
@@ -296,10 +305,51 @@ pub(crate) fn acknowledge_outbound_frames(
     transaction: &Transaction<'_>,
     sequence: i64,
 ) -> Result<usize, rusqlite::Error> {
+    {
+        let mut statement = transaction.prepare(
+            "SELECT sequence, frame FROM outbound_frames WHERE sequence <= ?1 ORDER BY sequence ASC",
+        )?;
+        let rows = statement.query_map(params![sequence], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        for row in rows {
+            let (stored_sequence, bytes) = row?;
+            let frame = v1::NodeFrame::decode(bytes.as_slice()).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Blob,
+                    Box::new(error),
+                )
+            })?;
+            if matches!(
+                frame.frame,
+                Some(v1::node_frame::Frame::SupervisorLifecycleReceipt(_))
+            ) {
+                transaction.execute(
+                    "INSERT INTO acknowledged_lifecycle_receipts (sequence, frame) VALUES (?1, ?2)",
+                    params![stored_sequence, bytes],
+                )?;
+            }
+        }
+    }
     transaction.execute(
         "DELETE FROM outbound_frames WHERE sequence <= ?1",
         params![sequence],
     )
+}
+
+pub(crate) fn acknowledged_lifecycle_receipts(
+    conn: &Connection,
+    after_sequence: i64,
+    limit: i64,
+) -> Result<Vec<(u64, Vec<u8>)>, rusqlite::Error> {
+    let mut statement = conn.prepare(
+        "SELECT sequence, frame FROM acknowledged_lifecycle_receipts WHERE sequence > ?1 ORDER BY sequence ASC LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![after_sequence, limit], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
+    rows.collect()
 }
 
 /// The highest sequence this outbox can prove was acknowledged, and the
