@@ -18,8 +18,16 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 
 export const SERVERS = ["mindleak-mcp", "lodestar-mcp"];
+const INDUSTRIAL_BINARIES = [
+  ...SERVERS,
+  "ackplane-mcp",
+  "ackplane-supervisor",
+  "register-me",
+  "ackplane-workctl",
+];
 
 /** Executable name for a platform. Windows needs the extension to spawn. */
 export function executableName(name, platform = process.platform) {
@@ -47,10 +55,14 @@ export function pickBuild(
   name,
   exists = fs.existsSync,
   platform = process.platform,
+  {
+    profiles = ["release", "debug"],
+    targetDirectory = path.join(workspace, "target"),
+  } = {},
 ) {
   const exe = executableName(name, platform);
-  for (const profile of ["release", "debug"]) {
-    const candidate = path.join(workspace, "target", profile, exe);
+  for (const profile of profiles) {
+    const candidate = path.join(targetDirectory, profile, exe);
     if (exists(candidate)) {
       return candidate;
     }
@@ -67,18 +79,37 @@ export function pickBuild(
  * handle, and the next spawn picks up the new binary.
  */
 export function installOne(source, destination, now = Date.now()) {
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
-  if (fs.existsSync(destination)) {
-    fs.renameSync(destination, `${destination}.${now}.old`);
-  }
-  fs.copyFileSync(source, destination);
-  // Copy preserves the source mtime on some platforms, which makes a fresh
-  // install look older than what it replaced. Stamp it so "which is newer" stays
-  // answerable.
-  const stamped = new Date();
-  fs.utimesSync(destination, stamped, stamped);
-  if (process.platform !== "win32") {
-    fs.chmodSync(destination, 0o755);
+  const directory = path.dirname(destination);
+  fs.mkdirSync(directory, { recursive: true });
+  const staging = fs.mkdtempSync(path.join(directory, ".install-"));
+  const candidate = path.join(staging, path.basename(destination));
+  let previous = null;
+  try {
+    fs.copyFileSync(source, candidate);
+    const stamped = new Date();
+    fs.utimesSync(candidate, stamped, stamped);
+    if (process.platform !== "win32") {
+      fs.chmodSync(candidate, 0o755);
+    }
+    if (fs.existsSync(destination)) {
+      if (!fs.lstatSync(destination).isFile()) {
+        throw new Error(`installed path is not a regular file: ${destination}`);
+      }
+      const backup = `${destination}.${now}.old`;
+      if (fs.existsSync(backup)) {
+        throw new Error(`a previous install already uses ${backup}`);
+      }
+      fs.renameSync(destination, backup);
+      previous = backup;
+    }
+    try {
+      fs.renameSync(candidate, destination);
+    } catch (error) {
+      if (previous) fs.renameSync(previous, destination);
+      throw error;
+    }
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
   }
 }
 
@@ -114,12 +145,37 @@ export function pruneSupersededInstalls(directory) {
 }
 
 function main() {
+  const { values } = parseArgs({
+    options: {
+      profile: { type: "string", default: "local" },
+      prune: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h" },
+    },
+  });
+  if (values.help) {
+    console.log(
+      "Usage: node scripts/install-servers.mjs [--profile local|industrial] [--prune]\n" +
+        "Local (default): install mindleak-mcp and lodestar-mcp, preferring release over debug.\n" +
+        "Industrial: install all six host binaries from target/release; no debug fallback.\n" +
+        "CARGO_TARGET_DIR selects a different build directory for either profile.\n" +
+        "This does not install or start the shared Ackplane/Bridge deployment.",
+    );
+    return;
+  }
+  if (!["local", "industrial"].includes(values.profile)) {
+    throw new Error("--profile must be local or industrial");
+  }
+  if (values.prune && values.profile !== "local") {
+    throw new Error(
+      "--prune collects shared installs and cannot select an Industrial profile",
+    );
+  }
   const directory = installDirectory();
 
   // Reachable on its own because the collector used to run only after a full
   // install, and a deploy that copies a fresh build in by hand never performs
   // one — which is how 68 MiB of set-aside binaries accumulated unnoticed.
-  if (process.argv.slice(2).includes("--prune")) {
+  if (values.prune) {
     const collected = pruneSupersededInstalls(directory);
     reportPruned(collected, directory);
     reportHeld(collected.held);
@@ -130,18 +186,43 @@ function main() {
     encoding: "utf8",
   }).trim();
 
-  const missing = SERVERS.filter((name) => !pickBuild(workspace, name));
+  const industrial = values.profile === "industrial";
+  const targetDirectory = path.resolve(
+    workspace,
+    process.env.CARGO_TARGET_DIR || "target",
+  );
+  const binaries = industrial ? INDUSTRIAL_BINARIES : SERVERS;
+  const builds = binaries.map((name) => ({
+    name,
+    source: pickBuild(workspace, name, fs.existsSync, process.platform, {
+      profiles: industrial ? ["release"] : ["release", "debug"],
+      targetDirectory,
+    }),
+  }));
+  const missing = builds
+    .filter(({ source }) => !source || !fs.statSync(source).isFile())
+    .map(({ name }) => name);
   if (missing.length > 0) {
+    const packages = industrial
+      ? binaries.map((name) =>
+          name === "register-me" ? "ackplane-server" : name,
+        )
+      : missing;
+    const features = industrial
+      ? " --features mindleak-mcp/federation-client,lodestar-mcp/federation-client"
+      : "";
     console.error(
-      `install-servers: no build found for ${missing.join(", ")}.\n` +
-        `  Build them first:  cargo build --release -p ${missing.join(" -p ")}`,
+      `install-servers: no ${industrial ? "release " : ""}build found for ${missing.join(", ")}.\n` +
+        `  Build them first: cargo build --locked --release -p ${packages.join(" -p ")}${features}`,
     );
     process.exitCode = 1;
     return;
   }
 
-  for (const name of SERVERS) {
-    const source = pickBuild(workspace, name);
+  for (const { source } of builds) {
+    fs.accessSync(source, fs.constants.R_OK);
+  }
+  for (const { name, source } of builds) {
     const destination = path.join(directory, executableName(name));
     installOne(source, destination);
     console.log(
@@ -153,7 +234,9 @@ function main() {
     console.log(`install-servers: removed ${supersededCount(pruned)}`);
   }
   console.log(
-    "install-servers: restart the MCP servers (or reload the window) so clients pick these up",
+    industrial
+      ? "install-servers: Industrial host binaries installed; stop and restart the companion and consumers to use this build. No services were started or credentials changed."
+      : "install-servers: restart the MCP servers (or reload the window) so clients pick these up",
   );
   reportHeld(held);
 }
@@ -195,5 +278,10 @@ if (
   process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  main();
+  try {
+    main();
+  } catch (error) {
+    console.error(`install-servers: ${error.message}`);
+    process.exitCode = 1;
+  }
 }

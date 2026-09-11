@@ -5,10 +5,12 @@
 // window loses both MCP planes at once. So the decisions are pure and covered
 // here rather than discovered on a broken fleet.
 import { test } from "node:test";
+import { execFileSync, spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   SERVERS,
@@ -19,6 +21,233 @@ import {
   pickBuild,
   pruneSupersededInstalls,
 } from "./install-servers.mjs";
+
+const INDUSTRIAL_BINARIES = [
+  "mindleak-mcp",
+  "lodestar-mcp",
+  "ackplane-mcp",
+  "ackplane-supervisor",
+  "register-me",
+  "ackplane-workctl",
+];
+
+function installerFixture(context) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "install-profile-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const home = path.join(root, "home");
+  const directory = installDirectory(home);
+  fs.mkdirSync(directory, { recursive: true });
+  execFileSync("git", ["init", "--quiet", root]);
+  return {
+    workspace: root,
+    directory,
+    build(names, profile = "release") {
+      const build = path.join(root, "target", profile);
+      fs.mkdirSync(build, { recursive: true });
+      for (const name of names) {
+        fs.writeFileSync(
+          path.join(build, executableName(name)),
+          `${profile}:${name}`,
+        );
+      }
+    },
+    run(args = [], environment = {}) {
+      return spawnSync(
+        process.execPath,
+        [
+          fileURLToPath(new URL("./install-servers.mjs", import.meta.url)),
+          ...args,
+        ],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            HOME: home,
+            USERPROFILE: home,
+            CARGO_TARGET_DIR: "",
+            ...environment,
+          },
+          encoding: "utf8",
+          timeout: 10_000,
+        },
+      );
+    },
+  };
+}
+
+// Industrial enrollment succeeded but its companion and consumers were never installed.
+test("the Industrial profile installs every host runtime binary", (context) => {
+  const fixture = installerFixture(context);
+  fixture.build(INDUSTRIAL_BINARIES);
+  const result = fixture.run(["--profile", "industrial"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    fs.readdirSync(fixture.directory).sort(),
+    INDUSTRIAL_BINARIES.map((name) => executableName(name)).sort(),
+  );
+});
+
+test("an incomplete Industrial build cannot replace the installed Local servers", (context) => {
+  const fixture = installerFixture(context);
+  fixture.build(SERVERS);
+  const installed = path.join(
+    fixture.directory,
+    executableName("mindleak-mcp"),
+  );
+  fs.writeFileSync(installed, "original install");
+  const result = fixture.run(["--profile", "industrial"]);
+  assert.notEqual(
+    result.status,
+    0,
+    "missing Industrial binaries must fail before installation",
+  );
+  assert.equal(fs.readFileSync(installed, "utf8"), "original install");
+  assert.deepEqual(fs.readdirSync(fixture.directory), [
+    executableName("mindleak-mcp"),
+  ]);
+});
+
+test("Industrial installation never fills a missing release binary from debug", (context) => {
+  const fixture = installerFixture(context);
+  fixture.build(SERVERS);
+  fixture.build(INDUSTRIAL_BINARIES, "debug");
+  const result = fixture.run(["--profile", "industrial"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /no release build found/);
+  assert.match(result.stderr, /ackplane-supervisor/);
+  assert.match(result.stderr, /ackplane-server/);
+  assert.doesNotMatch(result.stderr, /-p register-me/);
+  assert.deepEqual(fs.readdirSync(fixture.directory), []);
+});
+
+// Cargo can write elsewhere; installing an older workspace target would silently run the wrong build.
+test("Industrial installation honors the explicit Cargo target directory", (context) => {
+  const fixture = installerFixture(context);
+  fixture.build(INDUSTRIAL_BINARIES);
+  const target = path.join(fixture.workspace, "custom-target");
+  fs.mkdirSync(path.join(target, "release"), { recursive: true });
+  for (const name of INDUSTRIAL_BINARIES) {
+    fs.writeFileSync(
+      path.join(target, "release", executableName(name)),
+      `custom:${name}`,
+    );
+  }
+  const result = fixture.run(["--profile", "industrial"], {
+    CARGO_TARGET_DIR: "custom-target",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  for (const name of INDUSTRIAL_BINARIES) {
+    assert.equal(
+      fs.readFileSync(
+        path.join(fixture.directory, executableName(name)),
+        "utf8",
+      ),
+      `custom:${name}`,
+    );
+  }
+});
+
+test("default Local installation remains independent of Industrial builds", (context) => {
+  const fixture = installerFixture(context);
+  fixture.build(SERVERS, "debug");
+  const result = fixture.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    fs.readdirSync(fixture.directory).sort(),
+    SERVERS.map((name) => executableName(name)).sort(),
+  );
+  assert.equal(
+    fs.readFileSync(
+      path.join(fixture.directory, executableName("mindleak-mcp")),
+      "utf8",
+    ),
+    "debug:mindleak-mcp",
+  );
+});
+
+test("invalid install options fail before touching the installation", (context) => {
+  const fixture = installerFixture(context);
+  fixture.build(INDUSTRIAL_BINARIES);
+  for (const args of [
+    ["--profile", "industrail"],
+    ["--profile"],
+    ["--industrail"],
+    ["industrial"],
+    ["--prune", "--profile", "industrial"],
+  ]) {
+    const result = fixture.run(args);
+    assert.notEqual(result.status, 0, `accepted ${args.join(" ")}`);
+    assert.deepEqual(fs.readdirSync(fixture.directory), []);
+  }
+  const help = fixture.run(["--help"]);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /industrial/);
+  assert.deepEqual(fs.readdirSync(fixture.directory), []);
+});
+
+test("repeating an Industrial install preserves the same complete executable set", (context) => {
+  const fixture = installerFixture(context);
+  fixture.build(INDUSTRIAL_BINARIES);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = fixture.run(["--profile", "industrial"]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      fs.readdirSync(fixture.directory).sort(),
+      INDUSTRIAL_BINARIES.map((name) => executableName(name)).sort(),
+    );
+    for (const name of INDUSTRIAL_BINARIES) {
+      assert.equal(
+        fs.readFileSync(
+          path.join(fixture.directory, executableName(name)),
+          "utf8",
+        ),
+        `release:${name}`,
+      );
+    }
+  }
+});
+
+// Checking only existence let a directory pass preflight and partially replace the installed set.
+test("a non-file build refuses the complete install before changing any binary", (context) => {
+  const fixture = installerFixture(context);
+  fixture.build(INDUSTRIAL_BINARIES.filter((name) => name !== "register-me"));
+  fs.mkdirSync(
+    path.join(
+      fixture.workspace,
+      "target",
+      "release",
+      executableName("register-me"),
+    ),
+  );
+  const installed = path.join(
+    fixture.directory,
+    executableName("mindleak-mcp"),
+  );
+  fs.writeFileSync(installed, "original install");
+  const result = fixture.run(["--profile", "industrial"]);
+  assert.notEqual(result.status, 0);
+  assert.equal(fs.readFileSync(installed, "utf8"), "original install");
+  assert.deepEqual(fs.readdirSync(fixture.directory), [
+    executableName("mindleak-mcp"),
+  ]);
+});
+
+// Moving the current binary before copying its replacement removed the working command on copy failure.
+test("a failed replacement copy leaves the installed executable in place", (context) => {
+  const fixture = installerFixture(context);
+  const destination = path.join(
+    fixture.directory,
+    executableName("register-me"),
+  );
+  fs.writeFileSync(destination, "working companion");
+  assert.throws(() =>
+    installOne(path.join(fixture.workspace, "missing-build"), destination),
+  );
+  assert.equal(fs.readFileSync(destination, "utf8"), "working companion");
+  assert.deepEqual(fs.readdirSync(fixture.directory), [
+    executableName("register-me"),
+  ]);
+});
 
 test("both servers are installed, because a window needs each plane", () => {
   assert.deepEqual(SERVERS, ["mindleak-mcp", "lodestar-mcp"]);

@@ -440,3 +440,23 @@ conformance review of the provider stack remain open, including the recorded
 claim-lapse history and absent goal bindings. This checkpoint does not waive
 those findings, approve pending PRs, claim hardware non-exportability, or complete
 worker recovery and the later production-authentication/pilot milestones.
+
+## Industrial Host Installation
+
+`make install-industrial` now builds the six host binaries with a locked release
+build and both local planes' federation features, then installs them through the
+existing shared installer. Direct Cargo/Node equivalents are documented in
+[the development guide](../DEVELOPERS.md#install-industrial-host-binaries).
+The default Local installation remains independent and installs only its two MCP
+servers. Industrial installation refuses missing/non-file/unreadable sources
+before changing an executable, requires release builds without debug fallback,
+and honors `CARGO_TARGET_DIR` instead of selecting stale workspace output.
+Per-binary replacement stages the new file first so a copy failure preserves
+the current command; repeat installation is supported. Installation does not
+modify provider state or start/stop a service, and multiple binaries are not
+published as one atomic filesystem transaction.
+
+This removes the missing stable host-binary install path. Clean-machine TLS,
+independent administrator approval, packaged distribution and the existing
+conformance review remain separate requirements. The demo-setup workstream owns
+the running-stack orchestration; no live deployment is changed by this installer.
