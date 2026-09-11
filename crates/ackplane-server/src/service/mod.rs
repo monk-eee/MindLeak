@@ -432,11 +432,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        enrollment::public_key_fingerprint,
         envelope_signature::envelope_signing_bytes,
         ledger::AppendOutcome,
         signing_keys::{KeyResolution, SigningKeyError, SigningKeyLifecycle, SigningKeyRecord},
     };
+    use ackplane_protocol::enrollment::public_key_fingerprint;
 
     /// An unsigned envelope claiming only what an unsigned envelope can claim.
     ///

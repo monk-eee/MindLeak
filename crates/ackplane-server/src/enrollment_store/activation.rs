@@ -334,8 +334,8 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 
     use super::*;
-    use crate::enrollment::activation_challenge_bytes;
     use crate::enrollment_store::submission::tests::sample_submission_for;
+    use ackplane_protocol::enrollment::activation_challenge_bytes;
 
     // Replay selected the newest node key, incorrectly changing the immutable activation result.
     #[tokio::test]

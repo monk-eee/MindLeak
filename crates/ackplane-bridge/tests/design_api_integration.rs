@@ -7,11 +7,11 @@
 use std::{sync::Arc, time::SystemTime};
 
 use ackplane_bridge::design_api::{design_routes, DesignApiState};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
     constitution_store::{ClauseSnapshot, ConstitutionStore, RecordConstitutionPublicationRequest},
     design_materialization_store::MaterializationStore,
     design_store::DesignStore,
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

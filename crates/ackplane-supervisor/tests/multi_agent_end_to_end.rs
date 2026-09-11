@@ -33,6 +33,8 @@ use ackplane_server::{
     work_store::{NewWorkTask, WorkStore, WorkTaskState},
 };
 use ackplane_supervisor::{OutboxPositions, SupervisorOutbox, WorkerCommand};
+#[path = "../../ackplane-node/tests/support/companion.rs"]
+mod companion;
 use command_group::{CommandGroup, GroupChild};
 use prost::Message;
 use tokio_stream::{
@@ -42,8 +44,19 @@ use tokio_stream::{
 
 struct Daemon(GroupChild);
 
+// Losing the identity owner must stop execution, not leave workers running in a reconnect loop.
+#[tokio::test]
+async fn companion_loss_stops_workers_and_retains_unconfirmed_cleanup_evidence() {
+    exercise_two_workers(Scenario {
+        companion_loss: true,
+        ..Scenario::default()
+    })
+    .await;
+}
+
 #[derive(Default)]
 struct Scenario {
+    companion_loss: bool,
     stop_while_active: bool,
     stop_before_spawn: bool,
     #[cfg(unix)]
@@ -479,6 +492,7 @@ async fn failed_terminal_lifecycle_write_keeps_the_lease_after_cleanup_retry() {
 
 async fn exercise_two_workers(scenario: Scenario) {
     let Scenario {
+        companion_loss,
         stop_while_active,
         stop_before_spawn,
         #[cfg(unix)]
@@ -523,7 +537,7 @@ async fn exercise_two_workers(scenario: Scenario) {
                 tenant_id: tenant.clone(),
                 repository_id: repository.into(),
                 node_id: node.into(),
-                public_key_fingerprint: ackplane_server::enrollment::public_key_fingerprint(
+                public_key_fingerprint: ackplane_protocol::enrollment::public_key_fingerprint(
                     &public_key,
                 ),
                 public_key,
@@ -668,6 +682,19 @@ async fn exercise_two_workers(scenario: Scenario) {
             .unwrap();
     });
     let workers_file = root.path().join("workers.json");
+    let node_directory = root.path().join("node");
+    let companion = companion::TestCompanion::start(
+        &endpoint,
+        ackplane_node::SigningBinding {
+            tenant_id: tenant.clone(),
+            repository_id: repository.into(),
+            node_id: node.into(),
+            key_id: signing_key_id.clone(),
+        },
+        &seed,
+        &node_directory,
+    )
+    .await;
     let daemon_log = root.path().join("daemon.log");
     let capture_stderr = fail_first_slot || spawn_evidence_failure.is_some();
     #[cfg(unix)]
@@ -677,15 +704,13 @@ async fn exercise_two_workers(scenario: Scenario) {
         Command::new(env!("CARGO_BIN_EXE_ackplane-supervisor"))
             .arg("--workers")
             .arg(&workers_file)
-            .env("MINDLEAK_ACKPLANE_ENDPOINT", &endpoint)
+            .env("MINDLEAK_ACKPLANE_STATE_DIR", &node_directory)
             .env("MINDLEAK_ACKPLANE_TENANT_ID", &tenant)
             .env("MINDLEAK_ACKPLANE_REPOSITORY_ID", repository)
-            .env("MINDLEAK_ACKPLANE_NODE_ID", node)
-            .env("MINDLEAK_ACKPLANE_SIGNING_KEY_ID", &signing_key_id)
-            .env(
-                "MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED",
-                ackplane_client::encode_seed(&seed),
-            )
+            .env_remove("MINDLEAK_ACKPLANE_NODE_ID")
+            .env_remove("MINDLEAK_ACKPLANE_SIGNING_KEY_ID")
+            .env_remove("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED")
+            .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
             .env_remove("MINDLEAK_ACKPLANE_TLS_CA_PATH")
             .env("ACKPLANE_SUPERVISOR_ID", "multi-agent")
             .env("ACKPLANE_SUPERVISOR_STATE_DIR", root.path().join("state"))
@@ -898,6 +923,7 @@ async fn exercise_two_workers(scenario: Scenario) {
         drop(inbox);
         drop(outbox);
         drop(daemon);
+        drop(companion);
         let _ = shutdown.send(());
         server.await.unwrap();
         return;
@@ -944,6 +970,7 @@ async fn exercise_two_workers(scenario: Scenario) {
             );
         }
         drop(daemon);
+        drop(companion);
         let _ = shutdown.send(());
         server.await.unwrap();
         return;
@@ -1102,6 +1129,40 @@ async fn exercise_two_workers(scenario: Scenario) {
             "fatal cleanup must not send lifecycle evidence past the rejected context-use frame"
         );
         drop(reopened);
+        drop(daemon);
+        drop(companion);
+        let _ = shutdown.send(());
+        server.await.unwrap();
+        return;
+    }
+    if companion_loss {
+        drop(companion);
+        assert!(
+            !daemon.wait().await.success(),
+            "identity owner loss must stop the supervisor"
+        );
+        for (index, name) in ["first", "second"].iter().enumerate() {
+            let session = &sessions[index];
+            let registration = supervisors
+                .list_supervisors(&tenant, repository)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.registration.supervisor_id == session.supervisor_id)
+                .unwrap()
+                .registration;
+            let marker: serde_json::Value = serde_json::from_slice(
+                &fs::read(root.path().join(format!("state/{name}.worker-run.json"))).unwrap(),
+            )
+            .unwrap();
+            let outbox = SupervisorOutbox::open(
+                marker["outbox"].as_str().unwrap(),
+                registration,
+                session.clone(),
+            )
+            .unwrap();
+            assert!(outbox.pending(16).unwrap().iter().any(|queued| matches!(&queued.frame.frame, Some(v1::node_frame::Frame::SupervisorLifecycleReceipt(receipt)) if receipt.state == v1::SupervisorWorkerState::Terminated as i32)), "worker termination evidence must remain durable while its authority owner is unavailable");
+        }
         drop(daemon);
         let _ = shutdown.send(());
         server.await.unwrap();
@@ -1323,6 +1384,7 @@ async fn exercise_two_workers(scenario: Scenario) {
             .exists()),
         "acknowledged runs must clear their recovery markers"
     );
+    drop(companion);
     let _ = shutdown.send(());
     server.await.unwrap();
 }

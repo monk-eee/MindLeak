@@ -16,8 +16,8 @@ mod supervisor_api_support;
 
 use std::{path::PathBuf, time::Duration};
 
-use ackplane_client::node_identity::{NodeIdentity, NodeSignerSource};
-use ackplane_client::{auth::SeedSigner, node_sync::NodeSyncConnection};
+use ackplane_client::companion::NodeClient;
+use ackplane_client::{auth::SeedSigner, node_sync::NodeSyncConnection, ClaimSigner};
 use ackplane_protocol::{
     supervisor::directive_payload_digest,
     v1::{self, agent_directive, node_sync_service_server::NodeSyncServiceServer, AgentDirective},
@@ -90,48 +90,47 @@ async fn start_sync_server(database_url: &str) -> TestServer {
 /// A daemon configuration pointed at a real enrolled node, exactly as
 /// `config::resolve` would have produced from the environment.
 fn config(
-    endpoint: &str,
+    _endpoint: &str,
     tenant: &str,
     repository: &str,
     node: &str,
     unique: &str,
-) -> SupervisorConfig {
-    SupervisorConfig {
-        endpoint: endpoint.to_string(),
-        identity: NodeIdentity {
-            tenant_id: tenant.to_string(),
-            repository_id: repository.to_string(),
-            node_id: node.to_string(),
-            signing_key_id: format!("signing-key-{unique}"),
-            signer_source: NodeSignerSource::Seed(Box::new(
-                Sha256::digest(format!("key-{unique}").as_bytes()).into(),
-            )),
+) -> (SupervisorConfig, SeedSigner) {
+    let signer = SeedSigner::new(
+        format!("signing-key-{unique}"),
+        node.to_string(),
+        &Sha256::digest(format!("key-{unique}").as_bytes()).into(),
+    );
+    (
+        SupervisorConfig {
+            node: NodeClient::new(
+                std::env::temp_dir().join(format!("ackplane-node-{unique}")),
+                tenant.to_string(),
+                repository.to_string(),
+            ),
+            supervisor_id: format!("supervisor-{unique}"),
+            state_dir: std::env::temp_dir().join(format!("ackplane-supervisor-{unique}")),
+            heartbeat_interval: Duration::from_secs(30),
+            workers: Default::default(),
         },
-        supervisor_id: format!("supervisor-{unique}"),
-        state_dir: std::env::temp_dir().join(format!("ackplane-supervisor-{unique}")),
-        heartbeat_interval: Duration::from_secs(30),
-        workers: Default::default(),
-    }
+        signer,
+    )
 }
 
 fn database_url() -> Option<String> {
     std::env::var("ACKPLANE_TEST_DATABASE_URL").ok()
 }
 
-async fn connect(server: &TestServer, config: &SupervisorConfig) -> NodeSyncConnection {
-    let signer = SeedSigner::new(
-        config.identity.signing_key_id.clone(),
-        config.identity.node_id.clone(),
-        match &config.identity.signer_source {
-            NodeSignerSource::Seed(seed) => seed.as_ref(),
-            NodeSignerSource::CredentialFacility { .. } => panic!("the fixture uses a seed"),
-        },
-    );
+async fn connect(
+    server: &TestServer,
+    config: &SupervisorConfig,
+    signer: &SeedSigner,
+) -> NodeSyncConnection {
     NodeSyncConnection::open(
         &server.endpoint,
-        &signer,
-        &config.identity.tenant_id,
-        &config.identity.repository_id,
+        signer,
+        &config.node.tenant_id,
+        &config.node.repository_id,
         vec!["synchronize".to_string()],
         0,
     )
@@ -179,13 +178,18 @@ fn session_frame(session: &ackplane_protocol::supervisor::SupervisorSession) -> 
 
 /// A notify directive: the one capability this daemon declares, so its receipt
 /// is `Accepted` and binds to a directive the server genuinely issued.
-fn notify_directive(config: &SupervisorConfig, session_id: &str, unique: &str) -> AgentDirective {
+fn notify_directive(
+    config: &SupervisorConfig,
+    node_id: &str,
+    session_id: &str,
+    unique: &str,
+) -> AgentDirective {
     let mut directive = AgentDirective {
         directive_id: format!("directive-{unique}"),
-        tenant_id: config.identity.tenant_id.clone(),
+        tenant_id: config.node.tenant_id.clone(),
         project_id: "project:slice5".to_string(),
-        repository_id: config.identity.repository_id.clone(),
-        target_node_id: config.identity.node_id.clone(),
+        repository_id: config.node.repository_id.clone(),
+        target_node_id: node_id.to_string(),
         target_agent_session_id: session_id.to_string(),
         kind: v1::DirectiveKind::Notify as i32,
         schema_version: "v1".to_string(),
@@ -226,7 +230,7 @@ async fn the_daemon_registers_and_opens_a_session_against_a_real_ackplane() {
     let repository_id = format!("repository-{unique}");
     let node_id = enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
     let server = start_sync_server(&database_url).await;
-    let config = config(
+    let (config, signer) = config(
         &server.endpoint,
         &tenant_id,
         &repository_id,
@@ -237,29 +241,12 @@ async fn the_daemon_registers_and_opens_a_session_against_a_real_ackplane() {
     // The daemon's own registration must satisfy the protocol it is about to
     // declare over. This is what caught the first design here: an empty
     // capability list is refused outright by SupervisorCapabilities::validate.
-    let registration = daemon::registration(&config);
+    let registration = daemon::registration(&config, &node_id);
     registration
         .validate()
         .expect("the daemon's registration must be protocol-valid");
 
-    let signer = SeedSigner::new(
-        config.identity.signing_key_id.clone(),
-        config.identity.node_id.clone(),
-        match &config.identity.signer_source {
-            NodeSignerSource::Seed(seed) => seed.as_ref(),
-            NodeSignerSource::CredentialFacility { .. } => panic!("the fixture uses a seed"),
-        },
-    );
-    let mut connection = NodeSyncConnection::open(
-        &config.endpoint,
-        &signer,
-        &config.identity.tenant_id,
-        &config.identity.repository_id,
-        vec!["synchronize".to_string()],
-        0,
-    )
-    .await
-    .expect("the daemon's node should authenticate");
+    let mut connection = connect(&server, &config, &signer).await;
 
     let started_at = OffsetDateTime::now_utc();
     let session = daemon::session(&config, started_at).expect("a session should build");
@@ -311,14 +298,14 @@ async fn the_daemon_registers_and_opens_a_session_against_a_real_ackplane() {
 #[tokio::test]
 async fn a_worker_driven_directive_is_receipted_refused_not_applied() {
     let unique = unique_id("slice5-refuse");
-    let config = config(
+    let (config, signer) = config(
         "http://127.0.0.1:1",
         &format!("tenant-{unique}"),
         &format!("repository-{unique}"),
         &format!("node-{unique}"),
         &unique,
     );
-    let registration = daemon::registration(&config);
+    let registration = daemon::registration(&config, signer.node_id());
     let session = daemon::session(&config, OffsetDateTime::now_utc()).expect("a session");
     let inbox = SupervisorInbox::open_in_memory(registration.clone(), session.clone())
         .expect("the inbox should open");
@@ -327,10 +314,10 @@ async fn a_worker_driven_directive_is_receipted_refused_not_applied() {
     // declare the capability.
     let mut directive = AgentDirective {
         directive_id: format!("directive-{unique}"),
-        tenant_id: config.identity.tenant_id.clone(),
+        tenant_id: config.node.tenant_id.clone(),
         project_id: "project:slice5".to_string(),
-        repository_id: config.identity.repository_id.clone(),
-        target_node_id: config.identity.node_id.clone(),
+        repository_id: config.node.repository_id.clone(),
+        target_node_id: signer.node_id().to_string(),
         target_agent_session_id: session.session_id.clone(),
         kind: v1::DirectiveKind::Pause as i32,
         schema_version: "v1".to_string(),
@@ -382,24 +369,24 @@ async fn a_worker_driven_directive_is_receipted_refused_not_applied() {
 #[tokio::test]
 async fn a_notification_is_accepted_because_recording_it_is_the_whole_action() {
     let unique = unique_id("slice5-notify");
-    let config = config(
+    let (config, signer) = config(
         "http://127.0.0.1:1",
         &format!("tenant-{unique}"),
         &format!("repository-{unique}"),
         &format!("node-{unique}"),
         &unique,
     );
-    let registration = daemon::registration(&config);
+    let registration = daemon::registration(&config, signer.node_id());
     let session = daemon::session(&config, OffsetDateTime::now_utc()).expect("a session");
     let inbox = SupervisorInbox::open_in_memory(registration, session.clone())
         .expect("the inbox should open");
 
     let mut directive = AgentDirective {
         directive_id: format!("directive-{unique}"),
-        tenant_id: config.identity.tenant_id.clone(),
+        tenant_id: config.node.tenant_id.clone(),
         project_id: "project:slice5".to_string(),
-        repository_id: config.identity.repository_id.clone(),
-        target_node_id: config.identity.node_id.clone(),
+        repository_id: config.node.repository_id.clone(),
+        target_node_id: signer.node_id().to_string(),
         target_agent_session_id: session.session_id.clone(),
         kind: v1::DirectiveKind::Notify as i32,
         schema_version: "v1".to_string(),
@@ -440,11 +427,11 @@ async fn a_notification_is_accepted_because_recording_it_is_the_whole_action() {
 /// never share an inbox or overwrite each other's receipts.
 #[tokio::test]
 async fn two_supervisors_on_one_host_get_separate_durable_state() {
-    let first = config("http://127.0.0.1:1", "t", "r", "n", "alpha");
+    let (first, _) = config("http://127.0.0.1:1", "t", "r", "n", "alpha");
     let second = SupervisorConfig {
         supervisor_id: "supervisor-beta".to_string(),
         state_dir: first.state_dir.clone(),
-        ..config("http://127.0.0.1:1", "t", "r", "n", "alpha")
+        ..first.clone()
     };
 
     assert_ne!(first.inbox_path(), second.inbox_path());
@@ -476,21 +463,21 @@ async fn an_unconfirmed_receipt_survives_a_drop_and_is_resent_on_reconnect() {
     let repository_id = format!("repository-{unique}");
     let node_id = enroll_repository(&database_url, &tenant_id, &repository_id, &unique).await;
     let server = start_sync_server(&database_url).await;
-    let config = config(
+    let (config, signer) = config(
         &server.endpoint,
         &tenant_id,
         &repository_id,
         &node_id,
         &unique,
     );
-    let registration = daemon::registration(&config);
+    let registration = daemon::registration(&config, &node_id);
     let session = daemon::session(&config, OffsetDateTime::now_utc()).expect("a session");
 
     // A real directive, issued and delivered, so the receipt below binds to
     // something the server actually knows about -- the server refuses a
     // receipt that references no directive, and a fixture that skipped this
     // would prove only that refusal.
-    let mut connection = connect(&server, &config).await;
+    let mut connection = connect(&server, &config, &signer).await;
     connection
         .exchange_supervisor_frame(registration_frame(&registration))
         .await
@@ -509,11 +496,16 @@ async fn an_unconfirmed_receipt_survives_a_drop_and_is_resent_on_reconnect() {
         .await
         .expect("the directive store should connect");
     directives
-        .enqueue(notify_directive(&config, &session.session_id, &unique))
+        .enqueue(notify_directive(
+            &config,
+            &node_id,
+            &session.session_id,
+            &unique,
+        ))
         .await
         .expect("the directive should be enqueued");
 
-    let mut connection = connect(&server, &config).await;
+    let mut connection = connect(&server, &config, &signer).await;
     connection
         .exchange_supervisor_frame(registration_frame(&registration))
         .await
@@ -562,7 +554,7 @@ async fn an_unconfirmed_receipt_survives_a_drop_and_is_resent_on_reconnect() {
 
     // A fresh connection drains it against the real server, exactly as
     // `serve_once` does before it begins serving new directives.
-    let mut connection = connect(&server, &config).await;
+    let mut connection = connect(&server, &config, &signer).await;
     connection
         .exchange_supervisor_frame(registration_frame(&registration))
         .await
