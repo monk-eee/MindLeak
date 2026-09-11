@@ -11,6 +11,7 @@
 
 pub mod config;
 pub mod daemon;
+pub mod recovery;
 
 mod inbox;
 mod outbox;

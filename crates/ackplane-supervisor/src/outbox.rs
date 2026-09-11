@@ -16,6 +16,9 @@ use crate::storage::{
     store_outbound_frame,
 };
 
+mod recovery;
+pub(crate) use recovery::{RecoveryAttempt, RecoveryResult};
+
 /// A path-owned local outbox for frames awaiting a future NodeSync sender.
 pub struct SupervisorOutbox {
     conn: Connection,
@@ -117,7 +120,15 @@ impl SupervisorOutbox {
     }
 
     /// Allocate and stamp a durable receipt frame in the same transaction.
-    pub fn enqueue_next(&self, mut frame: v1::NodeFrame) -> Result<QueuedFrame, OutboxError> {
+    pub fn enqueue_next(&self, frame: v1::NodeFrame) -> Result<QueuedFrame, OutboxError> {
+        self.enqueue_with_stop(frame, None)
+    }
+
+    pub(crate) fn enqueue_with_stop(
+        &self,
+        mut frame: v1::NodeFrame,
+        marker: Option<&[u8]>,
+    ) -> Result<QueuedFrame, OutboxError> {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let sequence = next_outbound_sequence(&transaction)?;
         match frame.frame.as_mut() {
@@ -132,7 +143,36 @@ impl SupervisorOutbox {
             }
             _ => return Err(OutboxError::UnsupportedFrame),
         }
-        store_outbound_frame(&transaction, sequence, &frame.encode_to_vec())?;
+        let encoded = frame.encode_to_vec();
+        if let Some(marker) = marker {
+            let Some(v1::node_frame::Frame::SupervisorLifecycleReceipt(receipt)) = &frame.frame
+            else {
+                return Err(OutboxError::RecoveryEvidence(
+                    "stop record requires a lifecycle receipt".into(),
+                ));
+            };
+            if marker.is_empty()
+                || marker.len() > 64 * 1024
+                || receipt.supervisor_id != self.session.supervisor_id
+                || receipt.session_id != self.session.session_id
+                || receipt.worker_id != self.session.worker_id
+                || !matches!(
+                    v1::SupervisorWorkerState::try_from(receipt.state),
+                    Ok(v1::SupervisorWorkerState::Terminated
+                        | v1::SupervisorWorkerState::Completed
+                        | v1::SupervisorWorkerState::Failed)
+                )
+            {
+                return Err(OutboxError::RecoveryEvidence(
+                    "stop record does not describe this terminal worker".into(),
+                ));
+            }
+            transaction.execute(
+                "INSERT INTO stopped_worker_run (singleton, marker, sequence, frame) VALUES (1, ?1, ?2, ?3)",
+                rusqlite::params![marker, sequence, encoded],
+            )?;
+        }
+        store_outbound_frame(&transaction, sequence, &encoded)?;
         record_outbound_sequence(&transaction, sequence)?;
         transaction.commit()?;
         Ok(QueuedFrame {
@@ -266,6 +306,8 @@ pub enum OutboxError {
     NonPositiveLimit,
     #[error("stored outbox frame at sequence {sequence} cannot be decoded")]
     CorruptStoredFrame { sequence: u64 },
+    #[error("worker recovery evidence is inconsistent: {0}")]
+    RecoveryEvidence(String),
 }
 
 fn positive_sequence(sequence: u64) -> Result<i64, OutboxError> {
