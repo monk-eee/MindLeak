@@ -369,6 +369,15 @@ pub async fn run(
             .working_directory
             .canonicalize()
             .map_err(|error| DaemonError::Worker(error.to_string()))?;
+        let metadata = path
+            .metadata()
+            .map_err(|error| DaemonError::Worker(error.to_string()))?;
+        if !metadata.is_dir() {
+            return Err(DaemonError::Worker(format!(
+                "worker {name} working directory is not a directory: {}",
+                path.display(),
+            )));
+        }
         if !directories.insert(path) {
             return Err(DaemonError::Worker(
                 "worker directories resolve to the same workspace".into(),
@@ -638,6 +647,46 @@ mod tests {
             marker.exists(),
             "refusal must preserve the previous run's evidence"
         );
+    }
+
+    // Canonicalization accepted regular files as workspaces, deferring the error
+    // until a claimed task tried to spawn. Refuse them during startup instead.
+    #[tokio::test]
+    async fn startup_requires_worker_workspaces_to_be_directories() {
+        for is_directory in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let workspace = root.path().join("workspace");
+            if is_directory {
+                std::fs::create_dir(&workspace).unwrap();
+            } else {
+                std::fs::write(&workspace, "not a directory").unwrap();
+            }
+            let mut config = config();
+            config.state_dir = root.path().join("state");
+            config.workers.insert(
+                "first".into(),
+                crate::WorkerCommand {
+                    command: "must-not-run".into(),
+                    args: vec!["{prompt}".into()],
+                    working_directory: workspace.clone(),
+                    branch: "agents/first".into(),
+                },
+            );
+            let (_stop, stopping) = tokio::sync::watch::channel(true);
+            let result = run(&config, Duration::ZERO, stopping).await;
+            if is_directory {
+                result.unwrap();
+            } else {
+                let error = result.expect_err("a file is not a worker workspace");
+                assert!(error.to_string().contains("first"));
+                assert!(error.to_string().contains("not a directory"));
+                assert_eq!(
+                    std::fs::read_to_string(&workspace).unwrap(),
+                    "not a directory"
+                );
+            }
+            assert!(!config.worker_run_path("first").exists());
+        }
     }
 
     /// The wire frame must carry the same declaration: a registration that is
