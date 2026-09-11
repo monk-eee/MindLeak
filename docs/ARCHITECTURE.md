@@ -501,8 +501,10 @@ as natively published Work tasks.
 `recovery/record.rs` defines the bounded versioned run marker; `inspect.rs`
 checks its identity, paths, original directive effect and coherent read-only
 queue snapshots. `outbox/recovery.rs` owns positive stop provenance committed
-with the terminal frame, exact-encoding checks and immutable per-preview cleanup
-events. `confirm.rs` holds the existing state-directory lock, requires that
+with the terminal frame and immutable per-preview cleanup events. The shared
+`QueuedFrame::decode` in `outbox.rs` refuses lossy encodings before ordinary
+delivery, archive inspection or recovery can discard unknown wire fields.
+`confirm.rs` holds the existing state-directory lock, requires that
 positive stop, opens only the historical companion scope, checks the server's
 independent position, reuses `resend_pending`, and releases only the original
 owner. It records completion before removing the byte-matching marker;

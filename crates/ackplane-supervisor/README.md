@@ -161,6 +161,13 @@ continue to give every slot a separate checkout or worktree.
   does not repair invalid evidence. Retryable refusals retain the same bytes
   and follow the existing reconnect path. Fatal cleanup queues its terminal
   receipt locally without attempting delivery past the rejection.
+- **Stored frame cannot be replayed identically** - pending, archived and
+  recovery reads refuse valid protobuf encodings whose decode/re-encode cycle
+  changes the original bytes, including unknown fields from a newer version.
+  The error names the sequence. The sender stops before transmitting its loaded
+  batch; stored bytes and acknowledgement positions remain unchanged. Preserve
+  the queues and use a version that supports their encoding. Do not strip fields,
+  rewrite the record or delete evidence to make an older reader accept it.
 - **One worker slot fails** - signals the remaining slots before attempting its
   own cleanup. The failed slot stops its owned worker and retries confirmed
   lease release for up to thirty seconds, preserving its run marker and queued
@@ -354,7 +361,8 @@ directory concurrency.
 `cargo test --locked -p ackplane-supervisor --test outbox_rejection` uses the
 isolated database to verify real authenticated permanent and retryable server
 refusals, the accepted position, and byte-preserving outbox reopen. It confirms
-that a rejected frame cannot be skipped to transmit later evidence.
+that a rejected frame cannot be skipped to transmit later evidence, and that
+lossy decoding is refused locally before sending any frame in the loaded batch.
 
 `cargo test --locked -p ackplane-supervisor --test outbox` also needs no server.
 It verifies exact lifecycle retention across acknowledgement and reopen, bounded
@@ -362,6 +370,8 @@ cursor paging, identity isolation, rollback on an injected archive failure,
 corrupt-frame preservation, and honest handling of older outboxes. Its read-only
 tests also check mutation refusal, current WAL visibility, missing/corrupt files,
 unchanged old schema and journal mode, and refusal to adopt a missing identity.
+Pending and archived reads reject unknown wire fields without changing their
+bytes or positions, through both writable and read-only handles.
 
 `cargo test --locked -p ackplane-supervisor --lib worker_adapter::tests`
 includes a macOS/Linux regression that waits for a real child's exit without
