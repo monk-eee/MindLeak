@@ -150,6 +150,9 @@ pub(crate) fn ensure_supervisor_identity(
         }
         return Ok(true);
     }
+    if conn.is_readonly(rusqlite::DatabaseName::Main)? {
+        return Ok(false);
+    }
     conn.execute(
         "INSERT INTO inbox_identity (singleton, tenant_id, repository_id, node_id, supervisor_id, session_id) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
         params![

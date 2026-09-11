@@ -7,7 +7,7 @@ use ackplane_protocol::{
     v1,
 };
 use prost::Message;
-use rusqlite::{Connection, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 use thiserror::Error;
 
 use crate::storage::{
@@ -36,6 +36,17 @@ impl SupervisorOutbox {
         Self::from_connection(Connection::open(path)?, registration, session)
     }
 
+    /// Inspect an existing identity-bound outbox through SQLite read-only access.
+    /// No directories, schema or identity records are created; mutation methods fail.
+    pub fn open_read_only(
+        path: impl AsRef<Path>,
+        registration: SupervisorRegistration,
+        session: SupervisorSession,
+    ) -> Result<Self, OutboxError> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Self::from_connection(conn, registration, session)
+    }
+
     /// Build an ephemeral outbox for focused tests and tooling.
     pub fn open_in_memory(
         registration: SupervisorRegistration,
@@ -54,7 +65,9 @@ impl SupervisorOutbox {
         if session.supervisor_id != registration.supervisor_id {
             return Err(OutboxError::SessionSupervisorMismatch);
         }
-        configure(&conn)?;
+        if !conn.is_readonly(rusqlite::DatabaseName::Main)? {
+            configure(&conn)?;
+        }
         if !ensure_supervisor_identity(
             &conn,
             &registration.identity,
