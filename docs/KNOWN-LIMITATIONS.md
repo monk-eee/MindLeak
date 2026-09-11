@@ -378,6 +378,19 @@ Defects and limits in tools this repository depends on but does not own. Nothing
 here is fixable from this codebase. Each entry records the version measured,
 because that is what lets a future reader check whether it still holds.
 
+- **Interprocess 2.4.3 clones a descriptor group into its owner field.** Source
+  inspected 2026-09-11 in the installed crate's
+  `src/os/windows/security_descriptor/try_clone.rs::clone`: after copying the
+  owner, its non-null group branch calls `new_sd.set_owner(group, gdfl)` rather
+  than `set_group`. A descriptor containing a group can therefore lose its
+  intended owner during `SecurityDescriptor::deserialize` or cloning. This is
+  an upstream source finding, not a reproduced runtime failure in MindLeak.
+  The companion's `windows.rs::descriptor` supplies only `O:` and a protected
+  `D:`, with no `G:` field, so that branch is not exercised. Do not add a group
+  to this descriptor without verifying a corrected dependency. Native tests
+  inspect owner and ACE SIDs structurally; SDDL text can use SID aliases and
+  is not itself an identity comparison.
+
 - **Extension Host smoke can stop before tests when the VS Code download is
   interrupted.** Measured 2026-09-11 in [CI run 34547633076, attempt 1](https://github.com/monk-eee/MindLeak/actions/runs/34547633076/attempts/1):
   `@vscode/test-electron` 2.5.2 on Windows with Node 20.20.2 aborted the VS Code
