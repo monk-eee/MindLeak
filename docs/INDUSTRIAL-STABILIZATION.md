@@ -92,9 +92,9 @@ and preserves its exit status. It does not start, stop or reset any deployment.
 
 The caller owns the disposable database lifecycle. URL validation is not proof
 that a database is disposable; the runner cannot infer that from its name.
-Existing ignored tests requiring external models or a platform credential service
-retain their own prerequisites. An enabled database gate is not a claim that
-those external integrations ran.
+Existing ignored model tests retain their own prerequisites. Native credential
+coverage is now mandatory in this gate, with an isolated Linux Secret Service
+session; a passing database gate does not imply that optional models ran.
 
 PR [#920](https://github.com/monk-eee/MindLeak/pull/920) merged as
 `7991ba3a9aafe4d6a6012fd160b405856abb7b3c` after all applicable CI jobs passed.
@@ -123,6 +123,10 @@ portable roadmap, not a second task-state authority. Update evidence at each
 reviewed checkpoint and retain the tested commit identity.
 
 ## Enrollment Identity Safety
+
+This and the following recovery section describe earlier file-based CLI
+checkpoints. Current commands and provider custody are described under
+**Provider-Backed CLI** below; the old seed-file options are no longer accepted.
 
 The first STAB-02 change preserves the existing ignored key file at
 `.mindleak/ackplane-node.key` (or the explicit `--key-path` /
@@ -337,7 +341,55 @@ runtime workstream, not fixed or suppressed by this signing change.
 
 This removes the client-signing blocker, not the remaining installer or companion
 work. The caller must retain the provider's ownership while using its connection.
-The existing CLI, supervisor and local planes still need to adopt this lifecycle;
+CLI adoption is described below; the supervisor and local planes still need this lifecycle;
 legacy seed/cached-signing paths are unchanged. This does not monitor provider
 loss or revoke authority on streams that were already authenticated. STAB-02
 remains open.
+
+## Provider-Backed CLI
+
+`register-me request` now requires `--provider credential-facility-software` and
+an absolute `--state-dir`. Missing or unsupported providers are refused before
+any identity write or network request. The raw seed-file creation and loading
+module has been removed; legacy key options are rejected without modifying their
+files. The provider remains software key custody, not hardware non-exportability.
+
+The CLI saves an immutable public request before contacting Ackplane. Repeating
+an identical request preserves its ID, key, original timestamps and seven-day
+expiry; changed parameters fail without replacement. Provider challenge and
+activation records are not copied into the CLI descriptor. `activate` uses the
+provider's exact-proof replay and returned authority binding, authenticates
+NodeSync through the shared client, and publishes one deterministic enrollment
+event that can be replayed after a lost receipt. `--skip-sync` remains a report
+of historical activation, not current authorization.
+
+Validation includes the provider-selection regression, confirmed failing when
+the old command created a seed before refusal and passing after the migration.
+The existing real CLI failed-sync and lost-activation-reply tests now use native
+credential storage. New subprocess tests cover a lost initial request reply,
+same-key restart with an unreachable server, changed-request refusal and
+credential removal. An initial test-cleanup implementation blocked because
+macOS `keyring::delete_password` reads a credential before deleting it, requiring
+authorization across executables; reference-only lookup/deletion now removes
+only the exact test-owned entry and retains metadata if cleanup fails.
+
+The industrial runner now requires native credentials. `credential-test.mjs`
+creates a fresh D-Bus session and private temporary Secret Service directories on
+Linux; macOS and Windows use their native stores. Twelve runner tests pass,
+and a real isolated Linux Secret Service round trip verified the wrapper.
+Industrial and coverage CI use it; Windows/macOS CI explicitly run the native
+CLI restart test. No existing database-gated CLI test is disabled.
+
+Local verification passed all 26 CLI unit tests and four real subprocess tests.
+The full locked industrial gate passed 2,610 tests with zero failures and three
+existing ignored tests across 80 targets; database, recovery and native
+credential checks were enabled. Workspace all-target/all-feature Clippy passed
+with warnings denied. The two entries left by early cleanup failures were
+removed by their exact test handles without reading passwords; successful tests
+now verify cleanup, and the disposable test database was removed.
+
+See [Provider-backed enrollment](../DEVELOPERS.md#provider-backed-enrollment)
+for commands. This still does not wire the supervisor or MCP enrollment-status
+loader to provider state, establish production administrator authentication,
+or implement the long-lived companion and its stream-revocation lifecycle.
+STAB-02 remains open.

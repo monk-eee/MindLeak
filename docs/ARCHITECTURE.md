@@ -354,9 +354,10 @@ across different files. Native CI proves recovery in a separate process after
 both normal and destructor-skipping exit on macOS Keychain and Windows
 Credential Manager. Linux Secret Service
 uses the same adapter but requires an available service for the opt-in native
-test. This is software key custody, not hardware non-exportability. Enrollment
-proof and key-ID binding are implemented as library capabilities; the CLI,
-request orchestration and runtime clients still need to adopt them. The lock
+test. This is software key custody, not hardware non-exportability. The
+`register-me` CLI now provisions and recovers this provider, records the public
+request before transmission and delegates activation/replay to it. The supervisor,
+local planes and long-lived companion orchestration still need to adopt it. The lock
 coordinates cooperating processes on a local filesystem, not distributed hosts.
 Stop older marker-only node processes before
 upgrading; a live older process does not hold the new kernel lock.
@@ -524,25 +525,27 @@ atomically consumes it while recording `activating`. Key rotation remains
 explicitly unavailable until the continuity proof required by ADR-0085 is
 implemented.
 
-`register-me` (`src/bin/register-me/main.rs`) drives that ceremony from the command
-line as three subcommands — `request`, `approve`, `activate` — mirroring the
-real actors: a node runs `request`/`activate` unattended; `approve` is a
-documented local-dev database shortcut standing in for the administrative
-approval RPC/UI that does not exist yet. `activate` proves possession, opens
-one real `NodeSync` stream, and sends a signed heartbeat event using the
-`signing_key_id` `EnrollmentActivationResult` returns directly. The CLI's
-`state.rs` atomically records that key ID and receipt in the existing enrollment
-sidecar before synchronization, so a failed sync does not discard activation.
-New requests cannot replace saved enrollment; repeated activation reuses the
-record and still authenticates each NodeSync connection. Before submitting proof,
-the CLI persists the bound public challenge nonce so a lost activation response
-can be recovered through the existing exact-proof replay contract. A pending
-approval can refresh its challenge; an already consumed proof returns the
-original receipt and its original key, not a newer node key. The retry nonce is
-cleared only when the activation result has been saved. `--skip-sync` reports
-only recorded activation, not current authorization or liveness. Private key
-bytes remain outside this record; wiring an accepted persistent signer into the
-runtime is a separate STAB-02 requirement.
+`register-me` (`src/bin/register-me/main.rs`) drives `request`, `approve` and
+`activate`. Request explicitly selects `credential-facility-software` and an
+absolute user-local `--state-dir`; no seed-file path or implicit provider is
+accepted. `provider.rs` selects only fresh provisioning or recovery of the
+existing candidate. `request.rs` atomically persists an immutable public
+`enrollment-request.json` before the first RPC, so an exact retry keeps the
+request ID, public key and timestamps. New requests expire after seven days.
+Changed parameters or missing/corrupt provider state refuse rather than replace
+an identity. `approve` remains a separate, development-only database action.
+
+`enrollment.rs` delegates challenge signing, replay and key-ID/receipt binding
+to `CredentialCandidate`, then uses `CredentialProvider::open_connection` for
+NodeSync. Its first producer event is deterministic across retries and receives
+one record receipt rather than creating a new event on every activation. The
+CLI holds provider ownership through the connection. Its descriptor contains
+no key bytes, challenge copy or second activation record; those belong to the
+provider. `--skip-sync` reports recorded activation only. Real subprocess tests
+exercise request and activation lost replies, failed sync, repeated activation
+and credential loss. Linux database tests run under an isolated Secret Service;
+Windows and macOS explicitly require native CLI restart in CI. Supervisor and
+enrollment-status tool adoption remain separate STAB-02 work.
 
 `KnowledgeService` (`knowledge_store.rs`/`knowledge_service.rs`) is the first
 slice of Ackplane's PostgreSQL-backed knowledge domain (ADR-0106 decision 3;
