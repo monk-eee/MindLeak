@@ -39,7 +39,10 @@ Every mutation requires a reason and a separate confirmation. Once prepared,
 the payload is immutable. A lost network response can be retried with the same
 request identity and body. Switching repository or task invalidates the preview.
 Expired or conflicted commands require a new preview, never an automatic retry
-with a fresh task version.
+with a fresh task version. If confirmation was already attempted but its result
+is unknown, retry that exact confirmation even after expiry: the server can
+return the original receipt, or refuse a command that never executed before its
+deadline. Do not create another command to recover an uncertain result.
 
 The result keeps delivery distinct from execution:
 

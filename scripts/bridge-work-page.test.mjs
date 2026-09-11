@@ -774,6 +774,41 @@ test("cancelling a preview sends no confirmation and restores keyboard focus", a
   assert.equal(context.document.activeElement, context.button("assign"));
 });
 
+// A lost confirmation used to become unrecoverable at expiry and encourage a
+// new command. Retry the immutable identity so the server can return its receipt.
+test("lost confirmations remain recoverable after expiry without creating a second command", async () => {
+  for (const outcome of ["applied", "expired"]) {
+    const receipt = {
+      ...pending,
+      status: "executed",
+      outcome,
+      reason:
+        outcome === "applied" ? "Original effect" : "No effect before expiry",
+      idempotent_replay: outcome === "applied",
+    };
+    const context = await ready("assign", {
+      responses: [pending, new Error("confirmation response lost"), receipt],
+    });
+    await context.app.prepare();
+    context.state.clock = 1599;
+    await context.app.confirm();
+    context.state.clock = 1600;
+    await context.app.confirm();
+    assert.equal(context.posts().length, 3);
+    assert.equal(context.posts()[1].url, context.posts()[2].url);
+    assert.equal(context.posts()[1].body, context.posts()[2].body);
+    assert.equal(context.element("confirm-command").hidden, true);
+    assert.match(
+      context.element("command-status").textContent,
+      new RegExp(receipt.reason),
+    );
+    assert.equal(
+      context.element("command-status").dataset.error,
+      String(outcome === "expired"),
+    );
+  }
+});
+
 test(
   "preview in flight stays singular and a changed selection cannot revive its receipt",
   { timeout: 1000 },

@@ -258,7 +258,8 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
   }
   async function confirm() {
     const current = flow; if (!current || current.busy || current.result?.status !== "pending_confirmation") return;
-    if (now() >= current.expires) { say("Command expired. Close and prepare a new command.", true, "command-status"); element("confirm-command").hidden = true; return; }
+    if (now() >= current.expires && !current.confirmationAttempted) { say("Command expired. Close and prepare a new command.", true, "command-status"); element("confirm-command").hidden = true; return; }
+    current.confirmationAttempted = true;
     setBusy(current, true); say("Confirming command...", false, "command-status");
     try { const result = await current.client.confirm(); if (flow === current) showResult(current, result); }
     catch (error) { if (flow === current) say(`${error.message} Retry confirmation with the unchanged preview.`, true, "command-status"); }
