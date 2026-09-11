@@ -7,11 +7,11 @@ use ed25519_dalek::{Signer, SigningKey};
 use sha2::{Digest, Sha256};
 
 use crate::db_pool::{build_pool, PgPool, TEST_POOL_MAX_SIZE};
-use crate::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use crate::enrollment_store::{
     ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
     EnrollmentSubmission,
 };
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 
 /// A bounded pool for one database-gated test, or `None` when the suite is not
 /// gated on.

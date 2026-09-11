@@ -86,7 +86,7 @@ pub async fn resend_pending(
             }
             Err(error) => {
                 tracing::info!(%error, "the supervisor connection closed while resending");
-                return Ok(Some(DaemonExit::Disconnected));
+                return super::disconnected_on_error::<()>(Err(error));
             }
         }
     }

@@ -11,7 +11,10 @@ context packet, and durable receipts.
    container does not acquire the new context protocol from a source edit.
 2. Follow the [Industrial quickstart](../../docs/INDUSTRIAL-QUICKSTART.md) for
    the server, TLS trust, and enrolled node identity. Configure the environment
-   variables below. Publish the repository's adopted constitution and Work
+  variables below and keep `register-me serve --state-dir ABSOLUTE_STATE_DIR`
+  running with the provider used for enrollment. See
+  [provider-backed enrollment](../../DEVELOPERS.md#provider-backed-enrollment).
+  Publish the repository's adopted constitution and Work
    tasks, including goals, acceptance criteria, and declared file scope.
 3. Install and authenticate each agent executable. Give each slot a separate
    checkout or worktree, and declare its actual branch. The runner does not
@@ -87,18 +90,15 @@ the existing evidence/conformance or human-review workflow.
 
 ## Configuration
 
-Identity and endpoint variables are shared with the other enrolled clients.
+The companion owns identity, credential access, TLS and outbound connections.
+The supervisor receives only its local directory and expected repository scope.
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `MINDLEAK_ACKPLANE_ENDPOINT` | yes | Ackplane's gRPC endpoint |
-| `MINDLEAK_ACKPLANE_TLS_CA_PATH` | for private CAs | Trusted CA certificate; the Compose endpoint uses HTTPS |
+| `MINDLEAK_ACKPLANE_STATE_DIR` | yes | Absolute state directory of the running node companion |
 | `MINDLEAK_ACKPLANE_TENANT_ID` | yes | Enrolled tenant |
 | `MINDLEAK_ACKPLANE_REPOSITORY_ID` | yes | Enrolled repository |
-| `MINDLEAK_ACKPLANE_NODE_ID` | yes | Enrolled node |
-| `MINDLEAK_ACKPLANE_SIGNING_KEY_ID` | yes | Key id from activation |
 | `ACKPLANE_SUPERVISOR_ID` | yes | 1-64 ASCII letters, digits, hyphens or underscores; one node may run several |
-| `MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED` | no | Hex seed override. Unset uses the OS credential facility |
 | `ACKPLANE_SUPERVISOR_STATE_DIR` | no | Durable inbox/outbox directory (default `.mindleak/supervisor`) |
 | `ACKPLANE_SUPERVISOR_HEARTBEAT_SECONDS` | no | Heartbeat interval (default `30`) |
 | `ACKPLANE_SUPERVISOR_WORKERS` | no | JSON worker map when not using `--workers`; the file argument takes precedence |
@@ -107,6 +107,11 @@ Identity and endpoint variables are shared with the other enrolled clients.
 A missing variable is refused at startup, and **every** missing one is named at
 once — configuring a new node otherwise means learning about the next omission
 only after fixing the previous one.
+
+Legacy `_NODE_ID`, `_SIGNING_KEY_ID`, `_NODE_SIGNING_KEY_SEED` and
+`MINDLEAK_ACKPLANE_KEY_PATH` overrides are refused. Do not export the provider's
+key or create another credential entry for the supervisor. The companion returns
+public identity and constructs each signed domain request itself.
 
 Each supervisor process needs its own state directory. Startup holds an
 exclusive SQLite lock in `ownership.db` before checking recovery markers or
@@ -121,6 +126,12 @@ continue to give every slot a separate checkout or worktree.
 
 ## When it stops
 
+- **Node companion unavailable or authority refused** - stops owned workers,
+  queues termination evidence and retains unconfirmed lease/outbox state for
+  recovery. It does not continue execution in an endless reconnect loop after
+  losing its identity owner. A companion authority check failure also closes
+  existing streams; restoring a credential is not permission to discard worker
+  recovery markers.
 - **State directory already in use** - refuses before registering or opening
   session queues. Stop the current owner or choose a separate state directory;
   removing its lock file is not a recovery operation.
@@ -232,7 +243,8 @@ cargo test --locked -p ackplane-supervisor --test multi_agent_end_to_end
 cargo test --locked -p ackplane-server --lib context_service::tests
 ```
 
-The first test starts a real authenticated gRPC server and the supervisor binary
+The first test starts a real authenticated gRPC server, a protected companion,
+and the supervisor binary without a private-key environment variable
 with two concurrent fixture executables, checks their distinct memory-informed
 prompts, credential separation, Work transitions, durable outcome receipts, and
 orderly shutdown of two active workers on Unix. It also holds both context
@@ -253,6 +265,8 @@ receipt. Temporary local queue triggers also reject context-use, startup,
 applied-effect and terminal writes. Those cases verify the surviving receipt
 prefix, retained uncertainty and lease state, including a cleanup retry after
 terminal persistence fails.
+An additional companion-loss case verifies worker termination and retained
+unconfirmed cleanup evidence when local custody disappears.
 The second tests graph input, lesson activation, retry feedback and refusal of
 cross-session or unleased requests. Without the database variable these gated
 tests skip; a skipped run is not verification. The fixtures test the runtime

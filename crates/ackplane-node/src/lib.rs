@@ -1,27 +1,28 @@
 //! `ackplane-node`: the repository-side identity owner (ADR-0100).
 //!
-//! A full-server repository runs one `ackplane-node` companion that owns the
-//! repository's enrolled identity, non-exporting signer, and outbound Ackplane
-//! clients. Local planes (`lodestar-mcp`, `mindleak-mcp`) never load, export,
-//! or persist the private key themselves — they speak to this crate's narrow
-//! `NodeSigner` capability instead.
+//! `register-me serve` runs this crate's provider-owning companion. Local
+//! runtimes use bounded, scoped domain operations over a protected Unix socket
+//! or Windows named pipe, never private-key access or a generic signing oracle.
+//! Provider loss or refusal of enrolled authority closes every active stream.
 //!
-//! This crate also ships a repository-scoped local IPC endpoint (`ipc`,
-//! ADR-0100 decision 4): a Windows named pipe or a Unix-domain socket that
-//! accepts only the closed `NodeSigner` operations above, never a TCP
-//! listener and never a reusable bearer token; and enrolment + restart
-//! identity recovery (`enrolment`, ADR-0100 decision 7). OS-backed providers
-//! (Windows CNG, macOS Keychain/Secure Enclave, Linux PKCS#11/TPM) and key
-//! rotation are separate, narrow follow-on slices.
+//! `CredentialProvider` explicitly selects software custody in the OS credential
+//! facility. It is not a hardware non-exportable key. Recovery checks the exact
+//! public binding and activation receipt; persistent rotation and hardware
+//! providers remain separate requirements.
 
+pub mod companion;
 mod enrolment;
 mod process_lock;
 mod provider;
 mod signer;
 
-pub mod ipc;
-
-pub use enrolment::{enrol, recover, EnrolmentError, EnrolmentRecord};
+pub use enrolment::{
+    EnrollmentActivation, EnrollmentChallengeRecord, EnrolmentError, EnrolmentRecord,
+};
 pub use process_lock::{LockError, NodeProcessLock};
+pub use provider::credential::{CredentialCandidate, CredentialProvider, CredentialProviderError};
 pub use provider::software::SoftwareProvider;
-pub use signer::{KeyHandle, NodeIdentity, NodeSigner, NodeSignerError, Signature, SigningBinding};
+pub use signer::{
+    CandidateIdentity, KeyHandle, NodeIdentity, NodeSigner, NodeSignerError, Signature,
+    SigningBinding,
+};

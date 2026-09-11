@@ -22,6 +22,8 @@ time = { version = "0.3.47", features = ["formatting", "parsing"], optional = tr
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+ackplane-node = { path = "../ackplane-node" }
+tempfile = "3"
 # Only exercised by federation.rs's own opt-in, Postgres-gated round-trip
 # test, mirroring ackplane-client's arbitration.rs fixture rather than
 # inventing a second one.

@@ -1,7 +1,8 @@
 //! Provider implementations of [`crate::NodeSigner`].
 //!
-//! Only the development-only software provider ships in this slice. OS-backed
-//! providers (Windows CNG, macOS Keychain/Secure Enclave, Linux PKCS#11/TPM)
-//! are separate, narrow follow-on slices — see ADR-0100 decision 5.
+//! Explicit software providers: memory-only and OS-credential-backed. Neither
+//! claims hardware non-exportability. Hardware/workload providers and runtime
+//! enrollment integration remain separate requirements under ADR-0100.
 
+pub mod credential;
 pub mod software;

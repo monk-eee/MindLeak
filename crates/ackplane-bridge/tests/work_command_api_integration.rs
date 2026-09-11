@@ -10,8 +10,8 @@
 use std::sync::Arc;
 
 use ackplane_bridge::work_command_api::{work_command_routes, WorkCommandApiState};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,
