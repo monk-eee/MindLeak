@@ -795,7 +795,7 @@
     "@types/vscode": "1.101.0",
     "@typescript-eslint/eslint-plugin": "^8.65.0",
     "@typescript-eslint/parser": "^8.65.0",
-    "@vitest/coverage-v8": "4.1.10",
+    "@vitest/coverage-v8": "4.1.11",
     "@vscode/test-electron": "2.5.2",
     "@vscode/vsce": "3.9.2",
     "cytoscape": "^3.30.0",
@@ -805,7 +805,7 @@
     "jsonc-parser": "3.3.1",
     "prettier": "^3.2.0",
     "typescript": "5.4.5",
-    "vitest": "4.1.10",
+    "vitest": "4.1.11",
     "yauzl": "3.2.1",
     "yazl": "3.3.1"
   }
