@@ -45,6 +45,21 @@ test("the commit's timestamp is captured, not the moment of ingestion", () => {
   assert.notEqual(commit.timestamp, Math.floor(Date.now() / 1000));
 });
 
+test("the shared commit reader can read an exact published revision and its rationale", () => {
+  const sha = "a".repeat(40);
+  const commit = readCommit((args) => {
+    assert.equal(args.at(-1), sha);
+    if (args[0] === "log") {
+      assert(args.includes("--format=%H%x00%ct%x00%B"));
+      return `${sha}\u0000123\u0000fix: precise\n\nWHY: keep provenance exact`;
+    }
+    return "changed.rs\n";
+  }, sha);
+  assert.deepEqual(commit.changed, ["changed.rs"]);
+  assert.equal(commit.timestamp, 123);
+  assert.match(commit.message, /WHY: keep provenance exact/);
+});
+
 /// A clean merge is not new work: its content already arrived on the branches it
 /// joins, so ingesting it would attribute every file to whoever happened to run
 /// it. Git reports no files for such a merge, because `git show --name-only`

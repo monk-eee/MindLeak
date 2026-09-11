@@ -33,7 +33,7 @@ pub struct WeightedEdge {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct RawEdge {
     pub(super) source_id: String,
     pub(super) target_id: String,

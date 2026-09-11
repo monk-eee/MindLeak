@@ -1,6 +1,6 @@
 //! SQLite schema and persistence helpers for durable supervisor queues.
 
-use std::time::Duration;
+use std::{io, path::Path, time::Duration};
 
 use ackplane_protocol::{
     supervisor::{SupervisorIdentity, SupervisorSession},
@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS outbound_frames (
     frame BLOB NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS directive_effects (
+    directive_id TEXT PRIMARY KEY REFERENCES directive_inbox(directive_id),
+    receipt BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS outbound_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0)
@@ -50,6 +55,25 @@ pub(crate) fn configure(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.busy_timeout(Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA)
+}
+
+/// Retain the separate lock connection for the daemon lifetime; never unlink its file.
+pub(crate) fn claim_state_directory(directory: &Path) -> io::Result<Connection> {
+    std::fs::create_dir_all(directory)?;
+    let connection = Connection::open(directory.join("ownership.db")).map_err(io::Error::other)?;
+    connection
+        .busy_timeout(Duration::ZERO)
+        .map_err(io::Error::other)?;
+    match connection.execute_batch("BEGIN EXCLUSIVE") {
+        Ok(()) => Ok(connection),
+        Err(error) if matches!(error.sqlite_error_code(), Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)) => {
+            Err(io::Error::new(io::ErrorKind::WouldBlock, format!(
+                "state directory is already in use: {}; stop its current supervisor or configure a separate state directory",
+                directory.display(),
+            )))
+        }
+        Err(error) => Err(io::Error::other(error)),
+    }
 }
 
 pub(crate) struct StoredReceipt {
@@ -139,6 +163,27 @@ pub(crate) fn next_sequence(transaction: &Transaction<'_>) -> Result<i64, rusqli
         [],
         |row| row.get(0),
     )
+}
+
+pub(crate) fn load_effect(
+    conn: &Connection,
+    directive_id: &str,
+) -> Result<Option<Vec<u8>>, rusqlite::Error> {
+    conn.query_row(
+        "SELECT receipt FROM directive_effects WHERE directive_id = ?1",
+        [directive_id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+pub(crate) fn store_effect(
+    conn: &Connection,
+    directive_id: &str,
+    receipt: &[u8],
+) -> Result<(), rusqlite::Error> {
+    conn.execute("INSERT INTO directive_effects (directive_id, receipt) VALUES (?1, ?2) ON CONFLICT (directive_id) DO UPDATE SET receipt = excluded.receipt", params![directive_id, receipt])?;
+    Ok(())
 }
 
 pub(crate) fn load_receipt(
@@ -281,4 +326,25 @@ pub(crate) fn outbound_positions(conn: &Connection) -> Result<(i64, i64), rusqli
         None => last_enqueued,
     };
     Ok((acknowledged, last_enqueued))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn state_ownership_releases_on_drop_without_removing_recovery_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("first.worker-run.json");
+        std::fs::write(&marker, "unaccounted worker").unwrap();
+        let owner = super::claim_state_directory(directory.path()).unwrap();
+        let refused = super::claim_state_directory(&directory.path().join(".")).unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::WouldBlock);
+        drop(owner);
+
+        let _new_owner = super::claim_state_directory(directory.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(marker).unwrap(),
+            "unaccounted worker"
+        );
+        assert!(directory.path().join("ownership.db").exists());
+    }
 }

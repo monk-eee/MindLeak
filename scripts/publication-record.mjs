@@ -13,7 +13,9 @@
 // where the ledger is not optional. Recording here makes evidence a
 // by-product of publishing rather than a separate discipline nobody remembers.
 
+import { execFileSync } from "node:child_process";
 import { callTools, resolveServer } from "./claim-gate.mjs";
+import { readCommit, worthIngesting } from "./ingest-commit.mjs";
 
 /**
  * The `ingest_commit` arguments for a published head.
@@ -73,21 +75,26 @@ export const memoryPlaneRefusal = (server) =>
  * the resolver finds no binary and reports the plane as unreachable, which
  * reads as an outage rather than as one missing environment variable.
  */
-export const recordPublication = ({
-  repoRoot,
-  sessionId,
-  sha,
-  message,
-  changedFiles,
-  timestamp = Math.floor(Date.now() / 1000),
-}) => {
+export const recordPublication = (
+  { repoRoot, sessionId, sha },
+  {
+    resolve = resolveServer,
+    run = (args) =>
+      execFileSync("git", args, {
+        cwd: repoRoot,
+        encoding: "utf8",
+        maxBuffer: 1 << 26,
+      }).trim(),
+    call = callTools,
+  } = {},
+) => {
   if (!/^[0-9a-f]{32}$/.test(sessionId ?? "")) {
     return (
       "published commit not recorded; no registered session id, so this work will not certify.\n" +
       "  Set LODESTAR_SESSION_ID to the 32-character hex id registered with open_session."
     );
   }
-  const server = resolveServer(repoRoot, "mindleak");
+  const server = resolve(repoRoot, "mindleak");
   if (!server) {
     return (
       "published commit not recorded; no mindleak-mcp binary was found, so this work will not certify.\n" +
@@ -96,17 +103,24 @@ export const recordPublication = ({
       "  A linked worktree has no target/ of its own, which is the usual cause here."
     );
   }
+  let commit;
   try {
-    callTools(server, repoRoot, [
+    commit = readCommit(run, sha);
+  } catch {
+    return "published commit not recorded; Git could not read the published commit, so no mutation evidence was invented";
+  }
+  if (!worthIngesting(commit)) return null;
+  try {
+    call(server, repoRoot, [
       { name: "open_session", arguments: { session_id: sessionId } },
       {
         name: "ingest_commit",
         arguments: publicationRecord({
           sessionId,
-          sha,
-          message,
-          changedFiles,
-          timestamp,
+          sha: commit.sha,
+          message: commit.message,
+          changedFiles: commit.changed,
+          timestamp: commit.timestamp,
         }),
       },
     ]);

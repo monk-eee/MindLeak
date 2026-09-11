@@ -17,8 +17,10 @@ mod outbox;
 mod reconcile;
 mod storage;
 mod worker_adapter;
+mod worker_command;
 
 pub use inbox::{InboxError, SupervisorInbox};
 pub use outbox::{OutboxError, OutboxPositions, QueueOutcome, QueuedFrame, SupervisorOutbox};
 pub use reconcile::{reconcile, Reconciliation};
 pub use worker_adapter::{AdapterError, ProcessWorkerAdapter, WorkerAdapter, WorkerAssignment};
+pub use worker_command::WorkerCommand;

@@ -14,10 +14,27 @@ path = "src/main.rs"
 [dependencies]
 ackplane-client = { path = "../ackplane-client" }
 ackplane-protocol = { path = "../ackplane-protocol" }
+command-group = "5.0.1"
+getrandom = "0.2"
 prost = { workspace = true }
 rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 time = { version = "0.3.47", features = ["formatting", "parsing"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+ackplane-server = { path = "../ackplane-server" }
+ed25519-dalek = "2"
+tempfile = "3"
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["signal"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { version = "1.1.4", features = ["process"] }

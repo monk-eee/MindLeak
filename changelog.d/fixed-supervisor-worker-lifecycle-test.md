@@ -1,0 +1,1 @@
+- The worker-adapter lifecycle test now synchronizes with the existing fixture's readiness and explicit release, then observes actual exit within a bounded deadline. This removes the fixed 2.5-second completion assumption that could fail the industrial test gate under load, while preserving descendant-cleanup coverage and process cleanup on test failures.

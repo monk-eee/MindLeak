@@ -9,7 +9,7 @@
   <a href="https://github.com/monk-eee/MindLeak/actions/workflows/release.yml"><img src="https://github.com/monk-eee/MindLeak/actions/workflows/release.yml/badge.svg" alt="Release"></a>
   <a href="https://github.com/monk-eee/MindLeak/releases"><img src="https://img.shields.io/github/v/release/monk-eee/MindLeak?include_prereleases&sort=semver&label=release" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88+">
   <img src="https://img.shields.io/badge/protocol-MCP-8A2BE2.svg" alt="Model Context Protocol">
 </p>
 
@@ -106,10 +106,13 @@ relevance, constitution for authority, and evidence for completion.**
   for either MCP stdio server, so consumers no longer hand-write their own
   JSON-RPC framing (ADR-0103).
 
-Together these are **MindLeak Core**, the local tier and the only tier that ships
-today. *Ackplane* (the shared control plane) and *the Bridge* (assurance and
-fleet operations) are accepted designs that are not yet built — see
-[ADR-0082](docs/adr/0082-ackplane-is-a-standalone-federation-service.md) onward.
+Together these are **MindLeak Core**, the local tier and the only tier
+distributed as a packaged release today. *Ackplane* (the shared control plane)
+and *the Bridge* (assurance and fleet operations) are implemented and runnable
+from source — a real gRPC service, Postgres ledger, and web UI — but not yet
+part of that packaged release; see
+[ADR-0082](docs/adr/0082-ackplane-is-a-standalone-federation-service.md) onward
+and the [Industrial quickstart](docs/INDUSTRIAL-QUICKSTART.md).
 Inside Core each capability has a name and the question it answers: MindLeak
 remembers, *Lodestar* holds intent, *Beacon* coordinates claims, *Gatekeeper*
 governs, *Librarian* keeps evidence, and *Verifier* decides whether that
@@ -167,6 +170,7 @@ platform steps and the first useful query, continue with the
 | Need | Read |
 |---|---|
 | Install and reach first value | [Quickstart](docs/QUICKSTART.md) |
+| Run the shared Ackplane server, enroll a node, use the Bridge | [Industrial quickstart](docs/INDUSTRIAL-QUICKSTART.md) |
 | Operate the two-plane workflow | [Usage](docs/USAGE.md) and [Walkthrough](docs/WALKTHROUGH.md) |
 | Look up an MCP tool | [Tool reference](docs/TOOLS.md) |
 | Verify capabilities, limits, and results | [Release notes](docs/RELEASE-NOTES.md) and [Evaluation](docs/EVALUATION.md) |

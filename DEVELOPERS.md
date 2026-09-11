@@ -5,7 +5,7 @@ If you get stuck, that is a defect — fix it or add it to [Known gaps](#known-g
 
 ## Prerequisites
 
-- **Rust** 1.75+ (via [rustup](https://rustup.rs)); MSVC toolchain on Windows.
+- **Rust** 1.88+ (via [rustup](https://rustup.rs)); MSVC toolchain on Windows.
 - **cargo-llvm-cov** for local Rust coverage (`cargo install cargo-llvm-cov --locked`).
 - **Node** 18+ and npm (for the VS Code extension).
 - **Python** 3.8+ with `pip` (for the `pre-commit` framework).

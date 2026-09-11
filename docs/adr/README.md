@@ -154,6 +154,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0146](0146-a-supervisor-declares-its-own-frame-sequence.md) | A supervisor declares its own frame sequence; the server only echoes what it accepted | Accepted |
 | [0147](0147-a-claim-reports-the-branchs-existing-governed-files.md) | A claim reports the branch's existing governed files, not only its own declared scope | Accepted |
 | [0148](0148-an-enrolled-node-computes-projection-embeddings.md) | An enrolled node computes projection embeddings; Ackplane stores and ranks them | Accepted |
+| [0149](0149-commit-attribution-repair-is-verified-and-audited.md) | Commit attribution repair is verified and audited | Proposed |
 
 ## Writing a new ADR
 

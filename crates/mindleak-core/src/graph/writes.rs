@@ -5,7 +5,44 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{ArtifactStub, ForgetOutcome, GraphStore, WriteOutcome, STRUCTURE_EXTRACTOR_VERSION};
 use crate::error::{MindLeakError, Result};
-use crate::model::{Edge, Node};
+use crate::model::{Edge, Node, NodeType, RelationType};
+
+pub(crate) struct Observation<'a> {
+    pub(crate) agent: &'a str,
+    pub(crate) ids: &'a [String],
+    pub(crate) now: i64,
+}
+
+impl Observation<'_> {
+    fn write_on(&self, connection: &Connection) -> Result<()> {
+        let agent = self
+            .agent
+            .trim()
+            .strip_prefix("agent:")
+            .unwrap_or(self.agent.trim());
+        if agent.is_empty() {
+            return Ok(());
+        }
+        let agent_id = format!("agent:{agent}");
+        upsert_node_on(
+            connection,
+            &Node::new(&agent_id, NodeType::Agent, agent, self.now),
+        )?;
+        for id in self.ids {
+            if id == &agent_id {
+                continue;
+            }
+            let mut edge = Edge::new(&agent_id, id, RelationType::Observed, self.now);
+            // Attribution of a transient execution must not outlive the
+            // execution's own evidence. Cap it to the execution decay tier.
+            if id.starts_with("execution:") || id.starts_with("tool_invocation:") {
+                edge.half_life_hours = RelationType::Modified.default_half_life_hours();
+            }
+            upsert_edge_on(connection, &edge, None)?;
+        }
+        Ok(())
+    }
+}
 
 impl GraphStore {
     /// Insert or reinforce a node. Returns true if newly created.
@@ -19,8 +56,13 @@ impl GraphStore {
         upsert_edge_on(&self.conn, edge, None)
     }
 
-    /// Atomically append one deterministic ingestion batch.
-    pub(crate) fn upsert_facts(&self, nodes: &[Node], edges: &[Edge]) -> Result<WriteOutcome> {
+    /// Atomically append a deterministic batch and its optional agent attribution.
+    pub(crate) fn upsert_facts(
+        &self,
+        nodes: &[Node],
+        edges: &[Edge],
+        observation: Option<Observation<'_>>,
+    ) -> Result<WriteOutcome> {
         let transaction = self.write_txn()?;
         let mut outcome = WriteOutcome::default();
         for node in nodes {
@@ -33,8 +75,18 @@ impl GraphStore {
                 outcome.edges_created += 1;
             }
         }
+        if let Some(observation) = observation {
+            observation.write_on(&transaction)?;
+        }
         transaction.commit()?;
         Ok(outcome)
+    }
+
+    pub(crate) fn observe(&self, observation: Observation<'_>) -> Result<()> {
+        let transaction = self.write_txn()?;
+        observation.write_on(&transaction)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     /// Atomically replace all structural facts emitted by one artifact.

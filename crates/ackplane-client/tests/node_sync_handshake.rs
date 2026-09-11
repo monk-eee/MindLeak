@@ -302,6 +302,57 @@ async fn a_wrong_signature_is_refused_as_unauthenticated() {
     assert_eq!(error, RejectionReason::Unauthenticated);
 }
 
+/// A peer that stops acknowledging frames must not strand a worker past its lease deadline.
+#[tokio::test]
+async fn a_missing_receipt_times_out_and_the_connection_cannot_be_reused() {
+    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let server = start_server(&database_url).await;
+    let node = enroll_and_activate(&server.endpoint, &database_url).await;
+    let signer = SeedSigner::new(
+        node.signing_key_id,
+        node.node_id,
+        &node.signing_key.to_bytes(),
+    );
+    let mut connection = NodeSyncConnection::open(
+        &server.endpoint,
+        &signer,
+        &node.tenant_id,
+        &node.repository_id,
+        vec!["synchronize".into()],
+        0,
+    )
+    .await
+    .unwrap();
+    let frame = v1::NodeFrame {
+        frame: Some(v1::node_frame::Frame::Heartbeat(v1::Heartbeat::default())),
+    };
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        connection.exchange_supervisor_frame(frame.clone()),
+    )
+    .await
+    .expect("client did not bound its acknowledgement wait")
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("acknowledgement deadline"),
+        "{error}"
+    );
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        connection.exchange_supervisor_frame(frame),
+    )
+    .await
+    .expect("an expired exchange reused its stream")
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("acknowledgement deadline"),
+        "{error}"
+    );
+}
+
 #[tokio::test]
 async fn an_unknown_signing_key_id_is_refused_as_unauthenticated() {
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {

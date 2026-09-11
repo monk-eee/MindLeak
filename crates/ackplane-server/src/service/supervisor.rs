@@ -54,6 +54,29 @@ pub(super) async fn handle_authenticated_frame(
     let Some(frame) = frame.frame else {
         return Vec::new();
     };
+    let supervisor_id = match &frame {
+        v1::node_frame::Frame::SupervisorHeartbeat(wire) => Some(wire.supervisor_id.as_str()),
+        v1::node_frame::Frame::SupervisorSession(wire) => Some(wire.supervisor_id.as_str()),
+        v1::node_frame::Frame::SupervisorLifecycleReceipt(wire) => {
+            Some(wire.supervisor_id.as_str())
+        }
+        _ => None,
+    };
+    if let Some(supervisor_id) = supervisor_id {
+        match store.list_supervisors(tenant_id, repository_id).await {
+            Ok(supervisors)
+                if supervisors.iter().any(|status| {
+                    status.registration.supervisor_id == supervisor_id
+                        && status.registration.identity.node_id == node_id
+                }) => {}
+            Ok(_) => {
+                return vec![rejection(IngressError::Unauthorized(
+                    "supervisor does not belong to the authenticated node",
+                ))]
+            }
+            Err(error) => return vec![rejection(IngressError::from(error))],
+        }
+    }
     let outcome = match frame {
         v1::node_frame::Frame::SupervisorRegistration(wire) => {
             registration_receipt(wire, tenant_id, repository_id, node_id, store).await
@@ -99,7 +122,8 @@ pub(super) async fn handle_authenticated_frame(
         v1::node_frame::Frame::SupervisorLifecycleReceipt(wire) => {
             let supervisor_id = wire.supervisor_id.clone();
             let session_id = wire.session_id.clone();
-            match lifecycle_from_wire(wire, tenant_id, repository_id) {
+            let sequence = wire.outbox_sequence;
+            let mut outcome = match lifecycle_from_wire(wire, tenant_id, repository_id) {
                 Ok(request) => store
                     .record_lifecycle(&request)
                     .await
@@ -115,7 +139,17 @@ pub(super) async fn handle_authenticated_frame(
                     })
                     .map_err(IngressError::from),
                 Err(error) => Err(error),
+            };
+            if let (Some(sequence), Ok(receipt)) = (sequence, &mut outcome) {
+                match store
+                    .record_outbox_sequence(tenant_id, repository_id, &supervisor_id, sequence)
+                    .await
+                {
+                    Ok(accepted) => receipt.accepted_outbox_sequence = Some(accepted),
+                    Err(error) => outcome = Err(IngressError::from(error)),
+                }
             }
+            outcome
         }
         _ => return Vec::new(),
     };
@@ -475,6 +509,20 @@ mod tests {
         let repository_id = format!("repository-supervisor-time-{suffix}");
         let node_id = format!("node-{suffix}");
         let supervisor_id = format!("supervisor-{suffix}");
+        supervisor_receipt(
+            handle_authenticated_frame(
+                registration_frame(&supervisor_id, &node_id),
+                &tenant_id,
+                &repository_id,
+                &node_id,
+                &store,
+            )
+            .await,
+        );
+        let unchanged = store
+            .list_supervisors(&tenant_id, &repository_id)
+            .await
+            .unwrap();
         let response = handle_authenticated_frame(
             v1::NodeFrame {
                 frame: Some(v1::node_frame::Frame::SupervisorSession(
@@ -509,7 +557,7 @@ mod tests {
                 .list_supervisors(&tenant_id, &repository_id)
                 .await
                 .expect("read scope after malformed session"),
-            Vec::new()
+            unchanged
         );
     }
 
@@ -661,6 +709,7 @@ mod tests {
                     state: v1::SupervisorWorkerState::Paused as i32,
                     reason: v1::SupervisorLifecycleReason::DirectiveExpired as i32,
                     idempotency_key: format!("receipt-{suffix}"),
+                    outbox_sequence: None,
                 },
             )),
         };
@@ -724,5 +773,57 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// An enrolled peer could update another node's supervisor because only registration checked node ownership.
+    #[tokio::test]
+    async fn a_peer_node_cannot_heartbeat_or_open_a_session_under_another_supervisor() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let tenant = format!("tenant-owner-{}", unique_suffix());
+        let repository = "repository-owner";
+        supervisor_receipt(
+            handle_authenticated_frame(
+                registration_frame("supervisor-owner", "owner-node"),
+                &tenant,
+                repository,
+                "owner-node",
+                &store,
+            )
+            .await,
+        );
+        for frame in [
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::SupervisorHeartbeat(
+                    v1::SupervisorHeartbeat {
+                        supervisor_id: "supervisor-owner".into(),
+                    },
+                )),
+            },
+            v1::NodeFrame {
+                frame: Some(v1::node_frame::Frame::SupervisorSession(
+                    v1::SupervisorSession {
+                        supervisor_id: "supervisor-owner".into(),
+                        session_id: "forged-session".into(),
+                        worker_id: "forged-worker".into(),
+                        runtime: v1::SupervisorRuntime::LocalMachine as i32,
+                        started_at: "2026-09-10T00:00:00Z".into(),
+                        state: v1::SupervisorWorkerState::Started as i32,
+                    },
+                )),
+            },
+        ] {
+            let refused = rejection(
+                handle_authenticated_frame(frame, &tenant, repository, "peer-node", &store).await,
+            );
+            assert_eq!(refused.reason, v1::RejectionReason::Unauthorized as i32);
+        }
+        assert!(store
+            .session(&tenant, repository, "forged-session")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

@@ -13,7 +13,7 @@ use ackplane_protocol::{
     },
     v1::{self, agent_directive},
 };
-use ackplane_supervisor::{InboxError, SupervisorInbox};
+use ackplane_supervisor::{AdapterError, InboxError, SupervisorInbox};
 use time::{format_description::well_known::Rfc3339, Duration, OffsetDateTime};
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
@@ -122,6 +122,106 @@ fn identical_directive_replay_returns_the_durable_original_receipt_after_reopen(
     assert_eq!(replay.status, v1::DirectiveReceiptStatus::Accepted as i32);
     drop(inbox);
     remove_database(&path);
+}
+
+#[test]
+fn a_worker_effect_is_not_executed_twice_after_redelivery_or_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("inbox.db");
+    let registration = registration(vec![SupervisorDirectiveCapability::Prompt]);
+    let directive = directive(1, now() + Duration::minutes(10));
+    let calls = std::cell::Cell::new(0);
+    let first = {
+        let inbox = SupervisorInbox::open(&path, registration.clone(), session()).unwrap();
+        let first = inbox
+            .apply(&directive, now(), vec!["context:a".into()], || {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .unwrap();
+        let again = inbox
+            .apply(&directive, now(), vec![], || {
+                panic!("redelivery executed the worker twice")
+            })
+            .unwrap();
+        assert_eq!(first, again);
+        first
+    };
+    let inbox = SupervisorInbox::open(&path, registration, session()).unwrap();
+    assert_eq!(first.status, v1::DirectiveReceiptStatus::Applied as i32);
+    assert_eq!(calls.get(), 1);
+    assert_eq!(inbox.receive(&directive, now()).unwrap(), first);
+    assert_eq!(
+        inbox
+            .apply(&directive, now(), vec![], || panic!(
+                "reopen executed the worker twice"
+            ))
+            .unwrap(),
+        first
+    );
+}
+
+// Stop and wait errors used the spawn diagnostic. Preserve their actual operation
+// while keeping every failed process effect durable and non-replayable.
+#[test]
+fn process_failures_keep_their_operation_and_are_never_reported_as_applied() {
+    for (error, diagnostic) in [
+        (
+            AdapterError::SpawnFailed("missing executable".into()),
+            "failed to start worker: missing executable",
+        ),
+        (
+            AdapterError::StopFailed("permission denied".into()),
+            "failed to stop worker process group: permission denied",
+        ),
+        (
+            AdapterError::WaitFailed("no child process".into()),
+            "failed to wait for worker process group: no child process",
+        ),
+    ] {
+        let inbox = SupervisorInbox::open_in_memory(
+            registration(vec![SupervisorDirectiveCapability::Prompt]),
+            session(),
+        )
+        .unwrap();
+        let directive = directive(1, now() + Duration::minutes(10));
+        let failed = inbox
+            .apply(&directive, now(), vec![], || Err(error))
+            .unwrap();
+        assert_eq!(failed.status, v1::DirectiveReceiptStatus::Failed as i32);
+        assert_eq!(failed.diagnostic, diagnostic);
+        assert_eq!(
+            inbox
+                .apply(&directive, now(), vec![], || panic!(
+                    "a failed directive ran again"
+                ))
+                .unwrap(),
+            failed
+        );
+    }
+}
+
+#[test]
+fn an_unconfirmed_effect_cannot_be_reexecuted_after_a_crash() {
+    let inbox = SupervisorInbox::open_in_memory(
+        registration(vec![SupervisorDirectiveCapability::Prompt]),
+        session(),
+    )
+    .unwrap();
+    let directive = directive(1, now() + Duration::minutes(10));
+    let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        inbox.apply(&directive, now(), vec![], || {
+            panic!("simulated crash during launch")
+        })
+    }));
+    assert!(crash.is_err());
+    let receipt = inbox
+        .apply(&directive, now(), vec![], || {
+            panic!("uncertain launch was repeated")
+        })
+        .unwrap();
+    assert_eq!(receipt.status, v1::DirectiveReceiptStatus::Failed as i32);
+    assert!(receipt.diagnostic.contains("not confirmed"));
 }
 
 #[test]

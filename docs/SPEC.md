@@ -110,6 +110,46 @@ Episodic edges are append-and-reinforce: re-ingesting one raises its weight
 authoritative per-artifact snapshot: re-ingestion transactionally retracts owned
 facts absent from the latest source before orphan cleanup (ADR-0007).
 
+Attributed execution ingestion commits the execution, its mutation/failure
+facts, and its agent observation in one immediate SQLite transaction. A failed
+observation rolls back the entire batch; concurrent maintenance cannot see a
+newly committed execution without its attribution, including commands that
+changed no files. Event clocks, observation half-lives and reported fact counts
+are unchanged. Un-attributed ingestion still creates no observer and remains
+subject to the ordinary orphan-reaping policy.
+
+### Explicit commit-attribution repair
+
+`repair_commit_attribution(sha, reason, session_id)` is an explicit exception
+to append-and-reinforce ingestion, not ordinary replay. It requires a registered
+session, a full commit hash, a nonblank reason of at most 2048 bytes, and an
+existing commit intent. The server reads the exact object from its configured
+repository; callers cannot supply replacement paths, messages or timestamps.
+Unavailable or shallow Git history, non-commit objects and mismatched facts are
+refused without graph mutation. Replacement refs, external diff programs and
+lazy object fetching do not participate.
+
+The transaction corrects only that intent's label/content/original timestamp
+and outgoing `refactored` edges. Clean merges have no authored delta; conflicted
+merges retain only paths differing from every parent. Paths use the same
+normalization and ignore policy as ordinary commit ingestion. Unrelated nodes,
+relations, original agent observations, and retained edge weights/reinforcement
+remain unchanged. Corrected edge clocks use the commit's original timestamp,
+not repair time. An identical repeat changes nothing.
+
+Every actual correction appends a non-decaying `evidence_repair` event to
+`telemetry_events` in the same transaction. It contains the acting agent,
+reason, commit identity, repair time, verified facts and complete before/after
+node and edge snapshots. Failure to save the audit rolls back the correction.
+The response's `audit_id` is retrievable with
+`telemetry_snapshot(event_id=...)` after it leaves the recent-events window.
+Git results are capped at 1 MiB each, commit edge sets at 10,000 and audit JSON
+at 4 MiB; oversized corrections fail rather than truncate their evidence.
+Repair never attributes original authorship to its caller, changes an existing
+conformance record, or certifies work. Regenerate the original claim-bounded
+evidence and rerun Lodestar conformance explicitly afterward. Design rationale:
+[ADR-0149](adr/0149-commit-attribution-repair-is-verified-and-audited.md).
+
 ---
 
 ## 4. Storage & decay

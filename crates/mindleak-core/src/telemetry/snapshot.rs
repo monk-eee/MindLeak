@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, Row};
 use serde_json::Value;
 
 use super::habits::memory_habits;
@@ -11,6 +11,27 @@ use super::record::ensure_table;
 use super::retrospective::usage_retrospective;
 use super::types::{EventRow, NameMetric, Snapshot};
 use crate::error::Result;
+
+pub fn event(conn: &Connection, id: i64) -> Result<Option<EventRow>> {
+    ensure_table(conn)?;
+    Ok(conn.query_row(
+        "SELECT ts, kind, name, outcome, duration_ms, detail FROM telemetry_events WHERE id = ?1",
+        [id],
+        row_to_event,
+    ).optional()?)
+}
+
+fn row_to_event(row: &Row<'_>) -> rusqlite::Result<EventRow> {
+    let detail: Option<String> = row.get(5)?;
+    Ok(EventRow {
+        ts: row.get(0)?,
+        kind: row.get(1)?,
+        name: row.get(2)?,
+        outcome: row.get(3)?,
+        duration_ms: row.get(4)?,
+        detail: detail.and_then(|value| serde_json::from_str(&value).ok()),
+    })
+}
 
 /// Aggregate metrics plus the most recent `recent_limit` events.
 pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
@@ -136,17 +157,7 @@ pub fn snapshot(conn: &Connection, recent_limit: usize) -> Result<Snapshot> {
              ORDER BY id DESC
              LIMIT ?1",
         )?;
-        let rows = stmt.query_map([recent_limit as i64], |row| {
-            let detail: Option<String> = row.get(5)?;
-            Ok(EventRow {
-                ts: row.get(0)?,
-                kind: row.get(1)?,
-                name: row.get(2)?,
-                outcome: row.get(3)?,
-                duration_ms: row.get(4)?,
-                detail: detail.and_then(|d| serde_json::from_str(&d).ok()),
-            })
-        })?;
+        let rows = stmt.query_map([recent_limit as i64], row_to_event)?;
         for row in rows {
             recent.push(row?);
         }

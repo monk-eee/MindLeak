@@ -934,6 +934,8 @@ async fn confirming_create_work_applies_and_creates_the_task() {
         title: format!("Title {suffix}"),
         acceptance: "The task is done when its command effects are verified.".to_owned(),
         goal_id: None,
+        declared_paths: vec!["result.json".into()],
+        declared_symbols: Vec::new(),
     });
     let command = command_targeting(
         &tenant_id,
@@ -993,6 +995,7 @@ async fn confirming_create_work_applies_and_creates_the_task() {
         .expect("the confirmed CreateWork command should have created the task");
     assert_eq!(detail.task.version, 1);
     assert_eq!(detail.task.state, WorkTaskState::Open);
+    assert_eq!(detail.task.declared_paths, vec!["result.json"]);
 }
 
 #[tokio::test]
@@ -1012,6 +1015,8 @@ async fn confirming_create_work_against_an_existing_task_id_conflicts() {
         title: format!("Title {suffix}"),
         acceptance: "The task is done when its command effects are verified.".to_owned(),
         goal_id: None,
+        declared_paths: Vec::new(),
+        declared_symbols: Vec::new(),
     });
     let command = command_targeting(
         &tenant_id,

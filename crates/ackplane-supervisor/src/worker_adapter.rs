@@ -6,9 +6,11 @@
 //! not itself register.
 
 use std::collections::HashMap;
-use std::process::{Child, Command};
+use std::path::PathBuf;
+use std::process::{Command, ExitStatus, Stdio};
 
 use ackplane_protocol::supervisor::SupervisorWorkerState;
+use command_group::{CommandGroup, GroupChild};
 use thiserror::Error;
 
 /// A typed unit of work handed to a worker adapter. The adapter translates
@@ -21,6 +23,7 @@ pub struct WorkerAssignment {
     pub worker_id: String,
     pub command: String,
     pub args: Vec<String>,
+    pub working_directory: PathBuf,
 }
 
 /// A local, adapter-scoped refusal. This is distinct from the wire-level
@@ -28,12 +31,18 @@ pub struct WorkerAssignment {
 /// part of the closed protocol vocabulary Ackplane records receipts against.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AdapterError {
+    #[error("invalid worker assignment: {0}")]
+    InvalidAssignment(String),
     #[error("worker {0} is not registered with this adapter")]
     UnknownWorker(String),
     #[error("worker {0} is already registered")]
     DuplicateWorker(String),
     #[error("failed to start worker: {0}")]
     SpawnFailed(String),
+    #[error("failed to stop worker process group: {0}")]
+    StopFailed(String),
+    #[error("failed to wait for worker process group: {0}")]
+    WaitFailed(String),
     #[error("this adapter cannot honestly enforce {0} for a generic process worker")]
     Unsupported(&'static str),
 }
@@ -87,7 +96,67 @@ pub trait WorkerAdapter {
 /// the trait's default refusal rather than approximate them.
 #[derive(Default)]
 pub struct ProcessWorkerAdapter {
-    workers: HashMap<String, Child>,
+    workers: HashMap<String, WorkerProcess>,
+}
+
+enum WorkerProcess {
+    Running(GroupChild),
+    Finished(ExitStatus),
+}
+
+impl WorkerProcess {
+    fn stop(&mut self) -> Result<(), AdapterError> {
+        let Self::Running(child) = self else {
+            return Ok(());
+        };
+        let signal_result = match child.kill() {
+            #[cfg(unix)]
+            Err(error) if error.raw_os_error() == Some(nix::errno::Errno::EPERM as i32) => {
+                if child
+                    .try_wait()
+                    .map_err(|error| AdapterError::WaitFailed(error.to_string()))?
+                    .is_some()
+                {
+                    child.kill()
+                } else {
+                    Err(error)
+                }
+            }
+            result => result,
+        };
+        if let Err(error) = signal_result {
+            #[cfg(unix)]
+            let group_gone = error.raw_os_error() == Some(nix::errno::Errno::ESRCH as i32);
+            #[cfg(not(unix))]
+            let group_gone = error.kind() == std::io::ErrorKind::InvalidInput;
+            if !group_gone {
+                return Err(AdapterError::StopFailed(error.to_string()));
+            }
+        }
+        let status = child
+            .wait()
+            .map_err(|error| AdapterError::WaitFailed(error.to_string()))?;
+        *self = Self::Finished(status);
+        Ok(())
+    }
+
+    fn observe(&mut self) -> Result<SupervisorWorkerState, AdapterError> {
+        if let Self::Running(child) = self {
+            if child
+                .try_wait()
+                .map_err(|error| AdapterError::WaitFailed(error.to_string()))?
+                .is_none()
+            {
+                return Ok(SupervisorWorkerState::Started);
+            }
+            self.stop()?;
+        }
+        match self {
+            Self::Finished(status) if status.success() => Ok(SupervisorWorkerState::Completed),
+            Self::Finished(_) => Ok(SupervisorWorkerState::Failed),
+            Self::Running(_) => Ok(SupervisorWorkerState::Started),
+        }
+    }
 }
 
 impl ProcessWorkerAdapter {
@@ -103,53 +172,90 @@ impl WorkerAdapter for ProcessWorkerAdapter {
         }
         let child = Command::new(&assignment.command)
             .args(&assignment.args)
-            .spawn()
+            .current_dir(&assignment.working_directory)
+            .stdin(Stdio::null())
+            .env_clear()
+            .envs(std::env::vars_os().filter(|(name, _)| {
+                let name = name.to_string_lossy().to_ascii_uppercase();
+                !name.starts_with("ACKPLANE_")
+                    && !name.starts_with("MINDLEAK_ACKPLANE_")
+                    && !name.starts_with("LODESTAR_")
+                    && !matches!(name.as_str(), "DATABASE_URL" | "PGPASSWORD")
+            }))
+            .group_spawn()
             .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
-        self.workers.insert(assignment.worker_id, child);
+        self.workers
+            .insert(assignment.worker_id, WorkerProcess::Running(child));
         Ok(())
     }
 
     fn observe(&mut self, worker_id: &str) -> Result<SupervisorWorkerState, AdapterError> {
-        let child = self
-            .workers
+        self.workers
             .get_mut(worker_id)
-            .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?;
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => Ok(SupervisorWorkerState::Completed),
-            Ok(Some(_)) => Ok(SupervisorWorkerState::Failed),
-            Ok(None) => Ok(SupervisorWorkerState::Started),
-            Err(error) => Err(AdapterError::SpawnFailed(error.to_string())),
-        }
+            .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?
+            .observe()
     }
 
     fn terminate(&mut self, worker_id: &str) -> Result<(), AdapterError> {
-        let mut child = self
-            .workers
-            .remove(worker_id)
-            .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?;
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            // Already exited, and `try_wait` reaped it on the way past.
-            return Ok(());
-        }
-        child
-            .kill()
-            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))?;
-        // `kill` only signals. Without this the child stays a zombie on Unix,
-        // because `Child`'s `Drop` does not reap either.
-        child
-            .wait()
-            .map(|_| ())
-            .map_err(|error| AdapterError::SpawnFailed(error.to_string()))
+        self.workers
+            .get_mut(worker_id)
+            .ok_or_else(|| AdapterError::UnknownWorker(worker_id.to_string()))?
+            .stop()?;
+        self.workers.remove(worker_id);
+        Ok(())
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+impl Drop for ProcessWorkerAdapter {
+    fn drop(&mut self) {
+        for worker in self.workers.values_mut() {
+            let _ = worker.stop();
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    // macOS returned EPERM for an exited but unreaped group leader, withholding
+    // terminal receipts and lease release. Confirm the exit before retrying the signal.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn stopping_exited_leaders_handles_reaped_and_unreaped_groups() {
+        for reaped in [false, true] {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .arg("--list")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .group_spawn()
+                .unwrap();
+            let group_id = child.id();
+            if reaped {
+                assert!(child.wait().unwrap().success());
+            } else {
+                use rustix::process::{waitid, Pid, WaitId, WaitIdOptions};
+                let status = waitid(
+                    WaitId::Pid(Pid::from_raw(group_id as i32).unwrap()),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+                )
+                .unwrap()
+                .unwrap();
+                assert_eq!(status.exit_status(), Some(0));
+            }
+            let mut worker = WorkerProcess::Running(child);
+            assert_eq!(worker.stop(), Ok(()), "group {group_id}, reaped={reaped}");
+            assert_eq!(worker.observe(), Ok(SupervisorWorkerState::Completed));
+            assert_eq!(worker.observe(), Ok(SupervisorWorkerState::Completed));
+            worker.stop().unwrap();
+        }
+    }
 
     /// Reads `/proc` directly rather than asserting `terminate` returned `Ok`:
     /// the un-reaped case also returns `Ok`, so only the process table can
     /// tell the fix from the bug.
+    #[cfg(target_os = "linux")]
     #[test]
     fn terminate_reaps_the_child_rather_than_leaving_a_zombie() {
         let mut adapter = ProcessWorkerAdapter::new();
@@ -158,9 +264,13 @@ mod tests {
                 worker_id: "w1".to_string(),
                 command: "/bin/sleep".to_string(),
                 args: vec!["30".to_string()],
+                working_directory: std::env::temp_dir(),
             })
             .expect("a long-running child should spawn");
-        let pid = adapter.workers["w1"].id();
+        let WorkerProcess::Running(child) = &adapter.workers["w1"] else {
+            panic!("fixture worker should still be running");
+        };
+        let pid = child.id();
 
         adapter.terminate("w1").expect("terminate should succeed");
 

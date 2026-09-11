@@ -30,17 +30,15 @@ const MAX_RESEND_BATCH: u32 = 32;
 /// outbox from a safeguard into a source of duplicates.
 pub(super) fn enqueue_receipt(
     outbox: &SupervisorOutbox,
-    mut receipt: v1::DirectiveReceipt,
+    receipt: v1::DirectiveReceipt,
 ) -> Result<(u64, v1::DirectiveReceipt), DaemonError> {
-    let sequence = outbox.positions()?.last_enqueued.saturating_add(1);
-    receipt.outbox_sequence = Some(sequence);
-    outbox.enqueue(
-        sequence,
-        &v1::NodeFrame {
-            frame: Some(v1::node_frame::Frame::DirectiveReceipt(receipt.clone())),
-        },
-    )?;
-    Ok((sequence, receipt))
+    let queued = outbox.enqueue_next(v1::NodeFrame {
+        frame: Some(v1::node_frame::Frame::DirectiveReceipt(receipt)),
+    })?;
+    match queued.frame.frame {
+        Some(v1::node_frame::Frame::DirectiveReceipt(receipt)) => Ok((queued.sequence, receipt)),
+        _ => Err(DaemonError::Outbox(crate::OutboxError::UnsupportedFrame)),
+    }
 }
 
 /// Resend every frame this supervisor queued but never got confirmed.
@@ -71,30 +69,20 @@ pub async fn resend_pending(
     );
     for queued in pending {
         let sequence = queued.sequence;
-        match connection.exchange_supervisor_frame(queued.frame).await {
+        match connection.exchange_outbox_frame(queued.frame).await {
             Ok(_) => {
                 outbox.acknowledge_through(sequence)?;
             }
-            // A frame the server refuses outright will be refused again on
-            // every reconnect. Retrying it forever would wedge the daemon in a
-            // reconnect loop and block every later frame behind it, so it is
-            // dropped from the queue -- loudly, because a receipt Ackplane
-            // will not accept is a real problem, just not one more attempts
-            // can fix. `retryable` is the server's own judgement of which case
-            // this is, so it decides rather than this code guessing.
             Err(ClientError::FrameRefused {
                 reason,
                 retryable: false,
                 diagnostic,
             }) => {
-                tracing::error!(
+                return Err(DaemonError::RejectedFrame {
                     sequence,
-                    ?reason,
-                    %diagnostic,
-                    "Ackplane permanently refused a queued supervisor frame; dropping it \
-                     rather than resending it forever"
-                );
-                outbox.acknowledge_through(sequence)?;
+                    reason,
+                    diagnostic,
+                });
             }
             Err(error) => {
                 tracing::info!(%error, "the supervisor connection closed while resending");

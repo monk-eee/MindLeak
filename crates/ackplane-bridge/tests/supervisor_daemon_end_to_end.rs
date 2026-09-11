@@ -110,6 +110,7 @@ fn config(
         supervisor_id: format!("supervisor-{unique}"),
         state_dir: std::env::temp_dir().join(format!("ackplane-supervisor-{unique}")),
         heartbeat_interval: Duration::from_secs(30),
+        workers: Default::default(),
     }
 }
 

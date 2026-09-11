@@ -72,6 +72,7 @@ pub(super) async fn acknowledgement(
     tenant_id: &str,
     repository_id: &str,
     supervisors: &SupervisorStore,
+    commands: Option<&crate::work_command_store::WorkCommandService>,
 ) -> Result<v1::AckplaneFrame, IngressError> {
     let AcceptedReceipt {
         outcome,
@@ -86,6 +87,16 @@ pub(super) async fn acknowledgement(
             "directive receipt is not authorized for this authenticated connection",
         ))?;
     let supervisor_id = session.session.supervisor_id;
+    if let Some(commands) = commands {
+        commands
+            .apply_directive_receipt(&outcome.record)
+            .await
+            .map_err(|_| {
+                IngressError::Unavailable(
+                    "Work could not apply the stored directive receipt; retry delivery",
+                )
+            })?;
+    }
     // ADR-0146 decision 3. This runs only after `record_receipt` committed, so
     // the position advances on durable acceptance and never on a frame that
     // was merely received. A frame carrying no sequence advances nothing --

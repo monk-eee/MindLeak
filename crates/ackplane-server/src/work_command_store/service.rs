@@ -96,6 +96,16 @@ impl WorkCommandService {
         })
     }
 
+    pub(crate) async fn apply_directive_receipt(
+        &self,
+        record: &crate::directive_store::DirectiveReceiptRecord,
+    ) -> Result<(), WorkCommandServiceError> {
+        self.store
+            .apply_directive_receipt(&record.receipt, record.recorded_at)
+            .await?;
+        Ok(())
+    }
+
     /// Checks identity and scope before the immutable command ledger is read or written.
     pub async fn submit(
         &self,
