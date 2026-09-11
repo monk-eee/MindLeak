@@ -139,6 +139,13 @@ continue to give every slot a separate checkout or worktree.
   renewed; failed renewal stops the owned worker rather than inventing authority.
   Frames accepted by the server whose acknowledgements were lost remain in the
   outbox and are replayed idempotently, including during shutdown.
+- **Queued frame permanently rejected** - stops delivery with the rejected
+  sequence, server reason and diagnostic. The rejected frame and all later
+  frames stay in the durable outbox; the acknowledged position advances only
+  through the accepted prefix. Preserve the outbox and any worker-run marker
+  for operator recovery. A refusal is not an acknowledgement, and restarting
+  does not repair invalid evidence. Retryable refusals retain the same bytes
+  and follow the existing reconnect path.
 - **Unaccounted previous run** - refuses to reuse that worker slot. Its
   `<slot>.worker-run.json` marker identifies the session, workspace and durable
   queue files. Preserve that evidence and inspect the old process tree and
@@ -188,6 +195,11 @@ contract, not a live vendor model or its login/tool-permission configuration.
 database or live server. It launches real supervisor processes to verify
 duplicate startup refusal, idle process-death restart and independent state
 directory concurrency.
+
+`cargo test --locked -p ackplane-supervisor --test outbox_rejection` uses the
+isolated database to verify real authenticated permanent and retryable server
+refusals, the accepted position, and byte-preserving outbox reopen. It confirms
+that a rejected frame cannot be skipped to transmit later evidence.
 
 ### Live Agent Check
 

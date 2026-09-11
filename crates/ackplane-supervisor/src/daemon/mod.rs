@@ -58,6 +58,12 @@ pub enum DaemonError {
     Inbox(#[from] InboxError),
     #[error("the durable outbox could not be opened: {0}")]
     Outbox(#[from] OutboxError),
+    #[error("Ackplane permanently rejected outbox frame {sequence} ({reason:?}): {diagnostic}; queued evidence retained for operator recovery")]
+    RejectedFrame {
+        sequence: u64,
+        reason: ackplane_protocol::v1::RejectionReason,
+        diagnostic: String,
+    },
     #[error("the supervisor clock is outside the representable range")]
     Clock,
 }

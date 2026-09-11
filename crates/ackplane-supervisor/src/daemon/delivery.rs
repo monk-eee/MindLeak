@@ -73,26 +73,16 @@ pub async fn resend_pending(
             Ok(_) => {
                 outbox.acknowledge_through(sequence)?;
             }
-            // A frame the server refuses outright will be refused again on
-            // every reconnect. Retrying it forever would wedge the daemon in a
-            // reconnect loop and block every later frame behind it, so it is
-            // dropped from the queue -- loudly, because a receipt Ackplane
-            // will not accept is a real problem, just not one more attempts
-            // can fix. `retryable` is the server's own judgement of which case
-            // this is, so it decides rather than this code guessing.
             Err(ClientError::FrameRefused {
                 reason,
                 retryable: false,
                 diagnostic,
             }) => {
-                tracing::error!(
+                return Err(DaemonError::RejectedFrame {
                     sequence,
-                    ?reason,
-                    %diagnostic,
-                    "Ackplane permanently refused a queued supervisor frame; dropping it \
-                     rather than resending it forever"
-                );
-                outbox.acknowledge_through(sequence)?;
+                    reason,
+                    diagnostic,
+                });
             }
             Err(error) => {
                 tracing::info!(%error, "the supervisor connection closed while resending");
