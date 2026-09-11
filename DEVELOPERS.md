@@ -204,6 +204,7 @@ these commands with the deployment's values:
 ```text
 cargo run --locked -p ackplane-server --bin register-me -- request --tenant-id TENANT_ID --repo REPOSITORY_ID --node NODE_ID --provider credential-facility-software --state-dir ABSOLUTE_STATE_DIR --grpc-endpoint https://ackplane.example:8443
 cargo run --locked -p ackplane-server --bin register-me -- activate --request-id REQUEST_ID --state-dir ABSOLUTE_STATE_DIR
+cargo run --locked -p ackplane-server --bin register-me -- serve --state-dir ABSOLUTE_STATE_DIR
 ```
 
 Between those commands an independent administrator must approve the exact
@@ -219,11 +220,43 @@ reuses the same key ID, receipt and enrollment event. `--skip-sync` reports a
 recorded activation only, not current authority. An explicit `--grpc-endpoint`
 may be supplied on activation for a relocated authority using the same binding.
 
-Raw `--key-path` options are rejected and existing seed files are not imported.
-Do not copy a seed into dotenv to bridge old callers. The supervisor and the
-MCP enrollment-status loader still require adoption of this provider lifecycle;
-successful CLI enrollment does not complete that handoff. Missing credentials
-must be restored, never replaced implicitly.
+The final command stays running and retains the provider's exclusive process
+lock. Use the same built `register-me` executable for enrollment and serving,
+including on macOS where credential access is associated with executables.
+`serve` verifies current authority before reporting readiness. An explicit
+`--grpc-endpoint` can select a relocated authority; TLS CA configuration belongs
+to this process, not its local consumers.
+
+Configure the supervisor, federated Lodestar and MCP front door with these
+non-secret values using your environment/task runner:
+
+| Variable | Value |
+| --- | --- |
+| `MINDLEAK_ACKPLANE_STATE_DIR` | The same absolute node state directory passed to `serve`. |
+| `MINDLEAK_ACKPLANE_TENANT_ID` | The enrolled tenant. |
+| `MINDLEAK_ACKPLANE_REPOSITORY_ID` | The enrolled repository. |
+
+The supervisor also needs `ACKPLANE_SUPERVISOR_ID` and its own durable state
+directory/worker configuration; see its [runner guide](crates/ackplane-supervisor/README.md).
+The MCP pilot still requires a loopback `ACKPLANE_MCP_ENDPOINT`, which must
+exactly match the companion's endpoint. An endpoint mismatch is refused on
+every call, not only at startup. Federated coordination retains its existing
+explicit mode/readiness configuration; standalone local planes need no companion.
+
+All private-key reads and outbound authenticated operations stay in the companion.
+Unix uses an owner-only state directory/socket; Windows uses a local named pipe
+whose protected DACL grants the process user only and denies network identities.
+There is no TCP listener, signing oracle or reusable bearer token. At most 32
+streams run concurrently, with separate capacity for short-lived control calls.
+
+Raw key paths and legacy runtime node/key/seed overrides are refused, not
+imported or used as fallbacks. Missing credentials must be restored, never
+replaced implicitly. The companion checks provider availability and opens a fresh
+authority handshake every second (five-second remote deadline); a failed check
+closes streams and exits unsuccessfully. The supervisor stops owned workers and
+retains unacknowledged evidence when the companion disappears. Restarting an idle
+companion preserves identity and recovers its stale socket; worker recovery
+markers still require the existing operator workflow.
 
 ## The delivery queue
 

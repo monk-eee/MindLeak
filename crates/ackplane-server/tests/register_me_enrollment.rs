@@ -7,6 +7,8 @@ use ackplane_server::{
 };
 use serde_json::Value;
 
+#[path = "register_me_enrollment/companion_tests.rs"]
+mod companion_tests;
 #[path = "register_me_enrollment/request_tests.rs"]
 mod request_tests;
 #[path = "register_me_enrollment/support.rs"]
@@ -251,6 +253,8 @@ async fn assert_activation_recovery(
         1,
         "replay must not provision a replacement key"
     );
+    drop(connection);
+    companion_tests::exercise(&directory, &endpoint, &tenant, &pool, dropped.is_some()).await;
     shutdown_tx.send(()).unwrap();
     server.await.unwrap();
 }

@@ -329,8 +329,8 @@ rebuild that would not help.
 
 ### `ackplane-node` (library)
 
-The repository-side identity owner's building blocks (ADR-0100), not yet a
-runnable companion integrated with the local planes or supervisor. `NodeSigner`
+The repository-side identity owner (ADR-0100), run by `register-me serve`
+and shared by the supervisor, federated Lodestar and MCP front door. `NodeSigner`
 exposes public identity and scoped signatures without a private-key export API.
 `SoftwareProvider` is memory-only. The explicitly selected `CredentialProvider`
 is recovered only after activation. First creation uses `CredentialCandidate`,
@@ -361,7 +361,24 @@ future can run on a runtime worker rather than losing thread-safety at trait
 erasure. Credential loading and signing share one internal
 storage implementation with activation and `NodeSigner`. This operation exposes
 no new generic signing API. Its caller must retain the provider as credential
-owner; companion orchestration and already-open stream lifecycle remain unwired.
+owner. `companion/mod.rs` owns the listener, bounded client lifetimes and health
+checks; `requests.rs`, `operations.rs` and `constitution.rs` construct closed
+domain calls, while `relay.rs` enforces supervisor/session/worker scope before
+forwarding allowed runtime frames. The shared client wire caps messages at one
+MiB. There are at most 32 streams and 64 total clients, reserving capacity for
+short-lived control requests. No IPC request signs arbitrary bytes, changes key
+lifecycle or exports credentials.
+
+`endpoint.rs` uses an owner-only Unix directory/socket, refuses symlinks and live
+endpoint replacement, and recovers a stale owned socket only while provider
+ownership is retained. Windows `windows.rs` obtains the process token's user SID
+and supplies a protected named-pipe DACL for that user with an explicit network
+deny; the transport rejects remote clients. A fresh remote authority check runs
+each second with a five-second network deadline. A failed check aborts local
+streams and terminates the service. Recovery preserves the same credential and
+binding. Native tests prove process restart, lost credentials and server revocation;
+the supervisor's real worker tests prove that local owner loss stops execution
+and retains unconfirmed cleanup evidence.
 
 The provider holds a kernel-backed repository file lock for its lifetime and
 refuses persistent rotation, retirement and destruction until those operations
@@ -375,8 +392,9 @@ Credential Manager. Linux Secret Service
 uses the same adapter but requires an available service for the opt-in native
 test. This is software key custody, not hardware non-exportability. The
 `register-me` CLI now provisions and recovers this provider, records the public
-request before transmission and delegates activation/replay to it. The supervisor,
-local planes and long-lived companion orchestration still need to adopt it. The lock
+request before transmission and delegates activation/replay to it. The supervisor
+and federated local-plane claim path use `ackplane-client::companion::NodeClient`
+instead of loading a key. Standalone mode remains independent. The lock
 coordinates cooperating processes on a local filesystem, not distributed hosts.
 Stop older marker-only node processes before
 upgrading; a live older process does not hold the new kernel lock.
@@ -572,8 +590,8 @@ atomically consumes it while recording `activating`. Key rotation remains
 explicitly unavailable until the continuity proof required by ADR-0085 is
 implemented.
 
-`register-me` (`src/bin/register-me/main.rs`) drives `request`, `approve` and
-`activate`. Request explicitly selects `credential-facility-software` and an
+`register-me` (`src/bin/register-me/main.rs`) drives `request`, `approve`,
+`activate` and the long-lived `serve` command. Request explicitly selects `credential-facility-software` and an
 absolute user-local `--state-dir`; no seed-file path or implicit provider is
 accepted. `provider.rs` selects only fresh provisioning or recovery of the
 existing candidate. `request.rs` atomically persists an immutable public
@@ -591,8 +609,12 @@ no key bytes, challenge copy or second activation record; those belong to the
 provider. `--skip-sync` reports recorded activation only. Real subprocess tests
 exercise request and activation lost replies, failed sync, repeated activation
 and credential loss. Linux database tests run under an isolated Secret Service;
-Windows and macOS explicitly require native CLI restart in CI. Supervisor and
-enrollment-status tool adoption remain separate STAB-02 work.
+Windows and macOS explicitly require native CLI restart in CI. `serve.rs`
+recovers the exact provider, verifies current authority, binds the protected
+local endpoint and retains custody until shutdown. Enrollment and serving use
+the same executable identity. Supervisor, status and federated claim callers
+resolve non-secret state-directory/tenant/repository configuration through
+`node_identity::resolve_node_client`; legacy seed and key-ID overrides refuse.
 
 `KnowledgeService` (`knowledge_store.rs`/`knowledge_service.rs`) is the first
 slice of Ackplane's PostgreSQL-backed knowledge domain (ADR-0106 decision 3;
@@ -1056,15 +1078,14 @@ neither today's enrolled-node possession proof nor Bridge's loopback
 developer token fits an arbitrary MCP client, so `endpoint::resolve_endpoint`
 refuses a non-loopback target rather than send that proof somewhere no
 decision has authorized yet. ADR-0137 resolved the authenticated-principal
-question by reusing the enrolled node's own Ed25519 key rather than minting a
-new principal type: when an operator declares that node's identity via the
-same `MINDLEAK_ACKPLANE_*` variables `ackplane-supervisor` and
-`lodestar-mcp`'s federated claim path already read
-(`ackplane_client::node_identity`), `node_trust::establish` completes the same
-`NodeSync` connection-challenge handshake `ackplane-supervisor` performs at
-startup, and this front door refuses to serve if that proof fails -- a
-declared-but-unconfigured process is unaffected (today's status quo), a
-named, deliberate limitation rather than a silent one pending a later slice.
+question by reusing the enrolled node's authority rather than minting a new
+principal type. `node_trust::establish` now requests an authenticated connection
+through the node companion, never reading its Ed25519 key. Missing companion
+configuration or failed proof refuses all tool calls. Each read uses the same
+scoped IPC client and carries the front door's expected endpoint, preventing a
+different companion target from bypassing the loopback policy. Enrollment status
+is signed inside the companion and reports a state only when the arbiter verifies
+the binding. Session identities remain independent declarations, not node authority.
 A `pgvector`-backed recall store
 scoped to `projected_nodes` rather than the curated `knowledge` domain
 (ADR-0140) remains open before this front door is usable end-to-end beyond

@@ -1,29 +1,20 @@
 //! `ackplane-node`: the repository-side identity owner (ADR-0100).
 //!
-//! Building blocks for the companion ADR-0100 assigns ownership of enrolled
-//! identity and outbound clients. This library is not yet a runnable companion
-//! integrated with the local planes or supervisor.
+//! `register-me serve` runs this crate's provider-owning companion. Local
+//! runtimes use bounded, scoped domain operations over a protected Unix socket
+//! or Windows named pipe, never private-key access or a generic signing oracle.
+//! Provider loss or refusal of enrolled authority closes every active stream.
 //!
-//! This crate also ships a repository-scoped local IPC endpoint (`ipc`,
-//! ADR-0100 decision 4): a Windows named pipe or a Unix-domain socket that
-//! accepts only the closed `NodeSigner` operations above, never a TCP
-//! listener and never a reusable bearer token; and enrolment + restart
-//! identity recovery (`enrolment`, ADR-0100 decision 7). `CredentialProvider`
-//! explicitly selects software signing with an OS-credential-backed seed and
-//! checked restart identity. It exports no key through `NodeSigner`, but is not
-//! a hardware non-exportable key. `CredentialCandidate` persists enrollment
-//! challenges and binds accepted authority responses to that same key. Request
-//! orchestration, runtime integration, persistent rotation, and hardware/workload
-//! providers remain separate requirements. `CredentialProvider::open_connection`
-//! authenticates through the reusable client with a private, fallible signer
-//! adapter and the provider's recorded binding.
+//! `CredentialProvider` explicitly selects software custody in the OS credential
+//! facility. It is not a hardware non-exportable key. Recovery checks the exact
+//! public binding and activation receipt; persistent rotation and hardware
+//! providers remain separate requirements.
 
+pub mod companion;
 mod enrolment;
 mod process_lock;
 mod provider;
 mod signer;
-
-pub mod ipc;
 
 pub use enrolment::{
     EnrollmentActivation, EnrollmentChallengeRecord, EnrolmentError, EnrolmentRecord,

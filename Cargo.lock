@@ -36,7 +36,9 @@ dependencies = [
  "ackplane-server",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "interprocess",
  "keyring",
+ "prost",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -62,12 +64,14 @@ name = "ackplane-mcp"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "ackplane-server",
  "anyhow",
  "ed25519-dalek",
  "mindleak-session",
  "serde_json",
+ "tempfile",
  "thiserror",
  "time",
  "tokio",
@@ -88,14 +92,19 @@ dependencies = [
  "getrandom 0.2.17",
  "interprocess",
  "keyring",
+ "prost",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror",
+ "time",
  "tokio",
  "tokio-stream",
  "tonic",
+ "widestring",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -148,11 +157,13 @@ name = "ackplane-supervisor"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "ackplane-server",
  "command-group",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "interprocess",
  "nix 0.27.1",
  "prost",
  "rusqlite",
@@ -1580,8 +1591,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "798de1433ba514cc6c04c4144c2469af81396e4906195218737c776d47769572"
 dependencies = [
  "doctest-file",
+ "futures-core",
  "libc",
  "recvmsg",
+ "tokio",
  "widestring",
  "windows-sys 0.61.2",
 ]
@@ -1735,6 +1748,7 @@ version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
  "ackplane-core",
+ "ackplane-node",
  "ackplane-protocol",
  "ackplane-server",
  "anyhow",
@@ -1744,6 +1758,7 @@ dependencies = [
  "mindleak-storage",
  "serde",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
  "tokio-postgres",

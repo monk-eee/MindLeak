@@ -13,14 +13,25 @@ ackplane-protocol = { path = "../ackplane-protocol" }
 ed25519-dalek = { version = "2.1", features = ["zeroize"] }
 fs2 = "0.4.3"
 getrandom = "0.2"
-interprocess = "2"
+interprocess = { version = "2", features = ["tokio"] }
 keyring = "2.3.3"
+prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile = "3"
 thiserror = { workspace = true }
+time = { version = "0.3.47", features = ["formatting"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "io-util", "signal"] }
+tonic = { workspace = true }
 zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["process"] }
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
 [dev-dependencies]
 ackplane-server = { path = "../ackplane-server" }

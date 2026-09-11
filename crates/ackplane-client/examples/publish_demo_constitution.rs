@@ -1,14 +1,11 @@
 //! Publish the bounded demo policy through the real authenticated service.
 //! Uses the supervisor's enrolled-node environment and never accesses PostgreSQL.
 
-use std::{error::Error, time::Duration};
+use std::error::Error;
 
-use ackplane_client::{connect_channel, resolve_node_identity};
-use ackplane_protocol::{
-    constitution_auth::{constitution_signing_bytes, ConstitutionOperation},
-    v1::{self, constitution_service_client::ConstitutionServiceClient},
-};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use ackplane_client::{companion::wire::Operation, resolve_node_client};
+use ackplane_protocol::v1;
+use prost::Message;
 
 fn demo_snapshot(
     tenant_id: &str,
@@ -51,56 +48,20 @@ fn demo_snapshot(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let identity = resolve_node_identity(&|name| std::env::var(name).ok())?;
-    let mut snapshot = demo_snapshot(&identity.tenant_id, &identity.repository_id)?;
-    let signer = identity.signer()?;
-    let endpoint = std::env::var("MINDLEAK_ACKPLANE_ENDPOINT")?;
-    let mut client = ConstitutionServiceClient::new(connect_channel(&endpoint).await?);
-    let authenticate = |operation: ConstitutionOperation<'_>| -> Result<_, Box<dyn Error>> {
-        let mut nonce = vec![0_u8; 16];
-        getrandom::getrandom(&mut nonce)?;
-        let mut authentication = v1::ConstitutionAuthentication {
-            signing_key_id: signer.signing_key_id().into(),
-            node_id: signer.node_id().into(),
-            signed_at: OffsetDateTime::now_utc().format(&Rfc3339)?,
-            nonce,
-            signature: Vec::new(),
-        };
-        authentication.signature = signer.sign(&constitution_signing_bytes(
-            &identity.tenant_id,
-            &identity.repository_id,
-            &operation,
-            &authentication,
-        ))?;
-        Ok(authentication)
-    };
-    let existing = tokio::time::timeout(
-        Duration::from_secs(15),
-        client.get_active_constitution(v1::GetActiveConstitutionRequest {
-            tenant_id: identity.tenant_id.clone(),
-            repository_id: identity.repository_id.clone(),
-            authentication: Some(authenticate(ConstitutionOperation::GetActive)?),
-        }),
-    )
-    .await??
-    .into_inner();
+    let node = resolve_node_client(&|name| std::env::var(name).ok())?;
+    let snapshot = demo_snapshot(&node.tenant_id, &node.repository_id)?;
+    let existing: v1::GetActiveConstitutionResult =
+        node.protobuf(Operation::ConstitutionActive).await?;
     if existing.found {
         return Err(
             "a constitution is already published; this example will not overwrite it".into(),
         );
     }
-    snapshot.authentication = Some(authenticate(ConstitutionOperation::Publish {
-        version_id: &snapshot.version_id,
-        version: snapshot.version,
-        status: &snapshot.status,
-        clause_count: snapshot.clauses.len() as u32,
-    })?);
-    let published = tokio::time::timeout(
-        Duration::from_secs(15),
-        client.publish_constitution_snapshot(snapshot),
-    )
-    .await??
-    .into_inner();
+    let published: v1::PublishConstitutionSnapshotResult = node
+        .protobuf(Operation::ConstitutionPublish {
+            snapshot: snapshot.encode_to_vec(),
+        })
+        .await?;
     if !published.published {
         return Err("server did not confirm publication".into());
     }

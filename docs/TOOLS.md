@@ -238,27 +238,22 @@ possession proof off the machine under an authentication model that has not
 been decided yet. Set `ACKPLANE_MCP_ENDPOINT` to point at a local arbiter;
 it defaults to `http://127.0.0.1:8443`.
 
-**Node-level connection trust (ADR-0137 clause 1):** at startup, when an
-operator declares an enrolled node's identity via the same
-`MINDLEAK_ACKPLANE_TENANT_ID`/`_REPOSITORY_ID`/`_NODE_ID`/`_SIGNING_KEY_ID`/
-`_NODE_SIGNING_KEY_SEED` variables `ackplane-supervisor` and `lodestar-mcp`'s
-federated claim path already read, `ackplane-mcp` completes the same
-`Hello -> ConnectionChallenge -> ChallengeResponse -> HelloAccepted` handshake
-`ackplane-supervisor` performs, proving possession of that node's Ed25519 key
-before serving any tool call; a declared identity that fails this proof
-refuses the whole process, exactly like the endpoint refusal above. A process
-with no node identity declared at all is unaffected by this check today (a
-named, deliberate limitation of this slice, not a silent one) — the same node
-identity, once declared, also lets `open_session` layer an independently-
-declared agent identity on top (clause 2), so one long-lived `ackplane-mcp`
-binary serves multiple concurrent callers distinguished only by their
-registered `session_id`. Set `ACKPLANE_MCP_AGENT` to label this process's
-sessions in reports; it is never part of the agent id.
+**Node-level connection trust (ADR-0137 clause 1):** configure
+`MINDLEAK_ACKPLANE_STATE_DIR`, `MINDLEAK_ACKPLANE_TENANT_ID` and
+`MINDLEAK_ACKPLANE_REPOSITORY_ID` for the running `register-me serve` companion.
+Startup requires a fresh authenticated connection through that owner. Missing
+configuration or failed proof refuses tool calls; there is no unconfigured
+trust bypass or local seed/keychain fallback. Every query also pins the
+companion to `ACKPLANE_MCP_ENDPOINT`, which must match its actual endpoint.
+See [provider-backed enrollment](../DEVELOPERS.md#provider-backed-enrollment).
+`open_session` layers independent agent declarations on top, so one front door
+serves concurrent callers distinguished by registered `session_id` values.
+`ACKPLANE_MCP_AGENT` labels reports and is never part of the agent id.
 
 | Tool                       | Purpose                                                                                                                                                                                                                                                                                        |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `open_session`             | Register this MCP client session's identity (ADR-0137 clause 2), using the same shared `mindleak-session` registry and `session:v1:<hex>` identity form `mindleak-mcp`/`lodestar-mcp` already use. Optional working-context fields (`branch`, `head_sha`, `base`, `dirty`, `behind`) are declared by the client, never detected by the server, and echoed back only when declared. No Ackplane endpoint is consulted: opening a session grants no arbiter-side authority by itself. |
-| `check_enrollment_status`  | Ask Ackplane whether this repository's candidate (node, key) binding is enrolled right now, translating `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122). The verdict is the arbiter's and is never recomputed locally. This tool still uses the legacy candidate-file loader and does not yet read provider-backed `register-me` state; without that legacy candidate it reports unable to ask, not an authoritative "not enrolled" verdict. Provider/companion adoption remains open. `state` is returned only when `verified` is true, because ADR-0122 decision 5 makes it meaningless otherwise. |
+| `check_enrollment_status`  | Ask Ackplane about the companion's provider-backed (node, key) binding, translating `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122). The companion signs the request; the front door never reads a private key or legacy candidate file. An unavailable companion reports unable to ask, not an authoritative "not enrolled" verdict. `state` is returned only when the arbiter says `verified: true`. |
 | `active_claims`            | List the claims Ackplane currently arbitrates for this repository, translating `ClaimDelegationService.ListActiveClaims` (ADR-0096, ADR-0139 clause 1). Read-only and unsigned: the request carries no `ClaimAuthentication` because it asks only what the arbiter already states about its own arbitration, and grants no authority. Scope comes from `MINDLEAK_ACKPLANE_TENANT_ID` and `MINDLEAK_ACKPLANE_REPOSITORY_ID`; either being unset is refused by name rather than asked with a blank scope, which would return an empty list indistinguishable from "no claims". This reports the arbiter's view, not Lodestar's board — the two answer different questions. |
 | `task_query`               | Read Ackplane's read-only Industrial Work projection, translating `WorkQueryService` (ADR-0139 clause 2) exactly as Bridge's first Work read surface already does. `view` selects the question: `list` (a paged/filterable task list, optionally by `state`, following ADR-0112's pagination discipline), `detail` (requires `task_id`; task, acceptance, event history, and waits), or `doctor` (Board Doctor findings — missing publication, impossible state/lease combinations, unresolved waits, and declared scope overlap). Every `list` answer names ADR-0120 decision 6's publication state (`current`/`claims_only`/`not_published` today — `lagging`/`unavailable` are not yet computed by any read surface). Same scope discipline as `active_claims`: an unset `MINDLEAK_ACKPLANE_TENANT_ID`/`MINDLEAK_ACKPLANE_REPOSITORY_ID` is refused rather than asked with a blank scope. This is materially narrower than Lodestar's own `task_query` (ADR-0139 clause 6): no create, mutation, conformance, or goal/constitution body. |
 

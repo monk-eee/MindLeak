@@ -50,7 +50,7 @@ repository. They are provisional, not deadlines; reassess after STAB-03.
 | Task | Ledger ID | Status | Estimate | Acceptance Summary |
 | --- | --- | --- | --- | --- |
 | STAB-01: Reproducible build and database gate | `task:52eb3f6d82bd` | Merged, CI passed, required check enabled | 1-3 days | Fail closed without database/recovery prerequisites; migrate explicitly; compile every target; run all-feature workspace tests against disposable Postgres in CI and locally. |
-| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: provider activation and restart; runtime handoff open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
+| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: companion runtime handoff tested; installation and review open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
 | STAB-03: Real worker execution and isolation | `task:df1e790eefca` | Queued after STAB-02 | 5-10 days | Addressed, authenticated work drives a real configured worker with bounded current context in its own worktree; two-node isolation and peer-impersonation refusals pass. |
 | STAB-04: Completion and restart recovery | `task:a200ebd9ec16` | Queued after STAB-03 | 5-8 days | Attributed evidence and conformance govern completion; crashes, reconnects, duplicate messages, expired claims and lost outbox state cannot silently lose or repeat work. |
 | STAB-05: Shared context and honest freshness | `task:8edce4b7d4a9` | Queued after STAB-04 | 4-7 days | Enrolled-node embedding production feeds shared recall; invalidation, cross-tenant refusal and explicit unembedded/stale/unavailable states are tested. Resolve the Work freshness design mismatch explicitly. |
@@ -189,10 +189,9 @@ bootstrap expiry checks remain in force; this is recovery of a recorded result,
 not permission to reactivate an expired enrollment or claim current authority.
 
 Losing the whole sidecar, including the retry nonce, still requires restoring
-the protected enrollment state. Saving a receipt is not signer provisioning; see the
-[runtime identity handoff gap](../gaps.d/enrollment-runtime-identity-handoff-is-not-wired.md).
-That remains STAB-02 work, not an invitation to generate a new key or to copy a
-private seed into dotenv.
+the protected enrollment state. Saving a receipt is not signer provisioning;
+the current [Node Companion](#node-companion) completes the runtime handoff
+without a copied seed or replacement identity.
 
 ## Persistent Node Provider
 
@@ -335,9 +334,10 @@ requested capabilities were echoed by `HelloAccepted`; it was corrected to the
 server's existing explicit-enablement contract without changing server behavior.
 One full-run attempt stopped on the unchanged worker-adapter test's
 fixed-delay completion assertion (`Started` instead of `Completed`); the test
-passed alone and in the unchanged full-suite rerun. That intermittent failure is recorded separately in
-`gaps.d/worker-adapter-exit-assertion-uses-fixed-delay.md` and reported to the
-runtime workstream, not fixed or suppressed by this signing change.
+passed alone and in the unchanged full-suite rerun. The runtime workstream
+subsequently replaced the fixed delay with TCP readiness and bounded exit
+observation in PR #922. That exact fix is now included in this integration,
+so its gap fragment is closed because the fix landed, not because a rerun passed.
 
 This removes the client-signing blocker, not the remaining installer or companion
 work. The caller must retain the provider's ownership while using its connection.
@@ -389,7 +389,54 @@ removed by their exact test handles without reading passwords; successful tests
 now verify cleanup, and the disposable test database was removed.
 
 See [Provider-backed enrollment](../DEVELOPERS.md#provider-backed-enrollment)
-for commands. This still does not wire the supervisor or MCP enrollment-status
-loader to provider state, establish production administrator authentication,
-or implement the long-lived companion and its stream-revocation lifecycle.
-STAB-02 remains open.
+for current commands. The following companion checkpoint supersedes this
+historical CLI-only runtime boundary. Production administrator authentication
+and clean installation qualification remain open.
+
+## Node Companion
+
+`register-me serve --state-dir ABSOLUTE_STATE_DIR` now retains the activated
+provider as a long-lived identity and connection owner. The supervisor, MCP
+front door and federated Lodestar resolve only the same directory, tenant and
+repository. They do not load private keys. The existing demo constitution
+publisher uses closed companion operations too. Legacy runtime node/key/seed
+overrides and the old IPC signing/destruction surface are removed or refused.
+
+Protected Unix sockets and Windows named pipes carry bounded, versioned,
+repository-scoped requests. Supervisor streams additionally declare the exact
+supervisor/session/worker binding, preserving replay-before-session ordering.
+No Hello, challenge response, event batch or unrelated frame can be tunneled
+through this local surface. Authority refusal retains its non-retryable category;
+frame rejection remains a frame rejection so durable outboxes cannot skip it.
+Thirty-two streams leave capacity for short-lived status and lease operations.
+
+The node checks its provider and performs a fresh authority handshake every
+second, with a five-second remote deadline. A failed check closes existing
+streams and exits unsuccessfully. A supervisor that loses its local identity
+owner stops workers and retains unconfirmed cleanup evidence instead of running
+forever in a reconnect loop. Remote stream disconnects remain retryable while
+the companion is healthy. Recovery uses the same provider, receipt and key;
+an old worker marker is still not proof that its processes stopped.
+
+Validation includes real native enrollment and companion subprocess restart,
+verified status and supervisor frames, duplicate-owner refusal, full stream
+capacity, changed-endpoint refusal, credential removal and server key revocation.
+Fifteen real-worker scenarios exercise independent prompts, claims, context,
+durable outcomes, shutdown/replay and owner loss through IPC. The actual MCP
+process opens sessions and checks status beside a concurrent companion stream;
+federated claims round-trip through the real service and PostgreSQL. Generic
+signing, seed acceptance, cross-scope receipt forwarding, permission-refusal
+mapping and endless reconnect after companion loss have focused red/green
+regressions. The Windows ACL module and its test type-check for the Windows
+target; native Windows/Linux qualification is a CI gate, not implied by macOS.
+
+The final local industrial gate passed 2,689 tests with zero failures and three
+existing ignored tests across 85 targets. Both database gates and native
+credentials were required. Workspace all-target/all-feature Clippy passed with
+warnings denied; relative links, gap fragments and changelog fragments validated.
+
+STAB-02 is not complete. Clean-machine installation qualification and human
+conformance review of the provider stack remain open, including the recorded
+claim-lapse history and absent goal bindings. This checkpoint does not waive
+those findings, approve pending PRs, claim hardware non-exportability, or complete
+worker recovery and the later production-authentication/pilot milestones.

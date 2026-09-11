@@ -61,7 +61,7 @@ pub struct SigningBinding {
 pub struct Signature(Vec<u8>);
 
 impl Signature {
-    pub(crate) fn from_bytes(bytes: [u8; 64]) -> Self {
+    pub fn from_bytes(bytes: [u8; 64]) -> Self {
         Self(bytes.to_vec())
     }
 

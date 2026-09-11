@@ -6,12 +6,9 @@
 //! stays in `ackplane-server`, which is the whole point of a front door rather
 //! than a second storage core (ADR-0136 clause 6).
 
-use ackplane_client::identity::{
-    load_candidate_identity, resolve_key_path, signed_status_request, IdentityError,
-};
 use ackplane_client::{
-    ActiveClaimsRequest, ClaimClient, EnrollmentClient, ListWorkTasksRequest,
-    WorkBoardDoctorRequest, WorkQueryClient, WorkTaskDetailRequest,
+    companion::{wire::Operation, NodeClient},
+    resolve_node_client,
 };
 use ackplane_protocol::v1::EnrollmentState;
 use mindleak_session::{SessionContext, SessionRegistry};
@@ -174,19 +171,12 @@ fn active_claims<F>(endpoint: &str, environment: &F) -> Result<Value, String>
 where
     F: Fn(&str) -> Option<String>,
 {
-    let tenant_id = required(environment, TENANT_ID_ENV)?;
-    let repository_id = required(environment, REPOSITORY_ID_ENV)?;
-
-    let result = runtime()?
-        .block_on(async {
-            ClaimClient::connect(endpoint)
-                .await?
-                .list_active_claims(ActiveClaimsRequest {
-                    tenant_id,
-                    repository_id,
-                })
-                .await
-        })
+    required(environment, TENANT_ID_ENV)?;
+    required(environment, REPOSITORY_ID_ENV)?;
+    let mut node = resolve_node_client(environment).map_err(|error| error.to_string())?;
+    node.expected_endpoint = Some(endpoint.to_string());
+    let result: ackplane_client::ActiveClaimsResult = runtime()?
+        .block_on(node.protobuf(Operation::ActiveClaims))
         .map_err(|error| format!("could not reach Ackplane at {endpoint}: {error}"))?;
 
     Ok(json!({
@@ -214,17 +204,23 @@ fn task_query<F>(endpoint: &str, arguments: &Value, environment: &F) -> Result<V
 where
     F: Fn(&str) -> Option<String>,
 {
-    let tenant_id = required(environment, TENANT_ID_ENV)?;
-    let repository_id = required(environment, REPOSITORY_ID_ENV)?;
+    required(environment, TENANT_ID_ENV)?;
+    required(environment, REPOSITORY_ID_ENV)?;
     let view = arguments
         .get("view")
         .and_then(Value::as_str)
         .ok_or_else(|| "missing required string arg: view (list, detail, or doctor)".to_string())?;
 
+    let node = resolve_node_client(environment)
+        .map(|mut node| {
+            node.expected_endpoint = Some(endpoint.to_string());
+            node
+        })
+        .map_err(|error| error.to_string());
     match view {
-        "list" => list_work_tasks(endpoint, arguments, tenant_id, repository_id),
-        "detail" => get_work_task_detail(endpoint, arguments, tenant_id, repository_id),
-        "doctor" => get_work_board_doctor(endpoint, tenant_id, repository_id),
+        "list" => list_work_tasks(endpoint, arguments, node),
+        "detail" => get_work_task_detail(endpoint, arguments, node),
+        "doctor" => get_work_board_doctor(endpoint, node),
         other => Err(format!(
             "unrecognised task_query view: {other}. This tool serves list, detail, and doctor."
         )),
@@ -234,8 +230,7 @@ where
 fn list_work_tasks(
     endpoint: &str,
     arguments: &Value,
-    tenant_id: String,
-    repository_id: String,
+    node: Result<NodeClient, String>,
 ) -> Result<Value, String> {
     let state = arguments
         .get("state")
@@ -248,19 +243,12 @@ fn list_work_tasks(
         .and_then(Value::as_i64)
         .unwrap_or(0);
 
-    let result = runtime()?
-        .block_on(async {
-            WorkQueryClient::connect(endpoint)
-                .await?
-                .list_work_tasks(ListWorkTasksRequest {
-                    tenant_id,
-                    repository_id,
-                    state,
-                    page,
-                    page_size,
-                })
-                .await
-        })
+    let result: ackplane_client::ListWorkTasksResult = runtime()?
+        .block_on(node?.protobuf(Operation::WorkList {
+            state,
+            page,
+            page_size,
+        }))
         .map_err(|error| format!("could not reach Ackplane at {endpoint}: {error}"))?;
 
     Ok(json!({
@@ -275,8 +263,7 @@ fn list_work_tasks(
 fn get_work_task_detail(
     endpoint: &str,
     arguments: &Value,
-    tenant_id: String,
-    repository_id: String,
+    node: Result<NodeClient, String>,
 ) -> Result<Value, String> {
     let task_id = arguments
         .get("task_id")
@@ -287,17 +274,8 @@ fn get_work_task_detail(
         })?
         .to_string();
 
-    let result = runtime()?
-        .block_on(async {
-            WorkQueryClient::connect(endpoint)
-                .await?
-                .get_work_task_detail(WorkTaskDetailRequest {
-                    tenant_id,
-                    repository_id,
-                    task_id,
-                })
-                .await
-        })
+    let result: ackplane_client::WorkTaskDetailResult = runtime()?
+        .block_on(node?.protobuf(Operation::WorkDetail { task_id }))
         .map_err(|error| format!("could not reach Ackplane at {endpoint}: {error}"))?;
 
     Ok(json!({
@@ -325,19 +303,10 @@ fn get_work_task_detail(
 
 fn get_work_board_doctor(
     endpoint: &str,
-    tenant_id: String,
-    repository_id: String,
+    node: Result<NodeClient, String>,
 ) -> Result<Value, String> {
-    let result = runtime()?
-        .block_on(async {
-            WorkQueryClient::connect(endpoint)
-                .await?
-                .get_work_board_doctor(WorkBoardDoctorRequest {
-                    tenant_id,
-                    repository_id,
-                })
-                .await
-        })
+    let result: ackplane_client::WorkBoardDoctorResult = runtime()?
+        .block_on(node?.protobuf(Operation::WorkDoctor))
         .map_err(|error| format!("could not reach Ackplane at {endpoint}: {error}"))?;
 
     Ok(json!({
@@ -417,37 +386,15 @@ fn check_enrollment_status<F>(endpoint: &str, environment: &F) -> Result<Value, 
 where
     F: Fn(&str) -> Option<String>,
 {
-    let key_path = resolve_key_path(environment);
-    let (identity, signing_key) = match load_candidate_identity(&key_path) {
-        Ok(loaded) => loaded,
-        // A repository that never ran the enrolment ceremony has no identity to
-        // ask about. That is a real answer, and a cheaper one than the arbiter
-        // could give -- but it is reported as "cannot ask", never as "not
-        // enrolled", because this process did not ask anyone (ADR-0136 clause 2).
-        Err(IdentityError::NotFound(path)) => {
-            return Err(format!(
-                "this repository holds no candidate identity at {}, so there is nothing to ask \
-                 Ackplane about. Run `register-me request` here first. Reported as unasked \
-                 rather than as `not enrolled`: no arbiter was consulted.",
-                path.display()
-            ))
-        }
-        Err(error) => {
-            return Err(format!(
-                "could not load this repository's identity: {error}"
-            ))
-        }
-    };
-
-    let request = signed_status_request(&identity, &signing_key)
-        .map_err(|error| format!("could not sign an enrolment status request: {error}"))?;
-
-    let result = runtime()?
+    let mut node = resolve_node_client(environment).map_err(|error| format!(
+        "cannot ask Ackplane through this repository's node companion: {error}. Reported as unasked: no arbiter was consulted."
+    ))?;
+    node.expected_endpoint = Some(endpoint.to_string());
+    let (identity, result) = runtime()?
         .block_on(async {
-            EnrollmentClient::connect(endpoint)
-                .await?
-                .check_enrollment_status(request)
-                .await
+            let identity = node.identity().await?;
+            let result = node.status().await?;
+            Ok::<_, ackplane_client::ClientError>((identity, result))
         })
         .map_err(|error| format!("could not reach Ackplane at {endpoint}: {error}"))?;
 
@@ -618,10 +565,7 @@ mod tests {
             &environment,
         )
         .expect_err("a repository without an identity cannot ask");
-        assert!(
-            error.contains("nothing to ask Ackplane about"),
-            "got: {error}"
-        );
+        assert!(error.contains("cannot ask Ackplane"), "got: {error}");
         assert!(error.contains("no arbiter was consulted"), "got: {error}");
     }
 

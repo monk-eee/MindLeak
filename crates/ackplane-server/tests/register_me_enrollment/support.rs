@@ -196,13 +196,18 @@ pub(super) async fn start_server(
 ) -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
     let enrollment = EnrollmentStore::connect(pool).await.unwrap();
     let sync = if with_sync {
-        Some(NodeSyncServiceServer::new(NodeSyncService::new(
-            LedgerStore::connect(pool).await.unwrap(),
-            FlowControl {
-                max_in_flight_batches: 4,
-                max_batch_bytes: 1_048_576,
-            },
-        )))
+        Some(NodeSyncServiceServer::new(
+            NodeSyncService::with_supervisor_store(
+                LedgerStore::connect(pool).await.unwrap(),
+                ackplane_server::supervisor_store::SupervisorStore::connect(pool)
+                    .await
+                    .unwrap(),
+                FlowControl {
+                    max_in_flight_batches: 4,
+                    max_batch_bytes: 1_048_576,
+                },
+            ),
+        ))
     } else {
         None
     };

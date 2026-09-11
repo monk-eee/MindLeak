@@ -6,7 +6,9 @@
 //! test PostgreSQL database, mirroring
 //! `ackplane-client/tests/enrollment_and_sync.rs`'s existing pattern.
 
-use ackplane_client::{NodeSyncConnection, SeedSigner};
+use ackplane_client::companion::NodeClient;
+#[path = "../../ackplane-node/tests/support/companion.rs"]
+mod companion;
 use ackplane_protocol::enrollment::public_key_fingerprint;
 use ackplane_protocol::v1::{
     self, node_enrollment_service_client::NodeEnrollmentServiceClient,
@@ -167,23 +169,31 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
     let signing_key_id = activation.signing_key_id.clone();
     assert!(!signing_key_id.is_empty());
 
-    let signer = SeedSigner::new(signing_key_id.clone(), node_id.clone(), &seed);
+    let directory = tempfile::tempdir().unwrap();
+    let companion = companion::TestCompanion::start(
+        &endpoint,
+        ackplane_node::SigningBinding {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            node_id: node_id.clone(),
+            key_id: signing_key_id,
+        },
+        &seed,
+        directory.path(),
+    )
+    .await;
+    let node = NodeClient::new(
+        directory.path().into(),
+        tenant_id.clone(),
+        repository_id.clone(),
+    );
 
     // The already-connected supervisor this node key is also used for.
-    let _supervisor_connection = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        NodeSyncConnection::open(
-            &endpoint,
-            &signer,
-            &tenant_id,
-            &repository_id,
-            vec!["synchronize".to_string()],
-            0,
-        ),
-    )
-    .await
-    .expect("the first connection does not hang")
-    .expect("the first (simulated supervisor) connection authenticates");
+    let _supervisor_connection =
+        tokio::time::timeout(std::time::Duration::from_secs(15), node.open_sync(0, None))
+            .await
+            .expect("the first connection does not hang")
+            .expect("the first (simulated supervisor) connection authenticates");
 
     // `ackplane-mcp`'s own `node_trust::establish` (ADR-0137 clause 1) is a
     // thin wrapper around exactly this same `NodeSyncConnection::open` call,
@@ -192,19 +202,56 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
     // still open proves the mechanism `establish` relies on. `establish`
     // itself was additionally verified by hand against a real compiled
     // `ackplane-mcp` process run alongside this exact harness.
-    let second_connection = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        NodeSyncConnection::open(
-            &endpoint,
-            &signer,
-            &tenant_id,
-            &repository_id,
-            vec!["mcp-front-door".to_string()],
-            0,
-        ),
+    let second_connection =
+        tokio::time::timeout(std::time::Duration::from_secs(15), node.open_sync(0, None))
+            .await
+            .expect("the second connection does not hang");
+
+    let path = directory.path().to_path_buf();
+    let responses = tokio::task::spawn_blocking(move || {
+        use std::{io::Write, process::{Command, Stdio}};
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ackplane-mcp"))
+            .env("ACKPLANE_MCP_ENDPOINT", endpoint)
+            .env("MINDLEAK_ACKPLANE_STATE_DIR", path)
+            .env("MINDLEAK_ACKPLANE_TENANT_ID", tenant_id)
+            .env("MINDLEAK_ACKPLANE_REPOSITORY_ID", repository_id)
+            .env_remove("MINDLEAK_ACKPLANE_NODE_ID")
+            .env_remove("MINDLEAK_ACKPLANE_SIGNING_KEY_ID")
+            .env_remove("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED")
+            .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+        let mut input = child.stdin.take().unwrap();
+        for (index, name) in ["open_session", "check_enrollment_status"].iter().enumerate() {
+            let arguments = if index == 0 { serde_json::json!({"session_id":"0123456789abcdef0123456789abcdef"}) } else { serde_json::json!({}) };
+            writeln!(input, "{}", serde_json::json!({"jsonrpc":"2.0","id":index,"method":"tools/call","params":{"name":name,"arguments":arguments}})).unwrap();
+        }
+        drop(input);
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).collect::<Vec<_>>()
+    }).await.unwrap();
+    assert_eq!(responses.len(), 2);
+    for response in &responses {
+        assert_eq!(response["result"]["isError"], false, "{response}");
+    }
+    let session: serde_json::Value = serde_json::from_str(
+        responses[0]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
     )
-    .await
-    .expect("the second connection does not hang");
+    .unwrap();
+    assert!(session["agent_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("session:v1:"));
+    let status: serde_json::Value = serde_json::from_str(
+        responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status["verified"], true);
+    assert_eq!(status["node_id"], node_id);
 
     // `second_connection`'s value is dropped as part of this `map` (its
     // closure takes ownership and returns `()`), matching `_supervisor_
@@ -213,6 +260,7 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
     // connections would otherwise block it forever.
     let outcome = second_connection.map(|_connection| ());
     drop(_supervisor_connection);
+    drop(companion);
 
     let _ = shutdown_tx.send(());
     let _ = server.await;

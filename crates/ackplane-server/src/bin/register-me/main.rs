@@ -150,6 +150,7 @@ fn resolve_tenant_id(flags: &HashMap<String, String>) -> Result<String, String> 
 mod enrollment;
 mod provider;
 mod request;
+mod serve;
 
 use request::SavedRequest;
 
@@ -165,6 +166,7 @@ fn print_usage() {
          \x20                      --repo R --fingerprint FP --admin-database-url URL\n\
          \x20                      [--approved-by NAME]\n\
          \x20 register-me activate --request-id ID --state-dir ABSOLUTE_PATH [--grpc-endpoint URL] [--skip-sync]\n\n\
+         \x20 register-me serve --state-dir ABSOLUTE_PATH [--grpc-endpoint URL]\n\n\
          Use one user-local state directory per repository. The explicitly selected software\n\
          provider stores its key in the OS credential facility, never a seed file or dotenv.\n\
          Raw key options and implicit replacement are refused. Repeating an identical pending\n\
@@ -203,6 +205,7 @@ async fn main() -> ExitCode {
         "request" => enrollment::run_request(flags).await,
         "approve" => enrollment::run_approve(flags).await,
         "activate" => enrollment::run_activate(flags).await,
+        "serve" => serve::run(flags).await,
         _ => {
             print_usage();
             return ExitCode::FAILURE;

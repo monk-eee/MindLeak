@@ -1,5 +1,6 @@
 use ackplane_client::{
-    authenticate, ClaimClient, ClaimLeaseOutcome, ClaimOperation, WorkQueryClient,
+    companion::wire::{Claim, Operation},
+    ClaimLeaseOutcome,
 };
 use ackplane_protocol::v1;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -15,14 +16,9 @@ impl WorkerRuntime {
         config: &SupervisorConfig,
         task_id: &str,
     ) -> Result<(v1::WorkTaskSummary, OffsetDateTime), DaemonError> {
-        let identity = &config.identity;
-        let mut work = WorkQueryClient::connect(&config.endpoint)
-            .await
-            .map_err(Box::new)?;
-        let detail = work
-            .get_work_task_detail(v1::WorkTaskDetailRequest {
-                tenant_id: identity.tenant_id.clone(),
-                repository_id: identity.repository_id.clone(),
+        let detail: v1::WorkTaskDetailResult = config
+            .node
+            .protobuf(Operation::WorkDetail {
                 task_id: task_id.into(),
             })
             .await
@@ -41,36 +37,16 @@ impl WorkerRuntime {
             .next()
             .ok_or_else(|| DaemonError::Worker("worker configuration is missing".into()))?
             .branch;
-        let operation = ClaimOperation::Delegate {
-            branch,
-            lease_seconds: LEASE_SECONDS,
-            paths: &task.declared_paths,
-            symbols: &task.declared_symbols,
-        };
-        let authentication = authenticate(
-            self.signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            task_id,
-            &self.session.session_id,
-            &operation,
-        )
-        .map_err(|error| DaemonError::Signer(error.to_string()))?;
-        let mut client = ClaimClient::connect(&config.endpoint)
-            .await
-            .map_err(Box::new)?;
-        let result = client
-            .delegate_claim(v1::ClaimLeaseRequest {
-                tenant_id: identity.tenant_id.clone(),
-                repository_id: identity.repository_id.clone(),
+        let result: v1::ClaimLeaseResult = config
+            .node
+            .protobuf(Operation::Claim(Claim::Delegate {
                 task_id: task_id.into(),
                 owner_id: self.session.session_id.clone(),
                 branch: branch.clone(),
                 lease_seconds: LEASE_SECONDS,
                 paths: task.declared_paths.clone(),
                 symbols: task.declared_symbols.clone(),
-                authentication: Some(authentication),
-            })
+            }))
             .await
             .map_err(Box::new)?;
         if result.outcome != ClaimLeaseOutcome::Granted as i32
@@ -90,30 +66,13 @@ impl WorkerRuntime {
         config: &SupervisorConfig,
         task_id: &str,
     ) -> Result<OffsetDateTime, DaemonError> {
-        let identity = &config.identity;
-        let authentication = authenticate(
-            self.signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            task_id,
-            &self.session.session_id,
-            &ClaimOperation::Renew {
-                lease_seconds: LEASE_SECONDS,
-            },
-        )
-        .map_err(|error| DaemonError::Signer(error.to_string()))?;
-        let mut client = ClaimClient::connect(&config.endpoint)
-            .await
-            .map_err(Box::new)?;
-        let result = client
-            .renew_claim(v1::ClaimRenewRequest {
-                tenant_id: identity.tenant_id.clone(),
-                repository_id: identity.repository_id.clone(),
+        let result: v1::ClaimLeaseResult = config
+            .node
+            .protobuf(Operation::Claim(Claim::Renew {
                 task_id: task_id.into(),
                 owner_id: self.session.session_id.clone(),
                 lease_seconds: LEASE_SECONDS,
-                authentication: Some(authentication),
-            })
+            }))
             .await
             .map_err(Box::new)?;
         if result.outcome != ClaimLeaseOutcome::Granted as i32
@@ -131,27 +90,12 @@ impl WorkerRuntime {
         config: &SupervisorConfig,
         task_id: &str,
     ) -> Result<(), DaemonError> {
-        let identity = &config.identity;
-        let authentication = authenticate(
-            self.signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            task_id,
-            &self.session.session_id,
-            &ClaimOperation::Release,
-        )
-        .map_err(|error| DaemonError::Signer(error.to_string()))?;
-        let mut client = ClaimClient::connect(&config.endpoint)
-            .await
-            .map_err(Box::new)?;
-        client
-            .release_claim(v1::ClaimReleaseRequest {
-                tenant_id: identity.tenant_id.clone(),
-                repository_id: identity.repository_id.clone(),
+        config
+            .node
+            .protobuf::<v1::ClaimReleaseResult>(Operation::Claim(Claim::Release {
                 task_id: task_id.into(),
                 owner_id: self.session.session_id.clone(),
-                authentication: Some(authentication),
-            })
+            }))
             .await
             .map_err(Box::new)?;
         if self

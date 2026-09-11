@@ -11,125 +11,42 @@
 //! state to manage between calls.
 
 use ackplane_client::{
-    authenticate, node_identity, ClaimAnswerRequest, ClaimClient, ClaimLeaseOutcome,
-    ClaimLeaseRequest, ClaimLeaseResult, ClaimOperation, ClaimParkRequest, ClaimRecoverRequest,
-    ClaimReleaseRequest, ClaimRenewRequest, ClaimSigner, CredentialFacilitySigner, SeedSigner,
+    companion::{
+        wire::{Claim, Operation},
+        NodeClient,
+    },
+    node_identity, ClaimLeaseOutcome, ClaimLeaseResult, ClaimParkResult, ClaimReleaseResult,
 };
 use lodestar_core::{
     FederatedClaimAuthority, FederatedClaimGrant, FederatedClaimOutcome,
     FederatedClaimRecoverRequest, LodestarError,
 };
-use node_identity::NodeSignerSource;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-/// Explicit, injected identity and endpoint configuration for a federated
-/// repository (ADR-0096 clause 4). No field is ever inferred from transport
-/// reachability.
-pub struct FederationIdentity {
-    pub endpoint: String,
-    pub tenant_id: String,
-    pub repository_id: String,
-    pub node_id: String,
-    pub signing_key_id: String,
-    pub signer_source: SignerSource,
-}
-
-/// Where this node's Ed25519 signing seed comes from (ADR-0100 decision 5).
-pub enum SignerSource {
-    /// Interim, explicit-configuration seed (`SeedSigner`). Non-hardened;
-    /// selected only when `MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED` is set.
-    /// See `gaps.d/the-node-signing-key-has-no-credential-facility-yet.md`.
-    Seed([u8; 32]),
-    /// The OS credential facility (Windows Credential Manager, macOS
-    /// Keychain, or Linux Secret Service), looked up by `service`/`account`.
-    /// The default when the seed env var is unset.
-    CredentialFacility { service: String, account: String },
-}
-
-/// Read this repository's federated claim identity from explicit environment
-/// variables. `None` if any required variable is unset, blank, or
-/// malformed -- the caller decides what that means (this binary: refuse to
-/// serve rather than guess).
-///
-/// The shared `MINDLEAK_ACKPLANE_TENANT_ID`/`_REPOSITORY_ID`/`_NODE_ID`/
-/// `_SIGNING_KEY_ID`/`_NODE_SIGNING_KEY_SEED` resolution and signer-source
-/// selection is [`node_identity::resolve_node_identity`]'s job, not
-/// reimplemented here (see that module's own doc comment on why it is the
-/// shared place to extend) -- this function only adds the one field
-/// specific to a federation connection, `endpoint`.
-pub fn resolve_identity<F>(environment: F) -> Option<FederationIdentity>
+/// Resolve only the companion's public endpoint and scope, never its key.
+pub fn resolve_identity<F>(environment: F) -> Option<NodeClient>
 where
     F: Fn(&str) -> Option<String>,
 {
-    let endpoint = non_empty(environment(ackplane_core::ACKPLANE_ENDPOINT_ENV))?;
-    let identity = node_identity::resolve_node_identity(&environment).ok()?;
-    Some(FederationIdentity {
-        endpoint,
-        tenant_id: identity.tenant_id,
-        repository_id: identity.repository_id,
-        node_id: identity.node_id,
-        signing_key_id: identity.signing_key_id,
-        signer_source: match identity.signer_source {
-            NodeSignerSource::Seed(seed) => SignerSource::Seed(*seed),
-            NodeSignerSource::CredentialFacility { service, account } => {
-                SignerSource::CredentialFacility { service, account }
-            }
-        },
-    })
+    node_identity::resolve_node_client(&environment).ok()
 }
 
-/// Every configuration variable [`resolve_identity`] always requires, for a
-/// refusal message that names what is missing rather than only that
-/// something is. `node_identity`'s own `NODE_SIGNING_KEY_SEED_ENV` is a
-/// documented optional override and is deliberately not listed here: its
-/// absence is the default path (the OS credential facility), not an
-/// incomplete configuration.
-pub const IDENTITY_ENV_VARS: &[&str] = &[
-    ackplane_core::ACKPLANE_ENDPOINT_ENV,
-    node_identity::TENANT_ID_ENV,
-    node_identity::REPOSITORY_ID_ENV,
-    node_identity::NODE_ID_ENV,
-    node_identity::SIGNING_KEY_ID_ENV,
-];
-
-fn non_empty(value: Option<String>) -> Option<String> {
-    value
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-}
+pub const IDENTITY_ENV_VARS: &[&str] = node_identity::NODE_IDENTITY_ENV_VARS;
 
 pub struct AckplaneClaimAuthority {
-    identity: FederationIdentity,
+    node: NodeClient,
 }
 
 impl AckplaneClaimAuthority {
-    pub fn new(identity: FederationIdentity) -> Self {
-        Self { identity }
+    pub fn new(node: NodeClient) -> Self {
+        Self { node }
     }
 
-    fn signer(&self) -> lodestar_core::Result<Box<dyn ClaimSigner>> {
-        match &self.identity.signer_source {
-            SignerSource::Seed(seed) => Ok(Box::new(SeedSigner::new(
-                self.identity.signing_key_id.clone(),
-                self.identity.node_id.clone(),
-                seed,
-            ))),
-            SignerSource::CredentialFacility { service, account } => {
-                CredentialFacilitySigner::load(
-                    self.identity.signing_key_id.clone(),
-                    self.identity.node_id.clone(),
-                    service,
-                    account,
-                )
-                .map(|signer| Box::new(signer) as Box<dyn ClaimSigner>)
-                .map_err(|error| {
-                    LodestarError::Federated(format!(
-                        "could not read this node's signing key from the OS credential \
-                         facility (service {service:?}, account {account:?}): {error}"
-                    ))
-                })
-            }
-        }
+    fn lease(&self, claim: Claim) -> lodestar_core::Result<FederatedClaimOutcome> {
+        let result = Self::runtime()?
+            .block_on(self.node.protobuf(Operation::Claim(claim)))
+            .map_err(map_client_error)?;
+        outcome_from_result(result)
     }
 
     fn runtime() -> lodestar_core::Result<tokio::runtime::Runtime> {
@@ -154,42 +71,14 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
         paths: &[String],
         symbols: &[String],
     ) -> lodestar_core::Result<FederatedClaimOutcome> {
-        let identity = &self.identity;
-        let branch = branch.unwrap_or_default();
-        let operation = ClaimOperation::Delegate {
-            branch,
-            lease_seconds: lease_secs.max(0) as u64,
-            paths,
-            symbols,
-        };
-        let signer = self.signer()?;
-        let authentication = authenticate(
-            signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            task_id,
-            owner,
-            &operation,
-        )
-        .map_err(map_client_error)?;
-        let request = ClaimLeaseRequest {
-            tenant_id: identity.tenant_id.clone(),
-            repository_id: identity.repository_id.clone(),
+        self.lease(Claim::Delegate {
             task_id: task_id.to_string(),
             owner_id: owner.to_string(),
-            branch: branch.to_string(),
+            branch: branch.unwrap_or_default().to_string(),
             lease_seconds: lease_secs.max(0) as u64,
             paths: paths.to_vec(),
             symbols: symbols.to_vec(),
-            authentication: Some(authentication),
-        };
-        let result = Self::runtime()?
-            .block_on(async {
-                let mut client = ClaimClient::connect(&identity.endpoint).await?;
-                client.delegate_claim(request).await
-            })
-            .map_err(map_client_error)?;
-        outcome_from_result(result)
+        })
     }
 
     fn renew(
@@ -198,61 +87,19 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
         owner: &str,
         lease_secs: i64,
     ) -> lodestar_core::Result<FederatedClaimOutcome> {
-        let identity = &self.identity;
-        let operation = ClaimOperation::Renew {
-            lease_seconds: lease_secs.max(0) as u64,
-        };
-        let signer = self.signer()?;
-        let authentication = authenticate(
-            signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            task_id,
-            owner,
-            &operation,
-        )
-        .map_err(map_client_error)?;
-        let request = ClaimRenewRequest {
-            tenant_id: identity.tenant_id.clone(),
-            repository_id: identity.repository_id.clone(),
+        self.lease(Claim::Renew {
             task_id: task_id.to_string(),
             owner_id: owner.to_string(),
             lease_seconds: lease_secs.max(0) as u64,
-            authentication: Some(authentication),
-        };
-        let result = Self::runtime()?
-            .block_on(async {
-                let mut client = ClaimClient::connect(&identity.endpoint).await?;
-                client.renew_claim(request).await
-            })
-            .map_err(map_client_error)?;
-        outcome_from_result(result)
+        })
     }
 
     fn release(&self, task_id: &str, owner: &str) -> lodestar_core::Result<bool> {
-        let identity = &self.identity;
-        let signer = self.signer()?;
-        let authentication = authenticate(
-            signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            task_id,
-            owner,
-            &ClaimOperation::Release,
-        )
-        .map_err(map_client_error)?;
-        let request = ClaimReleaseRequest {
-            tenant_id: identity.tenant_id.clone(),
-            repository_id: identity.repository_id.clone(),
-            task_id: task_id.to_string(),
-            owner_id: owner.to_string(),
-            authentication: Some(authentication),
-        };
-        let result = Self::runtime()?
-            .block_on(async {
-                let mut client = ClaimClient::connect(&identity.endpoint).await?;
-                client.release_claim(request).await
-            })
+        let result: ClaimReleaseResult = Self::runtime()?
+            .block_on(self.node.protobuf(Operation::Claim(Claim::Release {
+                task_id: task_id.to_string(),
+                owner_id: owner.to_string(),
+            })))
             .map_err(map_client_error)?;
         Ok(result.released)
     }
@@ -261,72 +108,24 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
         &self,
         request: &FederatedClaimRecoverRequest,
     ) -> lodestar_core::Result<FederatedClaimOutcome> {
-        let identity = &self.identity;
-        let branch = request.branch.clone().unwrap_or_default();
-        let operation = ClaimOperation::Recover {
-            expected_owner: &request.expected_owner,
-            branch: &branch,
-            lease_seconds: request.lease_secs.max(0) as u64,
-            paths: &request.paths,
-            symbols: &request.symbols,
-            reason: &request.reason,
-        };
-        let signer = self.signer()?;
-        let authentication = authenticate(
-            signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            &request.task_id,
-            &request.owner,
-            &operation,
-        )
-        .map_err(map_client_error)?;
-        let wire_request = ClaimRecoverRequest {
-            tenant_id: identity.tenant_id.clone(),
-            repository_id: identity.repository_id.clone(),
+        self.lease(Claim::Recover {
             task_id: request.task_id.clone(),
             expected_owner: request.expected_owner.clone(),
             owner_id: request.owner.clone(),
             reason: request.reason.clone(),
-            branch,
+            branch: request.branch.clone().unwrap_or_default(),
             lease_seconds: request.lease_secs.max(0) as u64,
             paths: request.paths.clone(),
             symbols: request.symbols.clone(),
-            authentication: Some(authentication),
-        };
-        let result = Self::runtime()?
-            .block_on(async {
-                let mut client = ClaimClient::connect(&identity.endpoint).await?;
-                client.recover_claim(wire_request).await
-            })
-            .map_err(map_client_error)?;
-        outcome_from_result(result)
+        })
     }
 
     fn park(&self, task_id: &str, owner: &str) -> lodestar_core::Result<bool> {
-        let identity = &self.identity;
-        let signer = self.signer()?;
-        let authentication = authenticate(
-            signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            task_id,
-            owner,
-            &ClaimOperation::Park,
-        )
-        .map_err(map_client_error)?;
-        let request = ClaimParkRequest {
-            tenant_id: identity.tenant_id.clone(),
-            repository_id: identity.repository_id.clone(),
-            task_id: task_id.to_string(),
-            owner_id: owner.to_string(),
-            authentication: Some(authentication),
-        };
-        let result = Self::runtime()?
-            .block_on(async {
-                let mut client = ClaimClient::connect(&identity.endpoint).await?;
-                client.park_claim(request).await
-            })
+        let result: ClaimParkResult = Self::runtime()?
+            .block_on(self.node.protobuf(Operation::Claim(Claim::Park {
+                task_id: task_id.to_string(),
+                owner_id: owner.to_string(),
+            })))
             .map_err(map_client_error)?;
         Ok(result.parked)
     }
@@ -337,35 +136,11 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
         owner: &str,
         lease_secs: i64,
     ) -> lodestar_core::Result<FederatedClaimOutcome> {
-        let identity = &self.identity;
-        let operation = ClaimOperation::Answer {
-            lease_seconds: lease_secs.max(0) as u64,
-        };
-        let signer = self.signer()?;
-        let authentication = authenticate(
-            signer.as_ref(),
-            &identity.tenant_id,
-            &identity.repository_id,
-            task_id,
-            owner,
-            &operation,
-        )
-        .map_err(map_client_error)?;
-        let request = ClaimAnswerRequest {
-            tenant_id: identity.tenant_id.clone(),
-            repository_id: identity.repository_id.clone(),
+        self.lease(Claim::Answer {
             task_id: task_id.to_string(),
             owner_id: owner.to_string(),
             lease_seconds: lease_secs.max(0) as u64,
-            authentication: Some(authentication),
-        };
-        let result = Self::runtime()?
-            .block_on(async {
-                let mut client = ClaimClient::connect(&identity.endpoint).await?;
-                client.answer_claim(request).await
-            })
-            .map_err(map_client_error)?;
-        outcome_from_result(result)
+        })
     }
 }
 
@@ -409,6 +184,10 @@ fn outcome_from_result(result: ClaimLeaseResult) -> lodestar_core::Result<Federa
 }
 
 #[cfg(test)]
+#[path = "../../ackplane-node/tests/support/companion.rs"]
+mod companion;
+
+#[cfg(test)]
 mod tests {
     //! Opt-in, real-server, real-Postgres end-to-end proof that `task_claim`
     //! actually reaches Ackplane through this module's production
@@ -441,21 +220,19 @@ mod tests {
     use tonic::transport::Server;
 
     use super::{
-        resolve_identity, AckplaneClaimAuthority, FederationIdentity, SignerSource,
-        IDENTITY_ENV_VARS,
+        companion, resolve_identity, AckplaneClaimAuthority, NodeClient, IDENTITY_ENV_VARS,
     };
 
     const SIGNING_KEY_ID: &str = "lodestar-mcp-federation-test-key";
     const NODE_ID: &str = "lodestar-mcp-federation-test-node";
     const TENANT_ID: &str = "lodestar-mcp-federation-test-tenant";
     const REPOSITORY_ID: &str = "lodestar-mcp-federation-test-repository";
-    const ENDPOINT: &str = "http://127.0.0.1:8443";
 
     fn seed() -> [u8; 32] {
         [23; 32]
     }
 
-    fn env(pairs: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+    fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let owned: Vec<(String, String)> = pairs
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -480,52 +257,41 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_endpoint_resolves_to_nothing_even_with_a_full_node_identity() {
+    fn a_missing_companion_directory_resolves_to_nothing() {
         assert!(resolve_identity(env(&[
             (IDENTITY_ENV_VARS[1], TENANT_ID),
             (IDENTITY_ENV_VARS[2], REPOSITORY_ID),
-            (IDENTITY_ENV_VARS[3], NODE_ID),
-            (IDENTITY_ENV_VARS[4], SIGNING_KEY_ID),
         ]))
         .is_none());
     }
 
     #[test]
-    fn a_full_declaration_with_no_seed_selects_the_credential_facility() {
+    fn a_full_declaration_selects_only_the_companion() {
+        let directory = std::env::temp_dir();
         let identity = resolve_identity(env(&[
-            (IDENTITY_ENV_VARS[0], ENDPOINT),
+            (IDENTITY_ENV_VARS[0], directory.to_str().unwrap()),
             (IDENTITY_ENV_VARS[1], TENANT_ID),
             (IDENTITY_ENV_VARS[2], REPOSITORY_ID),
-            (IDENTITY_ENV_VARS[3], NODE_ID),
-            (IDENTITY_ENV_VARS[4], SIGNING_KEY_ID),
         ]))
         .expect("every required variable is set");
-        assert_eq!(identity.endpoint, ENDPOINT);
+        assert_eq!(identity.state_dir, directory);
         assert_eq!(identity.tenant_id, TENANT_ID);
         assert_eq!(identity.repository_id, REPOSITORY_ID);
-        assert_eq!(identity.node_id, NODE_ID);
-        assert_eq!(identity.signing_key_id, SIGNING_KEY_ID);
-        assert!(matches!(
-            identity.signer_source,
-            SignerSource::CredentialFacility { .. }
-        ));
     }
 
     #[test]
-    fn a_declared_seed_selects_a_seed_signer_delegated_from_node_identity() {
+    fn a_declared_seed_is_refused_instead_of_loaded_by_the_plane() {
+        let directory = std::env::temp_dir();
         let identity = resolve_identity(env(&[
-            (IDENTITY_ENV_VARS[0], ENDPOINT),
+            (IDENTITY_ENV_VARS[0], directory.to_str().unwrap()),
             (IDENTITY_ENV_VARS[1], TENANT_ID),
             (IDENTITY_ENV_VARS[2], REPOSITORY_ID),
-            (IDENTITY_ENV_VARS[3], NODE_ID),
-            (IDENTITY_ENV_VARS[4], SIGNING_KEY_ID),
             (
                 ackplane_client::node_identity::NODE_SIGNING_KEY_SEED_ENV,
                 seed_hex(),
             ),
-        ]))
-        .expect("every required variable is set");
-        assert!(matches!(identity.signer_source, SignerSource::Seed(_)));
+        ]));
+        assert!(identity.is_none());
     }
 
     fn unique_task_id() -> String {
@@ -605,9 +371,23 @@ mod tests {
             .await
             .expect("the authenticated test service should bind loopback");
         let address = listener.local_addr().unwrap();
+        let sync = ackplane_server::service::NodeSyncService::new(
+            ackplane_server::ledger::LedgerStore::connect(&pool)
+                .await
+                .unwrap(),
+            ackplane_protocol::v1::FlowControl {
+                max_in_flight_batches: 16,
+                max_batch_bytes: 1_048_576,
+            },
+        );
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let server = tokio::spawn(async move {
             Server::builder()
+                .add_service(
+                    ackplane_protocol::v1::node_sync_service_server::NodeSyncServiceServer::new(
+                        sync,
+                    ),
+                )
                 .add_service(ClaimDelegationServiceServer::new(
                     ClaimDelegationService::new(store),
                 ))
@@ -618,14 +398,24 @@ mod tests {
                 .expect("the authenticated test service should run");
         });
 
-        let identity = FederationIdentity {
-            endpoint: format!("http://{address}"),
-            tenant_id: TENANT_ID.to_string(),
-            repository_id: REPOSITORY_ID.to_string(),
-            node_id: NODE_ID.to_string(),
-            signing_key_id: SIGNING_KEY_ID.to_string(),
-            signer_source: SignerSource::Seed(seed()),
-        };
+        let directory = tempfile::tempdir().unwrap();
+        let companion = companion::TestCompanion::start(
+            &format!("http://{address}"),
+            ackplane_node::SigningBinding {
+                tenant_id: TENANT_ID.into(),
+                repository_id: REPOSITORY_ID.into(),
+                node_id: NODE_ID.into(),
+                key_id: SIGNING_KEY_ID.into(),
+            },
+            &seed(),
+            directory.path(),
+        )
+        .await;
+        let identity = NodeClient::new(
+            directory.path().into(),
+            TENANT_ID.into(),
+            REPOSITORY_ID.into(),
+        );
         let authority = Arc::new(AckplaneClaimAuthority::new(identity));
 
         // `AckplaneClaimAuthority` blocks its own runtime per call (mirroring
@@ -706,6 +496,7 @@ mod tests {
         .await
         .unwrap();
 
+        drop(companion);
         let _ = shutdown_tx.send(());
         server.await.unwrap();
     }

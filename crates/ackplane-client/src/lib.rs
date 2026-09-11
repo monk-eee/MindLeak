@@ -35,6 +35,7 @@ use thiserror::Error;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 
 pub mod auth;
+pub mod companion;
 pub use auth::{
     authenticate, decode_seed, encode_seed, ClaimOperation, ClaimSigner, CredentialFacilityError,
     CredentialFacilitySigner, SeedSigner, SigningError,
@@ -50,9 +51,7 @@ pub mod node_sync;
 pub use node_sync::NodeSyncConnection;
 
 pub mod node_identity;
-pub use node_identity::{
-    resolve_node_identity, NodeIdentity, NodeSignerSource, NODE_IDENTITY_ENV_VARS,
-};
+pub use node_identity::{resolve_node_client, NODE_IDENTITY_ENV_VARS};
 
 pub use ackplane_protocol::v1::{
     ActiveClaimSummary, ActiveClaimsRequest, ActiveClaimsResult, ClaimAnswerRequest,
@@ -114,6 +113,8 @@ async fn connect_channel_with_ca(
 /// Failure connecting to, or talking with, an Ackplane deployment.
 #[derive(Debug, Error)]
 pub enum ClientError {
+    #[error("local node companion is unavailable: {0}")]
+    Companion(#[from] std::io::Error),
     #[error("{expected} acknowledgement deadline exceeded; reconnect before sending more frames")]
     AcknowledgementTimeout { expected: &'static str },
     #[error("invalid context packet: {0}")]

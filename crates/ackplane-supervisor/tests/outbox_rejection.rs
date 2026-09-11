@@ -1,9 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-use ackplane_client::{
-    node_identity::{NodeIdentity, NodeSignerSource},
-    NodeSyncConnection,
-};
+use ackplane_client::{companion::NodeClient, NodeSyncConnection, SeedSigner};
 use ackplane_protocol::{
     enrollment::public_key_fingerprint, supervisor::SupervisorWorkerState, v1,
 };
@@ -46,15 +43,15 @@ async fn exercise_rejection(permanent: bool) {
     getrandom::getrandom(&mut seed).unwrap();
     let suffix: String = seed[..8].iter().map(|byte| format!("{byte:02x}")).collect();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let node_id = "node:outbox-rejection";
+    let key_id = format!("key:{suffix}");
     let config = SupervisorConfig {
-        endpoint: format!("http://{}", listener.local_addr().unwrap()),
-        identity: NodeIdentity {
-            tenant_id: format!("outbox-rejection:{suffix}"),
-            repository_id: "repository:outbox-rejection".into(),
-            node_id: "node:outbox-rejection".into(),
-            signing_key_id: format!("key:{suffix}"),
-            signer_source: NodeSignerSource::Seed(Box::new(seed)),
-        },
+        node: NodeClient::new(
+            root.path().into(),
+            format!("outbox-rejection:{suffix}"),
+            "repository:outbox-rejection".into(),
+        ),
         supervisor_id: "outbox-rejection".into(),
         state_dir: root.path().to_path_buf(),
         heartbeat_interval: Duration::from_secs(1),
@@ -70,10 +67,10 @@ async fn exercise_rejection(permanent: bool) {
         signing_keys::register(
             &transaction,
             &SigningKeyRecord {
-                signing_key_id: config.identity.signing_key_id.clone(),
-                tenant_id: config.identity.tenant_id.clone(),
-                repository_id: config.identity.repository_id.clone(),
-                node_id: config.identity.node_id.clone(),
+                signing_key_id: key_id.clone(),
+                tenant_id: config.node.tenant_id.clone(),
+                repository_id: config.node.repository_id.clone(),
+                node_id: node_id.into(),
                 public_key_fingerprint: public_key_fingerprint(&public_key),
                 public_key,
                 activated_at: SystemTime::now() - Duration::from_secs(1),
@@ -109,14 +106,14 @@ async fn exercise_rejection(permanent: bool) {
             .await
             .unwrap();
     });
-    let signer = daemon::signer(&config).unwrap();
+    let signer = SeedSigner::new(key_id, node_id, &seed);
     let mut connection = tokio::time::timeout(
         Duration::from_secs(10),
         NodeSyncConnection::open(
-            &config.endpoint,
-            signer.as_ref(),
-            &config.identity.tenant_id,
-            &config.identity.repository_id,
+            &endpoint,
+            &signer,
+            &config.node.tenant_id,
+            &config.node.repository_id,
             vec!["synchronize".into()],
             0,
         ),
@@ -124,7 +121,7 @@ async fn exercise_rejection(permanent: bool) {
     .await
     .unwrap()
     .unwrap();
-    let registration = daemon::registration(&config);
+    let registration = daemon::registration(&config, node_id);
     let started_at = OffsetDateTime::now_utc();
     let session = daemon::session(&config, started_at).unwrap();
     let wire_registration = v1::NodeFrame {
@@ -216,8 +213,8 @@ async fn exercise_rejection(permanent: bool) {
     };
     let history = supervisors
         .lifecycle_history(
-            &config.identity.tenant_id,
-            &config.identity.repository_id,
+            &config.node.tenant_id,
+            &config.node.repository_id,
             &session.session_id,
         )
         .await
