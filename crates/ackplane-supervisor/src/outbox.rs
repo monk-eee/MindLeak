@@ -182,6 +182,7 @@ impl SupervisorOutbox {
     }
 
     /// Return the oldest pending frames in local sequence order.
+    /// Refuse encodings this version cannot replay byte-for-byte.
     pub fn pending(&self, limit: u32) -> Result<Vec<QueuedFrame>, OutboxError> {
         if limit == 0 {
             return Err(OutboxError::NonPositiveLimit);
@@ -275,6 +276,9 @@ impl QueuedFrame {
     fn decode((sequence, bytes): (u64, Vec<u8>)) -> Result<Self, OutboxError> {
         let frame = v1::NodeFrame::decode(bytes.as_slice())
             .map_err(|_| OutboxError::CorruptStoredFrame { sequence })?;
+        if frame.encode_to_vec() != bytes {
+            return Err(OutboxError::UnsupportedStoredEncoding { sequence });
+        }
         Ok(Self { sequence, frame })
     }
 }
@@ -306,6 +310,8 @@ pub enum OutboxError {
     NonPositiveLimit,
     #[error("stored outbox frame at sequence {sequence} cannot be decoded")]
     CorruptStoredFrame { sequence: u64 },
+    #[error("stored outbox frame at sequence {sequence} contains wire bytes this version cannot replay identically; evidence retained")]
+    UnsupportedStoredEncoding { sequence: u64 },
     #[error("worker recovery evidence is inconsistent: {0}")]
     RecoveryEvidence(String),
 }

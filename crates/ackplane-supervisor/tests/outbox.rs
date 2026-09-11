@@ -16,6 +16,8 @@ use ackplane_protocol::{
 use ackplane_supervisor::{OutboxError, OutboxPositions, QueueOutcome, SupervisorOutbox};
 use prost::Message;
 
+#[path = "outbox/encoding.rs"]
+mod encoding;
 #[path = "outbox/read_only.rs"]
 mod read_only;
 
