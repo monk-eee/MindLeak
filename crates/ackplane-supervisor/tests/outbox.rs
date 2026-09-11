@@ -16,6 +16,9 @@ use ackplane_protocol::{
 use ackplane_supervisor::{OutboxError, OutboxPositions, QueueOutcome, SupervisorOutbox};
 use prost::Message;
 
+#[path = "outbox/read_only.rs"]
+mod read_only;
+
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
 
 fn database_path(label: &str) -> PathBuf {

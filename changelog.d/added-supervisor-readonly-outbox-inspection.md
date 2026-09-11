@@ -1,0 +1,1 @@
+- Supervisor outboxes now support identity-bound, read-only library inspection of existing pending and acknowledged evidence. The opener does not create databases, initialize identity or migrate schema, and SQLite refuses enqueue and acknowledgement through the read-only handle. This is an inspection prerequisite, not a restart-recovery command.

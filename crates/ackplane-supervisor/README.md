@@ -212,6 +212,16 @@ or certify task completion. Upgrading preserves lifecycle frames still pending
 when they are acknowledged, but cannot reconstruct older pruned receipts. Missing
 history remains unknown, and automatic recovery after process loss is unchanged.
 
+Use `SupervisorOutbox::open_read_only(path, registration, session)` for library
+inspection of an existing outbox. It validates the stored identity/session without
+creating directories, initializing identity, changing journal mode or migrating
+schema. SQLite read-only access also refuses enqueue and acknowledgement through
+that handle. Normal WAL reads remain enabled so inspection includes committed
+records still in the log; it does not use immutable-file mode. Missing or corrupt
+databases are refused. An older outbox can expose its existing pending frames and
+positions, but reading an absent lifecycle archive reports a schema error rather
+than creating an empty history. No process control or lease operation is performed.
+
 ## Verify The Loop
 
 Set `ACKPLANE_TEST_DATABASE_URL` to the isolated `ackplane_test` database, never
@@ -261,7 +271,9 @@ that a rejected frame cannot be skipped to transmit later evidence.
 `cargo test --locked -p ackplane-supervisor --test outbox` also needs no server.
 It verifies exact lifecycle retention across acknowledgement and reopen, bounded
 cursor paging, identity isolation, rollback on an injected archive failure,
-corrupt-frame preservation, and honest handling of older outboxes.
+corrupt-frame preservation, and honest handling of older outboxes. Its read-only
+tests also check mutation refusal, current WAL visibility, missing/corrupt files,
+unchanged old schema and journal mode, and refusal to adopt a missing identity.
 
 `cargo test --locked -p ackplane-supervisor --lib worker_adapter::tests`
 includes a macOS/Linux regression that waits for a real child's exit without
