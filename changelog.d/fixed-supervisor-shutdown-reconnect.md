@@ -1,0 +1,1 @@
+- Supervisor shutdown now reconnects and replays durable receipts after transient delivery failures within its existing thirty-second grace period. Retries do not reset the deadline; permanent rejections and unrecoverable evidence still stop immediately, and unfinished receipts and recovery markers remain intact.

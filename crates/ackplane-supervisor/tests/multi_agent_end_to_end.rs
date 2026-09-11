@@ -9,6 +9,8 @@ use std::{
     },
     time::{Duration, SystemTime},
 };
+#[cfg(unix)]
+use std::{sync::Mutex, time::Instant};
 
 use ackplane_protocol::{
     context_packet::ContextPacketUseStatus, supervisor::SupervisorWorkerState, v1,
@@ -44,9 +46,19 @@ struct Daemon(GroupChild);
 struct Scenario {
     stop_while_active: bool,
     stop_before_spawn: bool,
+    #[cfg(unix)]
+    shutdown_receipt_fault: Option<ShutdownReceiptFault>,
     release_failures: usize,
     fail_first_slot: bool,
     spawn_evidence_failure: Option<SpawnEvidenceFailure>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum ShutdownReceiptFault {
+    LostOnce,
+    LostAlways,
+    Rejected,
 }
 
 #[derive(Clone, Copy)]
@@ -79,13 +91,17 @@ impl tonic::service::Interceptor for ReleaseFailures {
 }
 
 impl Daemon {
-    async fn shutdown(&mut self) {
+    fn request_shutdown(&self) {
         #[cfg(unix)]
         nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(self.0.id() as i32),
             nix::sys::signal::Signal::SIGTERM,
         )
         .unwrap();
+    }
+
+    async fn shutdown(&mut self) {
+        self.request_shutdown();
         let exit = self.wait().await;
         assert!(
             exit.success(),
@@ -113,6 +129,10 @@ struct ContextReplyGate {
     service: NodeSyncService,
     held_contexts: Option<Arc<tokio::sync::Semaphore>>,
     reject_first_use: Option<Arc<tokio::sync::Semaphore>>,
+    #[cfg(unix)]
+    shutdown_receipt_fault: Option<ShutdownReceiptFault>,
+    #[cfg(unix)]
+    shutdown_receipt_attempts: Arc<Mutex<BTreeMap<String, usize>>>,
 }
 
 #[tonic::async_trait]
@@ -127,6 +147,10 @@ impl v1::node_sync_service_server::NodeSyncService for ContextReplyGate {
         let (sender, receiver) = tokio::sync::mpsc::channel(16);
         let held_contexts = self.held_contexts.clone();
         let reject_first_use = self.reject_first_use.clone();
+        #[cfg(unix)]
+        let shutdown_receipt_fault = self.shutdown_receipt_fault;
+        #[cfg(unix)]
+        let shutdown_receipt_attempts = self.shutdown_receipt_attempts.clone();
         tokio::spawn(async move {
             let mut first_slot = false;
             while let Some(frame) = stream.next().await {
@@ -135,6 +159,41 @@ impl v1::node_sync_service_server::NodeSyncService for ContextReplyGate {
                         reply.frame.as_ref()
                     {
                         first_slot = receipt.supervisor_id.starts_with("multi-agent-first-");
+                        #[cfg(unix)]
+                        if receipt.accepted_outbox_sequence == Some(4) {
+                            if let Some(fault) = shutdown_receipt_fault {
+                                let first_attempt = {
+                                    let mut attempts = shutdown_receipt_attempts.lock().unwrap();
+                                    let count =
+                                        attempts.entry(receipt.supervisor_id.clone()).or_default();
+                                    *count += 1;
+                                    *count == 1
+                                };
+                                match fault {
+                                    ShutdownReceiptFault::LostOnce if !first_attempt => {}
+                                    ShutdownReceiptFault::LostOnce
+                                    | ShutdownReceiptFault::LostAlways => return,
+                                    ShutdownReceiptFault::Rejected => {
+                                        let _ = sender
+                                            .send(Ok(v1::AckplaneFrame {
+                                                frame: Some(v1::ackplane_frame::Frame::Rejection(
+                                                    v1::Rejection {
+                                                        record_id: "shutdown-terminal".into(),
+                                                        reason: v1::RejectionReason::Malformed
+                                                            as i32,
+                                                        retryable: false,
+                                                        diagnostic:
+                                                            "injected terminal delivery rejection"
+                                                                .into(),
+                                                    },
+                                                )),
+                                            }))
+                                            .await;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
                     }
                     if first_slot
                         && matches!(
@@ -189,7 +248,7 @@ where
     Read: FnMut() -> Reading,
     Reading: Future<Output = Option<Value>>,
 {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(Duration::from_secs(40), async {
         loop {
             if let Some(value) = read().await {
                 return value;
@@ -279,6 +338,41 @@ async fn server_runs_two_agents_with_separate_memory_prompts_and_durable_outcome
 async fn shutdown_stops_both_workers_releases_leases_and_flushes_receipts() {
     exercise_two_workers(Scenario {
         stop_while_active: true,
+        ..Scenario::default()
+    })
+    .await;
+}
+
+// A lost terminal acknowledgement ended shutdown immediately even after the
+// server accepted the receipt. Reconnect within the grace period and replay it.
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_replays_lost_terminal_acknowledgements_before_clearing_markers() {
+    exercise_two_workers(Scenario {
+        stop_while_active: true,
+        shutdown_receipt_fault: Some(ShutdownReceiptFault::LostOnce),
+        ..Scenario::default()
+    })
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_reconnects_do_not_extend_the_receipt_deadline() {
+    exercise_two_workers(Scenario {
+        stop_while_active: true,
+        shutdown_receipt_fault: Some(ShutdownReceiptFault::LostAlways),
+        ..Scenario::default()
+    })
+    .await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_preserves_permanently_rejected_terminal_receipts() {
+    exercise_two_workers(Scenario {
+        stop_while_active: true,
+        shutdown_receipt_fault: Some(ShutdownReceiptFault::Rejected),
         ..Scenario::default()
     })
     .await;
@@ -387,6 +481,8 @@ async fn exercise_two_workers(scenario: Scenario) {
     let Scenario {
         stop_while_active,
         stop_before_spawn,
+        #[cfg(unix)]
+        shutdown_receipt_fault,
         release_failures,
         fail_first_slot,
         spawn_evidence_failure,
@@ -535,10 +631,16 @@ async fn exercise_two_workers(scenario: Scenario) {
     .with_work_command_service(WorkCommandService::connect(&pool).await.unwrap());
     let held_contexts = stop_before_spawn.then(|| Arc::new(tokio::sync::Semaphore::new(0)));
     let reject_first_use = fail_first_slot.then(|| Arc::new(tokio::sync::Semaphore::new(0)));
+    #[cfg(unix)]
+    let shutdown_receipt_attempts = Arc::new(Mutex::new(BTreeMap::new()));
     let node_sync = ContextReplyGate {
         service: node_sync,
         held_contexts: held_contexts.clone(),
         reject_first_use: reject_first_use.clone(),
+        #[cfg(unix)]
+        shutdown_receipt_fault,
+        #[cfg(unix)]
+        shutdown_receipt_attempts: shutdown_receipt_attempts.clone(),
     };
     let claims = ClaimDelegationService::new(ClaimStore::connect(&pool).await.unwrap());
     let query = WorkQueryService::new(WorkStore::connect(&pool).await.unwrap());
@@ -567,6 +669,9 @@ async fn exercise_two_workers(scenario: Scenario) {
     });
     let workers_file = root.path().join("workers.json");
     let daemon_log = root.path().join("daemon.log");
+    let capture_stderr = fail_first_slot || spawn_evidence_failure.is_some();
+    #[cfg(unix)]
+    let capture_stderr = capture_stderr || shutdown_receipt_fault.is_some();
     fs::write(&workers_file, serde_json::to_vec(&commands).unwrap()).unwrap();
     let mut daemon = Daemon(
         Command::new(env!("CARGO_BIN_EXE_ackplane-supervisor"))
@@ -589,7 +694,7 @@ async fn exercise_two_workers(scenario: Scenario) {
             .env("RUST_LOG", "warn")
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
-            .stderr(if fail_first_slot || spawn_evidence_failure.is_some() {
+            .stderr(if capture_stderr {
                 Stdio::from(fs::File::create(&daemon_log).unwrap())
             } else {
                 Stdio::inherit()
@@ -1003,6 +1108,119 @@ async fn exercise_two_workers(scenario: Scenario) {
         return;
     }
     remaining_release_failures.store(release_failures, Ordering::SeqCst);
+    #[cfg(unix)]
+    if matches!(
+        shutdown_receipt_fault,
+        Some(ShutdownReceiptFault::LostAlways | ShutdownReceiptFault::Rejected)
+    ) {
+        let started = Instant::now();
+        daemon.request_shutdown();
+        let exit = daemon.wait().await;
+        let elapsed = started.elapsed();
+        assert!(
+            !exit.success(),
+            "unacknowledged shutdown must not report success"
+        );
+        let diagnostic = fs::read_to_string(&daemon_log).unwrap();
+        if matches!(
+            shutdown_receipt_fault,
+            Some(ShutdownReceiptFault::LostAlways)
+        ) {
+            assert!(
+                elapsed >= Duration::from_secs(25),
+                "shutdown abandoned retries early: {elapsed:?}"
+            );
+            assert!(
+                elapsed < Duration::from_secs(40),
+                "shutdown reset its deadline: {elapsed:?}"
+            );
+            assert!(
+                diagnostic.contains("shutdown deadline exceeded"),
+                "{diagnostic}"
+            );
+        } else {
+            assert!(
+                elapsed < Duration::from_secs(15),
+                "permanent rejection was retried: {elapsed:?}"
+            );
+            assert!(
+                diagnostic.contains("injected terminal delivery rejection"),
+                "{diagnostic}"
+            );
+        }
+        assert!(ClaimStore::connect(&pool)
+            .await
+            .unwrap()
+            .list_active(&tenant, repository, SystemTime::now())
+            .await
+            .unwrap()
+            .is_empty());
+        for (index, name) in ["first", "second"].iter().enumerate() {
+            let marker: serde_json::Value = serde_json::from_slice(
+                &fs::read(
+                    root.path()
+                        .join("state")
+                        .join(format!("{name}.worker-run.json")),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let session = &sessions[index];
+            let attempts = *shutdown_receipt_attempts
+                .lock()
+                .unwrap()
+                .get(&session.supervisor_id)
+                .unwrap();
+            if matches!(
+                shutdown_receipt_fault,
+                Some(ShutdownReceiptFault::LostAlways)
+            ) {
+                assert!(attempts > 1, "the disconnected slot must actually retry");
+            } else {
+                assert_eq!(attempts, 1, "permanent rejection must not be retried");
+            }
+            let registration = supervisors
+                .list_supervisors(&tenant, repository)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.registration.supervisor_id == session.supervisor_id)
+                .unwrap()
+                .registration;
+            let outbox = SupervisorOutbox::open(
+                marker["outbox"].as_str().unwrap(),
+                registration,
+                session.clone(),
+            )
+            .unwrap();
+            assert_eq!(
+                outbox.positions().unwrap(),
+                OutboxPositions {
+                    acknowledged: 3,
+                    last_enqueued: 4
+                }
+            );
+            let pending = outbox.pending(10).unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].sequence, 4);
+            let history = supervisors
+                .lifecycle_history(&tenant, repository, &session.session_id)
+                .await
+                .unwrap();
+            assert_eq!(history.len(), 2, "receipt replay must remain idempotent");
+            assert_eq!(
+                history
+                    .iter()
+                    .filter(|entry| entry.receipt.state == SupervisorWorkerState::Terminated)
+                    .count(),
+                1
+            );
+        }
+        drop(daemon);
+        let _ = shutdown.send(());
+        server.await.unwrap();
+        return;
+    }
     let expected_state = if stop_while_active {
         daemon.shutdown().await;
         fs::write(&gate, "finish").unwrap();
@@ -1048,6 +1266,19 @@ async fn exercise_two_workers(scenario: Scenario) {
         0,
         "all injected release failures must be exercised"
     );
+    #[cfg(unix)]
+    if shutdown_receipt_fault.is_some() {
+        let attempts = shutdown_receipt_attempts.lock().unwrap();
+        assert_eq!(
+            attempts.keys().cloned().collect::<Vec<_>>(),
+            sessions
+                .iter()
+                .map(|session| session.supervisor_id.clone())
+                .collect::<Vec<_>>(),
+            "both terminal acknowledgements must be lost before shutdown can replay them"
+        );
+        assert!(attempts.values().all(|count| *count > 1));
+    }
     assert!(
         ClaimStore::connect(&pool)
             .await

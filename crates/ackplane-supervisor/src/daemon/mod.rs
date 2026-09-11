@@ -467,15 +467,30 @@ async fn run_session(
                 result = serve_once(config, &mut runtime) => Some(result?),
             };
             let Some(step) = step else {
-                runtime.shutdown(config).await?;
-                match serve_once(config, &mut runtime).await? {
-                    DaemonExit::Finished => {
-                        return Ok(());
+                return tokio::time::timeout(SLOT_SHUTDOWN_GRACE, async {
+                    runtime.shutdown(config).await?;
+                    loop {
+                        match serve_once(config, &mut runtime).await? {
+                            DaemonExit::Finished => return Ok(()),
+                            DaemonExit::Disconnected => {
+                                tracing::info!(
+                                    delay_seconds = reconnect_delay.as_secs(),
+                                    "reconnecting to acknowledge shutdown receipts"
+                                );
+                                tokio::time::sleep(reconnect_delay).await;
+                            }
+                            DaemonExit::IncompleteEvidence { .. } => {
+                                return Err(DaemonError::Worker(
+                                    "server evidence is outside this runtime's recoverable interval".into(),
+                                ));
+                            }
+                        }
                     }
-                    _ => return Err(DaemonError::Worker(
-                        "workers stopped but receipts could not be acknowledged; durable state is retained for recovery".into(),
-                    )),
-                }
+                })
+                .await
+                .map_err(|_| DaemonError::Worker(
+                    "worker shutdown deadline exceeded; durable state is retained for recovery".into(),
+                ))?;
             };
             match step {
                 DaemonExit::Finished => {

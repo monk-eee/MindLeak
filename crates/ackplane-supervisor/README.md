@@ -126,8 +126,11 @@ continue to give every slot a separate checkout or worktree.
   removing its lock file is not a recovery operation.
 - **Ctrl+C or SIGTERM on Unix** - stops every configured slot, terminates owned
   processes, releases active leases and flushes durable receipts. Shutdown has
-  a thirty-second deadline; failed acknowledgement exits unsuccessfully and
-  retains the run marker and queue evidence for recovery.
+  a thirty-second deadline. Transient disconnects during the flush reconnect
+  and replay retained receipts within that same window; retries never reset
+  the deadline. Exhausting the window exits unsuccessfully and retains the
+  run marker and queue evidence for recovery. Permanent rejection or
+  unrecoverable evidence stops the flush immediately without deleting it.
   Confirmed leases are tracked before context preparation, so stopping while
   awaiting a context reply also releases them without starting a worker or
   reporting a lifecycle for a process that never ran. A failed preparation
@@ -211,6 +214,9 @@ replies after the real server has compiled them and verifies that shutdown
 releases the confirmed leases without spawning workers or inventing lifecycle
 receipts. Injected release RPC failures verify that both normal completion and
 shutdown retry before clearing run markers, without duplicate lifecycle receipts.
+Shutdown transport cases lose both terminal acknowledgements after the server
+has accepted them, then verify clean idempotent replay, fixed-deadline exhaustion
+under repeated disconnects, and retained evidence on permanent rejection.
 An injected failure after both workers start verifies that a healthy peer
 finishes shutdown before the supervisor reports the original error, while the
 failed slot releases its own lease and retains its recovery marker. The same
