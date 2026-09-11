@@ -225,10 +225,109 @@ pub(super) fn dispatch(
 
 #[cfg(test)]
 mod tests {
-    use super::super::call;
     use super::super::tests::{call_ok, content_text};
-    use mindleak_core::{MindLeak, RelationType};
+    use super::super::{bind_session, call, list};
+    use mindleak_core::{Direction, MindLeak, NodeType, RelationType};
+    use mindleak_session::{SessionContext, SessionRegistry};
     use serde_json::json;
+
+    // The handler required `agent` but the session binder never injected it.
+    // Valid callers failed while caller-selected labels could own the evidence.
+    #[test]
+    fn tool_invocation_uses_the_registered_session_and_keeps_classification() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("test").unwrap();
+        let token = "00112233445566778899aabbccddeeff";
+        let identity = sessions
+            .open_session(token, SessionContext::default())
+            .unwrap();
+        for (excerpt, violation) in [
+            ("git status --short", None),
+            (
+                "cargo test | Select-Object -Last 5",
+                Some("piped_powershell_cmdlet"),
+            ),
+        ] {
+            let params = json!({ "name": "ingest_tool_invocation", "arguments": {
+                "session_id": token, "tool_name": "run_in_terminal",
+                "argument_excerpt": excerpt, "timestamp": 123,
+            }});
+            let bound = bind_session(&params, &sessions).unwrap();
+            let result = call(&engine, &bound)
+                .expect("a registered-session invocation must not require a caller agent label");
+            let body: serde_json::Value = serde_json::from_str(&content_text(&result)).unwrap();
+            assert_eq!(body["violation"], json!(violation));
+            assert_eq!(body["nodes_created"], 1);
+            let node_id = body["node_ids"][0].as_str().unwrap();
+            assert_eq!(
+                engine.store().get_node(node_id).unwrap().unwrap().node_type,
+                NodeType::ToolInvocation
+            );
+            let observed = engine
+                .store()
+                .traverse(
+                    &[format!("agent:{}", identity.agent_id)],
+                    Direction::Outgoing,
+                    1,
+                    0.0,
+                    mindleak_core::now_unix(),
+                )
+                .unwrap();
+            assert!(observed
+                .edges
+                .iter()
+                .any(|edge| edge.relation == RelationType::Observed && edge.target_id == node_id));
+        }
+    }
+
+    #[test]
+    fn tool_invocation_does_not_record_caller_selected_agent_fields() {
+        let engine = MindLeak::open_in_memory().unwrap();
+        let sessions = SessionRegistry::new("test").unwrap();
+        let token = "00112233445566778899aabbccddeeff";
+        let identity = sessions
+            .open_session(token, SessionContext::default())
+            .unwrap();
+        let params = json!({ "name": "ingest_tool_invocation", "arguments": {
+            "session_id": token, "tool_name": "run_in_terminal", "argument_excerpt": "git status",
+            "agent": "forged", "agent_id": "forged", "resolved_agent": "forged",
+        }});
+        let bound = bind_session(&params, &sessions).unwrap();
+        call(&engine, &bound).unwrap();
+        assert!(
+            engine.store().get_node("agent:forged").unwrap().is_none(),
+            "caller text must never select the observer"
+        );
+        assert_eq!(bound["arguments"]["agent"], identity.agent_id);
+        assert_eq!(bound["arguments"]["agent_id"], identity.agent_id);
+        assert_eq!(bound["arguments"]["resolved_agent"], identity.agent_id);
+    }
+
+    #[test]
+    fn tool_invocation_requires_an_advertised_registered_session() {
+        let tool = list()
+            .into_iter()
+            .find(|tool| tool["name"] == "ingest_tool_invocation")
+            .unwrap();
+        assert!(tool["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("session_id")));
+        assert!(tool["inputSchema"]["properties"]["session_id"].is_object());
+        assert!(tool["inputSchema"]["properties"].get("agent").is_none());
+        let sessions = SessionRegistry::new("test").unwrap();
+        let mut params = json!({ "name": "ingest_tool_invocation", "arguments": {
+            "tool_name": "run_in_terminal", "argument_excerpt": "git status", "agent": "forged",
+        }});
+        assert!(bind_session(&params, &sessions)
+            .unwrap_err()
+            .contains("session_id"));
+        params["arguments"]["session_id"] = json!("00112233445566778899aabbccddeeff");
+        assert!(
+            bind_session(&params, &sessions).is_err(),
+            "unregistered tokens must be refused"
+        );
+    }
 
     #[test]
     fn record_decision_returns_intent_id() {
