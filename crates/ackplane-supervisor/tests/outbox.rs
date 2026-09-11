@@ -13,7 +13,8 @@ use ackplane_protocol::{
     },
     v1::{self, node_frame},
 };
-use ackplane_supervisor::{OutboxError, QueueOutcome, SupervisorOutbox};
+use ackplane_supervisor::{OutboxError, OutboxPositions, QueueOutcome, SupervisorOutbox};
+use prost::Message;
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
 
@@ -68,6 +69,253 @@ fn heartbeat(position: u64) -> v1::NodeFrame {
             last_accepted_position: position,
         })),
     }
+}
+
+fn lifecycle(state: v1::SupervisorWorkerState, sequence: Option<u64>) -> v1::NodeFrame {
+    let session = session();
+    v1::NodeFrame {
+        frame: Some(node_frame::Frame::SupervisorLifecycleReceipt(
+            v1::SupervisorLifecycleReceipt {
+                supervisor_id: session.supervisor_id,
+                session_id: session.session_id,
+                worker_id: session.worker_id,
+                occurred_at: "2026-09-11T00:00:00Z".into(),
+                state: state as i32,
+                reason: v1::SupervisorLifecycleReason::Unspecified as i32,
+                idempotency_key: format!("worker-a:{state:?}:{sequence:?}"),
+                outbox_sequence: sequence,
+            },
+        )),
+    }
+}
+
+// Acknowledging the terminal frame discarded the local stop report before run
+// marker cleanup. Retain its exact bytes so a later recovery inspection can find it.
+#[test]
+fn acknowledged_lifecycle_receipts_survive_reopen_without_becoming_pending_again() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("outbox.db");
+    let outbox = SupervisorOutbox::open(&path, registration(), session()).unwrap();
+    let started = lifecycle(v1::SupervisorWorkerState::Started, Some(1));
+    outbox.enqueue(1, &started).unwrap();
+    let terminal = outbox
+        .enqueue_next(lifecycle(v1::SupervisorWorkerState::Terminated, None))
+        .unwrap();
+    outbox.enqueue(3, &heartbeat(10)).unwrap();
+    let expected = outbox.pending(10).unwrap()[..2].to_vec();
+    assert!(outbox
+        .acknowledged_lifecycle_receipts(0, 10)
+        .unwrap()
+        .is_empty());
+
+    assert_eq!(outbox.acknowledge_through(1).unwrap(), 1);
+    assert_eq!(
+        outbox.acknowledged_lifecycle_receipts(0, 10).unwrap(),
+        expected[..1]
+    );
+    assert_eq!(outbox.acknowledge_through(1).unwrap(), 0);
+    assert_eq!(outbox.acknowledge_through(3).unwrap(), 2);
+    drop(outbox);
+
+    let reopened = SupervisorOutbox::open(&path, registration(), session()).unwrap();
+    let history = reopened.acknowledged_lifecycle_receipts(0, 10).unwrap();
+    assert_eq!(history, expected);
+    assert_eq!(history[0].frame.encode_to_vec(), started.encode_to_vec());
+    assert_eq!(
+        history[1].frame.encode_to_vec(),
+        terminal.frame.encode_to_vec()
+    );
+    assert_eq!(
+        reopened.acknowledged_lifecycle_receipts(1, 1).unwrap(),
+        vec![terminal]
+    );
+    assert!(reopened
+        .acknowledged_lifecycle_receipts(2, 10)
+        .unwrap()
+        .is_empty());
+    assert!(reopened.pending(10).unwrap().is_empty());
+    assert_eq!(
+        reopened.positions().unwrap(),
+        OutboxPositions {
+            acknowledged: 3,
+            last_enqueued: 3
+        }
+    );
+    assert!(matches!(
+        reopened.acknowledged_lifecycle_receipts(0, 0),
+        Err(OutboxError::NonPositiveLimit)
+    ));
+    assert!(matches!(
+        reopened.acknowledged_lifecycle_receipts(u64::MAX, 1),
+        Err(OutboxError::SequenceOutOfRange)
+    ));
+    drop(reopened);
+
+    let mut other_registration = registration();
+    other_registration.identity.tenant_id = "another-tenant".into();
+    assert!(matches!(
+        SupervisorOutbox::open(&path, other_registration, session()),
+        Err(OutboxError::OutboxIdentityMismatch)
+    ));
+    let mut other_session = session();
+    other_session.session_id = "another-session".into();
+    assert!(matches!(
+        SupervisorOutbox::open(&path, registration(), other_session),
+        Err(OutboxError::OutboxIdentityMismatch)
+    ));
+    assert_eq!(
+        SupervisorOutbox::open(&path, registration(), session())
+            .unwrap()
+            .acknowledged_lifecycle_receipts(0, 10)
+            .unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn failed_lifecycle_archival_rolls_back_both_retention_and_acknowledgement() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("outbox.db");
+    let outbox = SupervisorOutbox::open(&path, registration(), session()).unwrap();
+    for state in [
+        v1::SupervisorWorkerState::Started,
+        v1::SupervisorWorkerState::Terminated,
+    ] {
+        outbox.enqueue_next(lifecycle(state, None)).unwrap();
+    }
+    let expected = outbox.pending(10).unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch(
+        "CREATE TRIGGER refuse_terminal_archive BEFORE INSERT ON acknowledged_lifecycle_receipts
+         WHEN NEW.sequence = 2 BEGIN SELECT RAISE(ABORT, 'injected archive failure'); END;",
+    ).unwrap();
+    assert!(outbox
+        .acknowledge_through(2)
+        .unwrap_err()
+        .to_string()
+        .contains("injected archive failure"));
+    assert_eq!(outbox.pending(10).unwrap(), expected);
+    assert!(outbox
+        .acknowledged_lifecycle_receipts(0, 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        outbox.positions().unwrap(),
+        OutboxPositions {
+            acknowledged: 0,
+            last_enqueued: 2
+        }
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER refuse_terminal_archive")
+        .unwrap();
+    drop(connection);
+    assert_eq!(outbox.acknowledge_through(2).unwrap(), 2);
+    drop(outbox);
+    let reopened = SupervisorOutbox::open(&path, registration(), session()).unwrap();
+    assert_eq!(
+        reopened.acknowledged_lifecycle_receipts(0, 10).unwrap(),
+        expected
+    );
+    assert!(reopened.pending(10).unwrap().is_empty());
+}
+
+#[test]
+fn lifecycle_archive_pages_are_capped_and_continue_from_original_sequences() {
+    let outbox = SupervisorOutbox::open_in_memory(registration(), session()).unwrap();
+    for sequence in 1..=101 {
+        outbox
+            .enqueue(
+                sequence,
+                &lifecycle(v1::SupervisorWorkerState::Started, Some(sequence)),
+            )
+            .unwrap();
+    }
+    outbox.acknowledge_through(101).unwrap();
+    let first = outbox.acknowledged_lifecycle_receipts(0, u32::MAX).unwrap();
+    assert_eq!(first.len(), 100);
+    assert_eq!(first.first().unwrap().sequence, 1);
+    assert_eq!(first.last().unwrap().sequence, 100);
+    let second = outbox.acknowledged_lifecycle_receipts(100, 100).unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].sequence, 101);
+    assert!(outbox
+        .acknowledged_lifecycle_receipts(101, 100)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn older_outboxes_preserve_pending_lifecycles_without_inventing_pruned_history() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("outbox.db");
+    let outbox = SupervisorOutbox::open(&path, registration(), session()).unwrap();
+    outbox
+        .enqueue_next(lifecycle(v1::SupervisorWorkerState::Started, None))
+        .unwrap();
+    outbox.acknowledge_through(1).unwrap();
+    let terminal = outbox
+        .enqueue_next(lifecycle(v1::SupervisorWorkerState::Terminated, None))
+        .unwrap();
+    drop(outbox);
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TABLE acknowledged_lifecycle_receipts")
+        .unwrap();
+    drop(connection);
+
+    let reopened = SupervisorOutbox::open(&path, registration(), session()).unwrap();
+    assert!(reopened
+        .acknowledged_lifecycle_receipts(0, 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(reopened.pending(10).unwrap(), vec![terminal.clone()]);
+    assert_eq!(reopened.acknowledge_through(2).unwrap(), 1);
+    assert_eq!(
+        reopened.acknowledged_lifecycle_receipts(0, 10).unwrap(),
+        vec![terminal]
+    );
+}
+
+#[test]
+fn corrupt_pending_bytes_cannot_be_pruned_as_if_archival_succeeded() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("outbox.db");
+    let outbox = SupervisorOutbox::open(&path, registration(), session()).unwrap();
+    outbox
+        .enqueue_next(lifecycle(v1::SupervisorWorkerState::Terminated, None))
+        .unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE outbound_frames SET frame = ?1 WHERE sequence = 1",
+            [vec![0xff_u8]],
+        )
+        .unwrap();
+    assert!(matches!(
+        outbox.acknowledge_through(1),
+        Err(OutboxError::Database(_))
+    ));
+    assert_eq!(
+        outbox.positions().unwrap(),
+        OutboxPositions {
+            acknowledged: 0,
+            last_enqueued: 1
+        }
+    );
+    assert!(outbox
+        .acknowledged_lifecycle_receipts(0, 10)
+        .unwrap()
+        .is_empty());
+    let retained: Vec<u8> = connection
+        .query_row(
+            "SELECT frame FROM outbound_frames WHERE sequence = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, vec![0xff]);
 }
 
 #[test]

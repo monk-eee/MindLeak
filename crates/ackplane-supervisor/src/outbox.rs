@@ -135,15 +135,36 @@ impl SupervisorOutbox {
         }
         pending_outbound_frames(&self.conn, i64::from(limit))?
             .into_iter()
-            .map(|(sequence, bytes)| {
-                let frame = v1::NodeFrame::decode(bytes.as_slice())
-                    .map_err(|_| OutboxError::CorruptStoredFrame { sequence })?;
-                Ok(QueuedFrame { sequence, frame })
-            })
+            .map(QueuedFrame::decode)
             .collect()
     }
 
+    /// Read acknowledged lifecycle receipts after a sequence, capped at 100 per page.
+    ///
+    /// These are original local reports, not proof of current process state or task
+    /// completion. Receipts pruned before retention was enabled cannot be recovered.
+    pub fn acknowledged_lifecycle_receipts(
+        &self,
+        after_sequence: u64,
+        limit: u32,
+    ) -> Result<Vec<QueuedFrame>, OutboxError> {
+        if limit == 0 {
+            return Err(OutboxError::NonPositiveLimit);
+        }
+        let after_sequence =
+            i64::try_from(after_sequence).map_err(|_| OutboxError::SequenceOutOfRange)?;
+        crate::storage::acknowledged_lifecycle_receipts(
+            &self.conn,
+            after_sequence,
+            i64::from(limit.min(100)),
+        )?
+        .into_iter()
+        .map(QueuedFrame::decode)
+        .collect()
+    }
+
     /// Acknowledge every frame at or below an accepted local sequence position.
+    /// Original lifecycle reports are retained atomically; they are not pending delivery.
     pub fn acknowledge_through(&self, sequence: u64) -> Result<usize, OutboxError> {
         let sequence = positive_sequence(sequence)?;
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
@@ -195,6 +216,14 @@ pub enum QueueOutcome {
 pub struct QueuedFrame {
     pub sequence: u64,
     pub frame: v1::NodeFrame,
+}
+
+impl QueuedFrame {
+    fn decode((sequence, bytes): (u64, Vec<u8>)) -> Result<Self, OutboxError> {
+        let frame = v1::NodeFrame::decode(bytes.as_slice())
+            .map_err(|_| OutboxError::CorruptStoredFrame { sequence })?;
+        Ok(Self { sequence, frame })
+    }
 }
 
 /// Durable-outbox errors are explicit so a future transport never guesses delivery state.

@@ -196,6 +196,22 @@ started again while waiting. A successful owner-guarded release no-op also
 confirms there is no live claim to give back. Shutdown keeps its thirty-second
 deadline and preserves existing recovery markers if cleanup cannot finish.
 
+Acknowledgement retains the exact encoded lifecycle receipts and their original
+outbox sequences in `acknowledged_lifecycle_receipts`, in the same transaction
+that removes their pending delivery copies. Archive failure or corrupt pending
+bytes rolls back acknowledgement. Other frame types are pruned as before, and
+archived receipts never become pending again or change the delivery positions.
+The library's `acknowledged_lifecycle_receipts(after_sequence, limit)` read
+returns pages in sequence order, capped at 100 records; start with cursor zero
+and continue after the last returned sequence. Records remain in that session's
+outbox database and remain protected by its original identity binding.
+
+This retention is a prerequisite for recovery inspection, not a recovery command.
+An archived report does not establish current process liveness, grant authority,
+or certify task completion. Upgrading preserves lifecycle frames still pending
+when they are acknowledged, but cannot reconstruct older pruned receipts. Missing
+history remains unknown, and automatic recovery after process loss is unchanged.
+
 ## Verify The Loop
 
 Set `ACKPLANE_TEST_DATABASE_URL` to the isolated `ackplane_test` database, never
@@ -241,6 +257,11 @@ directory concurrency.
 isolated database to verify real authenticated permanent and retryable server
 refusals, the accepted position, and byte-preserving outbox reopen. It confirms
 that a rejected frame cannot be skipped to transmit later evidence.
+
+`cargo test --locked -p ackplane-supervisor --test outbox` also needs no server.
+It verifies exact lifecycle retention across acknowledgement and reopen, bounded
+cursor paging, identity isolation, rollback on an injected archive failure,
+corrupt-frame preservation, and honest handling of older outboxes.
 
 `cargo test --locked -p ackplane-supervisor --lib worker_adapter::tests`
 includes a macOS/Linux regression that waits for a real child's exit without
