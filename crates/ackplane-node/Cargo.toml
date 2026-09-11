@@ -9,6 +9,7 @@ description = "Repository-side identity owner: a non-exporting signer companion 
 
 [dependencies]
 ed25519-dalek = { version = "2.1", features = ["zeroize"] }
+fs2 = "0.4.3"
 getrandom = "0.2"
 interprocess = "2"
 keyring = "2.3.3"
