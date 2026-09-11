@@ -336,11 +336,11 @@ jobs:
         env:
           POSTGRES_USER: ackplane
           POSTGRES_PASSWORD: ackplane-development-only-not-for-production
-          POSTGRES_DB: ackplane
+          POSTGRES_DB: ackplane_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ackplane -d ackplane"
+          --health-cmd "pg_isready -U ackplane -d ackplane_test"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 20
@@ -364,8 +364,8 @@ jobs:
         run: node scripts/npm-ci-retry.mjs --prefix editors/vscode
       - name: Run tests with coverage
         env:
-          ACKPLANE_TEST_REHEARSAL_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@localhost:5432/ackplane
-          ACKPLANE_TEST_DATABASE_URL: postgres://ackplane:ackplane-development-only-not-for-production@localhost:5432/ackplane
+          ACKPLANE_TEST_REHEARSAL_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@localhost:5432/ackplane_test
+          ACKPLANE_TEST_DATABASE_URL: postgres://ackplane:ackplane-development-only-not-for-production@localhost:5432/ackplane_test
         run: make coverage
       - name: Upload coverage reports
         if: always()
