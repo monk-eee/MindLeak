@@ -6,8 +6,8 @@ use std::{
 };
 
 use ackplane_bridge::live_feed::{live_feed_routes, LiveFeedApiState};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

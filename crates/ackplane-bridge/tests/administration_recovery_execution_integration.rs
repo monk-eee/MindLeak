@@ -8,6 +8,7 @@ use std::{
 
 use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
 use ackplane_client::auth::{authenticate_recovery_execution, ClaimSigner, SeedSigner};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_protocol::purge_confirmation_auth::RecoveryExecutionOperation;
 use ackplane_server::{
     administration_store::{
@@ -15,7 +16,6 @@ use ackplane_server::{
         PolicyAdoptionRequest,
     },
     claim_store::ClaimStore,
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,
@@ -250,7 +250,8 @@ fn preview_body(
             confirmation_window_seconds: CONFIRMATION_WINDOW_SECONDS,
             idempotency_key: &idempotency_key,
         },
-    );
+    )
+    .unwrap();
     json!({
         "policy_id": policy_id,
         "snapshot_policy_id": snapshot_policy_id,
@@ -276,7 +277,8 @@ fn confirmation_body(
         tenant_id,
         repository_id,
         &RecoveryExecutionOperation::Confirm { request_id },
-    );
+    )
+    .unwrap();
     json!({
         "repository_id": repository_id,
         "authentication": authentication_json(authentication),

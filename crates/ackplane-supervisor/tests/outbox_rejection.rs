@@ -4,10 +4,11 @@ use ackplane_client::{
     node_identity::{NodeIdentity, NodeSignerSource},
     NodeSyncConnection,
 };
-use ackplane_protocol::{supervisor::SupervisorWorkerState, v1};
+use ackplane_protocol::{
+    enrollment::public_key_fingerprint, supervisor::SupervisorWorkerState, v1,
+};
 use ackplane_server::{
     db_pool::{build_pool, TEST_POOL_MAX_SIZE},
-    enrollment::public_key_fingerprint,
     enrollment_store::EnrollmentStore,
     ledger::LedgerStore,
     service::NodeSyncService,

@@ -54,7 +54,8 @@ impl WorkerRuntime {
             task_id,
             &self.session.session_id,
             &operation,
-        );
+        )
+        .map_err(|error| DaemonError::Signer(error.to_string()))?;
         let mut client = ClaimClient::connect(&config.endpoint)
             .await
             .map_err(Box::new)?;
@@ -99,7 +100,8 @@ impl WorkerRuntime {
             &ClaimOperation::Renew {
                 lease_seconds: LEASE_SECONDS,
             },
-        );
+        )
+        .map_err(|error| DaemonError::Signer(error.to_string()))?;
         let mut client = ClaimClient::connect(&config.endpoint)
             .await
             .map_err(Box::new)?;
@@ -137,7 +139,8 @@ impl WorkerRuntime {
             task_id,
             &self.session.session_id,
             &ClaimOperation::Release,
-        );
+        )
+        .map_err(|error| DaemonError::Signer(error.to_string()))?;
         let mut client = ClaimClient::connect(&config.endpoint)
             .await
             .map_err(Box::new)?;

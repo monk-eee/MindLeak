@@ -8,14 +8,22 @@ rust-version.workspace = true
 description = "Repository-side identity owner: a non-exporting signer companion (ADR-0100)."
 
 [dependencies]
+ackplane-client = { path = "../ackplane-client" }
+ackplane-protocol = { path = "../ackplane-protocol" }
 ed25519-dalek = { version = "2.1", features = ["zeroize"] }
+fs2 = "0.4.3"
 getrandom = "0.2"
 interprocess = "2"
+keyring = "2.3.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+tempfile = "3"
 thiserror = { workspace = true }
 zeroize = "1"
 
 [dev-dependencies]
-tempfile = "3"
+ackplane-server = { path = "../ackplane-server" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { workspace = true }

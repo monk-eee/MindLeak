@@ -68,6 +68,8 @@ impl NodeSyncConnection {
     /// 8: signing goes through the same [`ClaimSigner`] abstraction the claim
     /// flow already uses -- this method never touches a raw private key
     /// itself).
+    /// A local signing refusal returns [`ClientError::Signing`] before a
+    /// challenge response is sent and drops the unauthenticated stream.
     ///
     /// `capabilities` names the transport-level features this connection is
     /// declaring (ADR-0116 decision 4 keeps deciding what any of that
@@ -124,7 +126,7 @@ impl NodeSyncConnection {
             repository_id,
             producer_id: signer.node_id(),
             signing_key_id: signer.signing_key_id(),
-        }));
+        }))?;
         send(
             &tx,
             v1::NodeFrame {

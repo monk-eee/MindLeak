@@ -13,8 +13,8 @@ use ackplane_bridge::{
     evidence::BridgeEvidenceStore,
     evidence_api::{evidence_routes, EvidenceApiState},
 };
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

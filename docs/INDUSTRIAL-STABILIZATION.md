@@ -50,7 +50,7 @@ repository. They are provisional, not deadlines; reassess after STAB-03.
 | Task | Ledger ID | Status | Estimate | Acceptance Summary |
 | --- | --- | --- | --- | --- |
 | STAB-01: Reproducible build and database gate | `task:52eb3f6d82bd` | Merged, CI passed, required check enabled | 1-3 days | Fail closed without database/recovery prerequisites; migrate explicitly; compile every target; run all-feature workspace tests against disposable Postgres in CI and locally. |
-| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: durable activation; runtime handoff open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
+| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: provider activation and restart; runtime handoff open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
 | STAB-03: Real worker execution and isolation | `task:df1e790eefca` | Queued after STAB-02 | 5-10 days | Addressed, authenticated work drives a real configured worker with bounded current context in its own worktree; two-node isolation and peer-impersonation refusals pass. |
 | STAB-04: Completion and restart recovery | `task:a200ebd9ec16` | Queued after STAB-03 | 5-8 days | Attributed evidence and conformance govern completion; crashes, reconnects, duplicate messages, expired claims and lost outbox state cannot silently lose or repeat work. |
 | STAB-05: Shared context and honest freshness | `task:8edce4b7d4a9` | Queued after STAB-04 | 4-7 days | Enrolled-node embedding production feeds shared recall; invalidation, cross-tenant refusal and explicit unembedded/stale/unavailable states are tested. Resolve the Work freshness design mismatch explicitly. |
@@ -92,9 +92,9 @@ and preserves its exit status. It does not start, stop or reset any deployment.
 
 The caller owns the disposable database lifecycle. URL validation is not proof
 that a database is disposable; the runner cannot infer that from its name.
-Existing ignored tests requiring external models or a platform credential service
-retain their own prerequisites. An enabled database gate is not a claim that
-those external integrations ran.
+Existing ignored model tests retain their own prerequisites. Native credential
+coverage is now mandatory in this gate, with an isolated Linux Secret Service
+session; a passing database gate does not imply that optional models ran.
 
 PR [#920](https://github.com/monk-eee/MindLeak/pull/920) merged as
 `7991ba3a9aafe4d6a6012fd160b405856abb7b3c` after all applicable CI jobs passed.
@@ -123,6 +123,10 @@ portable roadmap, not a second task-state authority. Update evidence at each
 reviewed checkpoint and retain the tested commit identity.
 
 ## Enrollment Identity Safety
+
+This and the following recovery section describe earlier file-based CLI
+checkpoints. Current commands and provider custody are described under
+**Provider-Backed CLI** below; the old seed-file options are no longer accepted.
 
 The first STAB-02 change preserves the existing ignored key file at
 `.mindleak/ackplane-node.key` (or the explicit `--key-path` /
@@ -189,3 +193,203 @@ the protected enrollment state. Saving a receipt is not signer provisioning; see
 [runtime identity handoff gap](../gaps.d/enrollment-runtime-identity-handoff-is-not-wired.md).
 That remains STAB-02 work, not an invitation to generate a new key or to copy a
 private seed into dotenv.
+
+## Persistent Node Provider
+
+`ackplane-node::CredentialProvider` is an explicitly selected software provider
+for the existing `NodeSigner` interface. Creation now belongs to
+`CredentialCandidate::provision`, which has no signing-key ID until Ackplane
+assigns one. `CredentialProvider::recover` restores only an activated binding;
+`CredentialCandidate::recover` restores a pending candidate. Neither recovery
+path creates a replacement key. Public metadata creation is internal to the
+provider, not a second public enrollment API.
+
+The credential includes its tenant, repository, node, challenge or activation
+binding. Local `enrolment.json` contains only those public fields and a random
+handle, never the private seed. Recovery checks both records, and signing
+re-reads the credential so removal or replacement stops new signatures.
+Provisioning refuses existing state; its initial metadata publication never
+overwrites a filesystem entry, and failure removes only the newly created
+credential. Activation updates retain the credential even when public metadata
+publication fails, so recovery can finish the accepted binding. Errors and debug
+output exclude secret bytes; transient secret buffers are zeroized.
+
+Tests cover restart, no-overwrite provisioning, metadata rebinding, replaced or
+missing credentials, write failure and redacted errors. An opt-in native test
+provisions a random test credential, releases the provider, launches a separate
+process, verifies a signature from the same restored public key, then deletes
+only that test credential. macOS and Windows CI explicitly enable the test:
+
+```bash
+cargo test --locked -p ackplane-node a_persistent_provider_survives_a_real_process_restart -- --nocapture
+```
+
+Set `MINDLEAK_REQUIRE_CREDENTIAL_FACILITY=1` to require that native test rather
+than skip it. It requires Keychain, Credential Manager or Linux Secret Service;
+the ordinary isolated tests do not access a real credential store.
+
+The initial persistence checkpoint passed all 29 node tests with native
+credential access required, all-target/all-feature Clippy, and the full industrial gate: 2,588
+passed, zero failed and three existing ignored tests across 79 targets.
+Metadata-rebinding and no-overwrite regressions were checked in both failing and
+fixed forms. The native restart test removed its randomly addressed credential.
+
+This does not wire `register-me`, the supervisor or local planes to the provider,
+does not adopt an existing file-based key, and does not claim hardware-backed
+non-exportability. Persistent key rotation is refused, not approximated. STAB-02
+stays open until the real enrollment-to-runtime path uses this ownership model.
+
+## Crash-Safe Ownership
+
+`NodeProcessLock` now uses a kernel-held exclusive file lock. A second process
+is refused while the owner is live; the OS releases the lock when the owner
+exits or is killed, even if Rust destructors never run. Restart does not delete
+or regenerate the key, credential handle or enrollment record.
+
+The `ackplane-node.lock` file intentionally remains after release. The PID in
+it is diagnostic, not an ownership decision. Never remove the file to clear a
+live lock: doing so can let two processes lock different files at the same
+path. An unlocked marker is reused automatically, with no PID reuse heuristics
+or stale-file timeout. These guarantees require a local filesystem and clients
+using this lock. Stop older marker-only node processes before upgrading.
+
+Process tests cover live-owner refusal, forced termination and restart,
+independent repositories, and graceful release without unlinking the marker.
+The native credential test also restores the same identity after a child exits
+without destructors. This closes the node's stale-lock restart gap; it does not
+claim worker-crash recovery, remote enrollment or a complete runtime handoff.
+
+Local verification: 29 node unit tests and five process-ownership tests pass
+with native credential access required. The full industrial gate passes 2,593
+tests with zero failures and three existing ignored tests across 80 targets;
+all-target/all-feature Clippy is clean. The stale-marker restart regression was
+confirmed failing against the old lock before this fix.
+
+## Provider Enrollment Binding
+
+`CredentialCandidate::activation_proof` validates the approved challenge's
+tenant, repository, node, fingerprint, request and nonce before persisting it
+and signing the canonical enrollment bytes. `retry_activation_proof` reproduces
+only that recorded proof. `accept_activation` checks the matching accepted
+request and returned key ID and receipt, then turns the same credential into a
+`CredentialProvider`; it never generates or exports a second key.
+
+The credential stores the accepted binding before the public metadata is
+replaced. Recovery completes an interrupted metadata update from that protected
+record, but refuses a changed binding or an attempt to recover an activated
+identity as a fresh candidate. Provider loss stops proof generation, activation
+and runtime signing. An accepted receipt records a past decision; a new
+authenticated connection still checks current authority.
+
+The provider's old short fingerprint was incompatible with enrollment. A
+regression test failed against it and passed after switching to the canonical
+`ed25519:`-prefixed SHA-256 fingerprint. Fingerprint and activation encoders now
+live in `ackplane-protocol::enrollment`; all server and test callers use that
+implementation directly, with no compatibility re-export.
+
+The real PostgreSQL/gRPC test discards an activation result, restores the same
+candidate, rejects a changed nonce, and obtains the original key ID and receipt
+by replay. It then recovers the provider and authenticates two fresh NodeSync
+connections. The database still contains exactly one key and receipt. All 42
+node unit tests and five process-ownership tests passed with database and native
+credential checks enabled; all-target/all-feature workspace Clippy passed.
+The full industrial gate passed 2,606 tests with zero failures and three
+existing ignored tests across 80 targets, with both database gates and native
+credential validation enabled.
+
+This is a library capability, not a completed installation workflow. The existing
+`register-me`, supervisor and local-plane clients still need to use it. The
+client signing boundary and provider adapter are addressed below. Existing file-based
+keys are not imported, old incomplete provider records are not silently
+converted, and no seed-based or local-mode fallback has been added. STAB-02
+remains open.
+
+## Fallible Client Signing
+
+`ClaimSigner::sign` now returns `Result<Vec<u8>, SigningError>`. Claim, purge
+and recovery authentication propagate the same local failure without producing
+a request. Federation handles the error before opening an RPC. NodeSync returns
+`ClientError::Signing` and drops the unauthenticated stream before sending a
+challenge response; a wire-level test verifies that only `Hello` was sent.
+The existing callers were migrated directly, with no infallible compatibility
+path, panic-on-refusal adapter or empty-signature fallback.
+The capability also retains `Send + Sync`: a compile-time regression failed
+with the original unbounded trait and passed after the fix, proving that its
+connection future can be sent to a runtime worker.
+
+`CredentialProvider::open_connection` uses the reusable NodeSync client through
+a private adapter, with tenant/repository/node/key values from its recorded
+binding. The adapter rechecks the credential for every signature and returns
+only fixed, non-secret error categories. The real PostgreSQL/gRPC test now uses
+this operation for both recovered connections, then removes the credential
+while the provider is live and checks for a local signing failure.
+
+All 25 client and 44 node unit tests pass with PostgreSQL and native credential
+validation required. The final industrial gate passed 2,610 tests with zero
+failures and three existing ignored tests across 80 targets, with both database
+gates and native credential validation enabled. Workspace all-target/all-feature
+Clippy passed with warnings denied. The initial contract probe could not compile
+against the infallible API; the completed refusal tests cover all three authentication
+families and the handshake's no-response behavior. A new test initially assumed
+requested capabilities were echoed by `HelloAccepted`; it was corrected to the
+server's existing explicit-enablement contract without changing server behavior.
+One full-run attempt stopped on the unchanged worker-adapter test's
+fixed-delay completion assertion (`Started` instead of `Completed`); the test
+passed alone and in the unchanged full-suite rerun. That intermittent failure is recorded separately in
+`gaps.d/worker-adapter-exit-assertion-uses-fixed-delay.md` and reported to the
+runtime workstream, not fixed or suppressed by this signing change.
+
+This removes the client-signing blocker, not the remaining installer or companion
+work. The caller must retain the provider's ownership while using its connection.
+CLI adoption is described below; the supervisor and local planes still need this lifecycle;
+legacy seed/cached-signing paths are unchanged. This does not monitor provider
+loss or revoke authority on streams that were already authenticated. STAB-02
+remains open.
+
+## Provider-Backed CLI
+
+`register-me request` now requires `--provider credential-facility-software` and
+an absolute `--state-dir`. Missing or unsupported providers are refused before
+any identity write or network request. The raw seed-file creation and loading
+module has been removed; legacy key options are rejected without modifying their
+files. The provider remains software key custody, not hardware non-exportability.
+
+The CLI saves an immutable public request before contacting Ackplane. Repeating
+an identical request preserves its ID, key, original timestamps and seven-day
+expiry; changed parameters fail without replacement. Provider challenge and
+activation records are not copied into the CLI descriptor. `activate` uses the
+provider's exact-proof replay and returned authority binding, authenticates
+NodeSync through the shared client, and publishes one deterministic enrollment
+event that can be replayed after a lost receipt. `--skip-sync` remains a report
+of historical activation, not current authorization.
+
+Validation includes the provider-selection regression, confirmed failing when
+the old command created a seed before refusal and passing after the migration.
+The existing real CLI failed-sync and lost-activation-reply tests now use native
+credential storage. New subprocess tests cover a lost initial request reply,
+same-key restart with an unreachable server, changed-request refusal and
+credential removal. An initial test-cleanup implementation blocked because
+macOS `keyring::delete_password` reads a credential before deleting it, requiring
+authorization across executables; reference-only lookup/deletion now removes
+only the exact test-owned entry and retains metadata if cleanup fails.
+
+The industrial runner now requires native credentials. `credential-test.mjs`
+creates a fresh D-Bus session and private temporary Secret Service directories on
+Linux; macOS and Windows use their native stores. Twelve runner tests pass,
+and a real isolated Linux Secret Service round trip verified the wrapper.
+Industrial and coverage CI use it; Windows/macOS CI explicitly run the native
+CLI restart test. No existing database-gated CLI test is disabled.
+
+Local verification passed all 26 CLI unit tests and four real subprocess tests.
+The full locked industrial gate passed 2,610 tests with zero failures and three
+existing ignored tests across 80 targets; database, recovery and native
+credential checks were enabled. Workspace all-target/all-feature Clippy passed
+with warnings denied. The two entries left by early cleanup failures were
+removed by their exact test handles without reading passwords; successful tests
+now verify cleanup, and the disposable test database was removed.
+
+See [Provider-backed enrollment](../DEVELOPERS.md#provider-backed-enrollment)
+for commands. This still does not wire the supervisor or MCP enrollment-status
+loader to provider state, establish production administrator authentication,
+or implement the long-lived companion and its stream-revocation lifecycle.
+STAB-02 remains open.

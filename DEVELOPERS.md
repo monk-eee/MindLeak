@@ -180,6 +180,12 @@ scratch recovery databases. It never starts or resets the live Compose stack.
 
 The runner builds every workspace test target with all features, migrates the
 test database, and runs the workspace suite with both database gates enabled.
+Native credential validation is also required. On Linux, install
+`dbus-run-session` and `gnome-keyring-daemon`; the runner uses a fresh D-Bus
+session and private temporary keyring directories, not the desktop session.
+macOS and Windows use Keychain and Credential Manager. The wrapper is also
+available as `node scripts/credential-test.mjs -- <command> [args...]` for a
+focused credential-dependent test or `make coverage` with database gates enabled.
 Missing prerequisites and failing commands stop it instead of silently skipping
 database coverage. CI's **Industrial (database and recovery)** job runs the same
 command against an ephemeral pgvector/PostgreSQL service. The ordinary local-only
@@ -187,6 +193,37 @@ test command remains independent of PostgreSQL.
 
 See [Industrial stabilization](docs/INDUSTRIAL-STABILIZATION.md) for the ordered
 tasks, database setup contract, acceptance criteria and remaining release gates.
+
+## Provider-backed enrollment
+
+`register-me` keeps node keys in the explicitly selected OS credential-backed
+software provider. Use an absolute, user-local state directory outside the
+repository, unique to this node. Replace the public identifiers and path in
+these commands with the deployment's values:
+
+```text
+cargo run --locked -p ackplane-server --bin register-me -- request --tenant-id TENANT_ID --repo REPOSITORY_ID --node NODE_ID --provider credential-facility-software --state-dir ABSOLUTE_STATE_DIR --grpc-endpoint https://ackplane.example:8443
+cargo run --locked -p ackplane-server --bin register-me -- activate --request-id REQUEST_ID --state-dir ABSOLUTE_STATE_DIR
+```
+
+Between those commands an independent administrator must approve the exact
+fingerprint. `register-me approve` is still only a local-development direct
+database shortcut, not production administrator authentication. For the
+development Bridge, `--tenant-name NAME --salt-path ABSOLUTE_SALT_PATH` derives
+the same tenant ID instead of supplying `--tenant-id`.
+
+The first command saves its public request before contacting Ackplane. Repeat
+the same request after a lost reply; changed parameters are refused. Activation
+and its proof-replay state belong to the node provider, and repeated activation
+reuses the same key ID, receipt and enrollment event. `--skip-sync` reports a
+recorded activation only, not current authority. An explicit `--grpc-endpoint`
+may be supplied on activation for a relocated authority using the same binding.
+
+Raw `--key-path` options are rejected and existing seed files are not imported.
+Do not copy a seed into dotenv to bridge old callers. The supervisor and the
+MCP enrollment-status loader still require adoption of this provider lifecycle;
+successful CLI enrollment does not complete that handoff. Missing credentials
+must be restored, never replaced implicitly.
 
 ## The delivery queue
 

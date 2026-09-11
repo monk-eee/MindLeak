@@ -8,10 +8,11 @@ use thiserror::Error;
 
 use crate::db_pool::{PgConnection, PgPool};
 use crate::enrollment::{
-    key_rotation_bytes, public_key_fingerprint, verify_activation_proof,
-    verify_key_rotation_signature, ActivationProofBinding, EnrollmentState, KeyRotationStatement,
+    key_rotation_bytes, verify_activation_proof, verify_key_rotation_signature,
+    ActivationProofBinding, EnrollmentState, KeyRotationStatement,
 };
 use crate::signing_keys::{self, KeyResolution, SigningKeyRecord};
+use ackplane_protocol::enrollment::public_key_fingerprint;
 
 const MIGRATION: &str = include_str!("../../migrations/0003_enrollment.sql");
 const SIGNING_KEY_MIGRATION: &str = include_str!("../../migrations/0004_signing_keys.sql");

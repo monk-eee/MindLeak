@@ -327,6 +327,60 @@ be the second arbiter ADR-0045 forbids.
 the refusal a repository sees names its actual remedy instead of asserting a
 rebuild that would not help.
 
+### `ackplane-node` (library)
+
+The repository-side identity owner's building blocks (ADR-0100), not yet a
+runnable companion integrated with the local planes or supervisor. `NodeSigner`
+exposes public identity and scoped signatures without a private-key export API.
+`SoftwareProvider` is memory-only. The explicitly selected `CredentialProvider`
+is recovered only after activation. First creation uses `CredentialCandidate`,
+which stores its software seed and binding in the operating system credential
+facility through `keyring`, addressed by a random opaque handle. Candidates have
+no invented signing-key ID and cannot sign runtime operations. They persist a
+matching approved challenge before producing a proof, can replay that proof
+after restart, and bind an accepted authority response to the same key and
+handle. `ackplane-protocol::enrollment` owns the canonical fingerprint and
+activation bytes shared with the server; the fingerprint is the full
+`ed25519:`-prefixed SHA-256 value, not a shortened display hash.
+
+The credential protects its complete binding, challenge or activation receipt,
+while the atomic local record contains only those public fields. Protected state
+is written first; recovery can finish interrupted public-metadata publication
+without reversing activation. Provisioning refuses existing state; recovery and
+every signature refuse missing, malformed or mismatched credentials without
+generating a replacement. Secret buffers are zeroized after use and diagnostics
+omit credential-store payloads. The real-service test proves exact activation
+replay and two authenticated NodeSync reconnects with the assigned key ID.
+
+`CredentialProvider::open_connection` now uses `ackplane-client::NodeSyncConnection`
+through a private `ClaimSigner` adapter. Tenant, repository, node and key IDs
+come from the provider's recorded binding, not another caller declaration. The
+credential is rechecked at signing time; loss and identity mismatch return typed,
+non-secret client errors. `ClaimSigner` retains `Send + Sync` so the connection
+future can run on a runtime worker rather than losing thread-safety at trait
+erasure. Credential loading and signing share one internal
+storage implementation with activation and `NodeSigner`. This operation exposes
+no new generic signing API. Its caller must retain the provider as credential
+owner; companion orchestration and already-open stream lifecycle remain unwired.
+
+The provider holds a kernel-backed repository file lock for its lifetime and
+refuses persistent rotation, retirement and destruction until those operations
+have an implemented durable lifecycle. `NodeProcessLock` uses `fs2` to refuse
+contenders without waiting and releases ownership when its file handle closes,
+including on process death. The lock file remains at its stable path; its PID
+is diagnostic, never proof of ownership, and removing it could split ownership
+across different files. Native CI proves recovery in a separate process after
+both normal and destructor-skipping exit on macOS Keychain and Windows
+Credential Manager. Linux Secret Service
+uses the same adapter but requires an available service for the opt-in native
+test. This is software key custody, not hardware non-exportability. The
+`register-me` CLI now provisions and recovers this provider, records the public
+request before transmission and delegates activation/replay to it. The supervisor,
+local planes and long-lived companion orchestration still need to adopt it. The lock
+coordinates cooperating processes on a local filesystem, not distributed hosts.
+Stop older marker-only node processes before
+upgrading; a live older process does not hold the new kernel lock.
+
 ### `ackplane-client` (library)
 
 The repository-side gRPC client for `ClaimDelegationService`
@@ -372,8 +426,12 @@ bidirectional `Synchronize` stream, sends `Hello`, and completes the
 enrolled-key connection challenge -- the same handshake
 `ackplane-server::service::handshake` implements and tests server-side --
 returning a live authenticated frame sender/receiver only after `HelloAccepted`
-and `FlowControl` are observed. Signing goes through the existing
-`ClaimSigner` trait, never a raw key inline in this module. A wrong signature,
+and `FlowControl` are observed. Signing goes through the fallible
+`ClaimSigner` trait, never a raw key inline in this module. A local provider
+refusal returns `ClientError::Signing` and sends no challenge response.
+`authenticate`, lifecycle-purge authentication and recovery authentication also
+return `SigningError`; federation propagates it before opening a mutation RPC.
+A wrong signature,
 an unknown `signing_key_id`, or a revoked key surface as
 `ClientError::ConnectionRefused` carrying the server's own typed
 `RejectionReason`, not a bare stream failure. The connection-challenge byte
@@ -514,25 +572,27 @@ atomically consumes it while recording `activating`. Key rotation remains
 explicitly unavailable until the continuity proof required by ADR-0085 is
 implemented.
 
-`register-me` (`src/bin/register-me/main.rs`) drives that ceremony from the command
-line as three subcommands — `request`, `approve`, `activate` — mirroring the
-real actors: a node runs `request`/`activate` unattended; `approve` is a
-documented local-dev database shortcut standing in for the administrative
-approval RPC/UI that does not exist yet. `activate` proves possession, opens
-one real `NodeSync` stream, and sends a signed heartbeat event using the
-`signing_key_id` `EnrollmentActivationResult` returns directly. The CLI's
-`state.rs` atomically records that key ID and receipt in the existing enrollment
-sidecar before synchronization, so a failed sync does not discard activation.
-New requests cannot replace saved enrollment; repeated activation reuses the
-record and still authenticates each NodeSync connection. Before submitting proof,
-the CLI persists the bound public challenge nonce so a lost activation response
-can be recovered through the existing exact-proof replay contract. A pending
-approval can refresh its challenge; an already consumed proof returns the
-original receipt and its original key, not a newer node key. The retry nonce is
-cleared only when the activation result has been saved. `--skip-sync` reports
-only recorded activation, not current authorization or liveness. Private key
-bytes remain outside this record; wiring an accepted persistent signer into the
-runtime is a separate STAB-02 requirement.
+`register-me` (`src/bin/register-me/main.rs`) drives `request`, `approve` and
+`activate`. Request explicitly selects `credential-facility-software` and an
+absolute user-local `--state-dir`; no seed-file path or implicit provider is
+accepted. `provider.rs` selects only fresh provisioning or recovery of the
+existing candidate. `request.rs` atomically persists an immutable public
+`enrollment-request.json` before the first RPC, so an exact retry keeps the
+request ID, public key and timestamps. New requests expire after seven days.
+Changed parameters or missing/corrupt provider state refuse rather than replace
+an identity. `approve` remains a separate, development-only database action.
+
+`enrollment.rs` delegates challenge signing, replay and key-ID/receipt binding
+to `CredentialCandidate`, then uses `CredentialProvider::open_connection` for
+NodeSync. Its first producer event is deterministic across retries and receives
+one record receipt rather than creating a new event on every activation. The
+CLI holds provider ownership through the connection. Its descriptor contains
+no key bytes, challenge copy or second activation record; those belong to the
+provider. `--skip-sync` reports recorded activation only. Real subprocess tests
+exercise request and activation lost replies, failed sync, repeated activation
+and credential loss. Linux database tests run under an isolated Secret Service;
+Windows and macOS explicitly require native CLI restart in CI. Supervisor and
+enrollment-status tool adoption remain separate STAB-02 work.
 
 `KnowledgeService` (`knowledge_store.rs`/`knowledge_service.rs`) is the first
 slice of Ackplane's PostgreSQL-backed knowledge domain (ADR-0106 decision 3;

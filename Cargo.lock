@@ -80,14 +80,22 @@ dependencies = [
 name = "ackplane-node"
 version = "0.1.7-alpha"
 dependencies = [
+ "ackplane-client",
+ "ackplane-protocol",
+ "ackplane-server",
  "ed25519-dalek",
+ "fs2",
  "getrandom 0.2.17",
  "interprocess",
+ "keyring",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
  "zeroize",
 ]
 
@@ -110,14 +118,17 @@ name = "ackplane-server"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "chacha20poly1305",
  "deadpool-postgres",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "keyring",
  "mindleak-model",
  "pgvector",
  "prost",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1061,6 +1072,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

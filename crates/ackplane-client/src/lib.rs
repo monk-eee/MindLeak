@@ -37,7 +37,7 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 pub mod auth;
 pub use auth::{
     authenticate, decode_seed, encode_seed, ClaimOperation, ClaimSigner, CredentialFacilityError,
-    CredentialFacilitySigner, SeedSigner,
+    CredentialFacilitySigner, SeedSigner, SigningError,
 };
 
 pub mod identity;
@@ -118,6 +118,8 @@ pub enum ClientError {
     AcknowledgementTimeout { expected: &'static str },
     #[error("invalid context packet: {0}")]
     InvalidContext(String),
+    #[error("could not authenticate this node: {0}")]
+    Signing(#[from] SigningError),
     #[error("`{0}` is not a valid Ackplane endpoint URI")]
     InvalidEndpoint(String),
     #[error("{TLS_CA_PATH_ENV}={0} could not be used as a trusted CA: {1}")]

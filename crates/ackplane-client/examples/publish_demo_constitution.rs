@@ -71,7 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             &identity.repository_id,
             &operation,
             &authentication,
-        ));
+        ))?;
         Ok(authentication)
     };
     let existing = tokio::time::timeout(

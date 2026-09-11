@@ -523,7 +523,7 @@ async fn exercise_two_workers(scenario: Scenario) {
                 tenant_id: tenant.clone(),
                 repository_id: repository.into(),
                 node_id: node.into(),
-                public_key_fingerprint: ackplane_server::enrollment::public_key_fingerprint(
+                public_key_fingerprint: ackplane_protocol::enrollment::public_key_fingerprint(
                     &public_key,
                 ),
                 public_key,

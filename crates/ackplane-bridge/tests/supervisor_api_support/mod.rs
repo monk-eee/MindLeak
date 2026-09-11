@@ -9,12 +9,12 @@ use std::{
 };
 
 use ackplane_bridge::supervisor_api::{supervisor_routes, SupervisorApiState};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_protocol::supervisor::{
     SupervisorCapabilities, SupervisorDirectiveCapability, SupervisorIdentity,
     SupervisorOutboxDurability, SupervisorRegistration,
 };
 use ackplane_server::{
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,
