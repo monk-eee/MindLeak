@@ -294,9 +294,50 @@ existing ignored tests across 80 targets, with both database gates and native
 credential validation enabled.
 
 This is a library capability, not a completed installation workflow. The existing
-`register-me`, supervisor and local-plane clients still need to use it. In
-particular, the client's infallible `ClaimSigner::sign` interface must propagate
-provider failures before it can safely adapt this signer. Existing file-based
+`register-me`, supervisor and local-plane clients still need to use it. The
+client signing boundary and provider adapter are addressed below. Existing file-based
 keys are not imported, old incomplete provider records are not silently
 converted, and no seed-based or local-mode fallback has been added. STAB-02
+remains open.
+
+## Fallible Client Signing
+
+`ClaimSigner::sign` now returns `Result<Vec<u8>, SigningError>`. Claim, purge
+and recovery authentication propagate the same local failure without producing
+a request. Federation handles the error before opening an RPC. NodeSync returns
+`ClientError::Signing` and drops the unauthenticated stream before sending a
+challenge response; a wire-level test verifies that only `Hello` was sent.
+The existing callers were migrated directly, with no infallible compatibility
+path, panic-on-refusal adapter or empty-signature fallback.
+The capability also retains `Send + Sync`: a compile-time regression failed
+with the original unbounded trait and passed after the fix, proving that its
+connection future can be sent to a runtime worker.
+
+`CredentialProvider::open_connection` uses the reusable NodeSync client through
+a private adapter, with tenant/repository/node/key values from its recorded
+binding. The adapter rechecks the credential for every signature and returns
+only fixed, non-secret error categories. The real PostgreSQL/gRPC test now uses
+this operation for both recovered connections, then removes the credential
+while the provider is live and checks for a local signing failure.
+
+All 25 client and 44 node unit tests pass with PostgreSQL and native credential
+validation required. The final industrial gate passed 2,610 tests with zero
+failures and three existing ignored tests across 80 targets, with both database
+gates and native credential validation enabled. Workspace all-target/all-feature
+Clippy passed with warnings denied. The initial contract probe could not compile
+against the infallible API; the completed refusal tests cover all three authentication
+families and the handshake's no-response behavior. A new test initially assumed
+requested capabilities were echoed by `HelloAccepted`; it was corrected to the
+server's existing explicit-enablement contract without changing server behavior.
+One full-run attempt stopped on the unchanged worker-adapter test's
+fixed-delay completion assertion (`Started` instead of `Completed`); the test
+passed alone and in the unchanged full-suite rerun. That intermittent failure is recorded separately in
+`gaps.d/worker-adapter-exit-assertion-uses-fixed-delay.md` and reported to the
+runtime workstream, not fixed or suppressed by this signing change.
+
+This removes the client-signing blocker, not the remaining installer or companion
+work. The caller must retain the provider's ownership while using its connection.
+The existing CLI, supervisor and local planes still need to adopt this lifecycle;
+legacy seed/cached-signing paths are unchanged. This does not monitor provider
+loss or revoke authority on streams that were already authenticated. STAB-02
 remains open.

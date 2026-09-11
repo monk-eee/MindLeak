@@ -170,7 +170,8 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             task_id,
             owner,
             &operation,
-        );
+        )
+        .map_err(map_client_error)?;
         let request = ClaimLeaseRequest {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
@@ -209,7 +210,8 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             task_id,
             owner,
             &operation,
-        );
+        )
+        .map_err(map_client_error)?;
         let request = ClaimRenewRequest {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
@@ -237,7 +239,8 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             task_id,
             owner,
             &ClaimOperation::Release,
-        );
+        )
+        .map_err(map_client_error)?;
         let request = ClaimReleaseRequest {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
@@ -276,7 +279,8 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             &request.task_id,
             &request.owner,
             &operation,
-        );
+        )
+        .map_err(map_client_error)?;
         let wire_request = ClaimRecoverRequest {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
@@ -309,7 +313,8 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             task_id,
             owner,
             &ClaimOperation::Park,
-        );
+        )
+        .map_err(map_client_error)?;
         let request = ClaimParkRequest {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
@@ -344,7 +349,8 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
             task_id,
             owner,
             &operation,
-        );
+        )
+        .map_err(map_client_error)?;
         let request = ClaimAnswerRequest {
             tenant_id: identity.tenant_id.clone(),
             repository_id: identity.repository_id.clone(),
@@ -363,8 +369,8 @@ impl FederatedClaimAuthority for AckplaneClaimAuthority {
     }
 }
 
-fn map_client_error(error: ackplane_client::ClientError) -> LodestarError {
-    LodestarError::Federated(format!("Ackplane arbiter: {error}"))
+fn map_client_error(error: impl Into<ackplane_client::ClientError>) -> LodestarError {
+    LodestarError::Federated(format!("Ackplane client: {}", error.into()))
 }
 
 fn parse_unix_seconds(rfc3339: &str) -> lodestar_core::Result<i64> {

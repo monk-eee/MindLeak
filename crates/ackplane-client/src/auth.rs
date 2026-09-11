@@ -1,17 +1,12 @@
 //! Producing a `ClaimAuthentication` a repository node can send with a claim
 //! request (ADR-0096 clause 4).
 //!
-//! Signing itself is abstracted behind [`ClaimSigner`] rather than fixed to
-//! one key-sourcing mechanism: ADR-0085 decision 2 and ADR-0100 decision 5
-//! want the private key non-exportable through an OS credential facility
-//! where one exists. [`CredentialFacilitySigner`] is that implementation
-//! (Windows Credential Manager, macOS Keychain, or Linux Secret Service, via
-//! the `keyring` crate) and is the seam a real federated deployment resolves
-//! to by default. [`SeedSigner`] remains for tests and documented
-//! non-hardened use -- a raw seed, sourced today from an environment
-//! variable by the caller, the same posture already accepted here for
-//! `MINDLEAK_LLM_API_KEY`. See
-//! `gaps.d/the-node-signing-key-has-no-credential-facility-yet.md`.
+//! Signing is a fallible [`ClaimSigner`] capability. Provider failures return
+//! [`SigningError`], never fabricated signature bytes or provider diagnostics.
+//! [`SeedSigner`] and [`CredentialFacilitySigner`] remain explicit software
+//! implementations for existing callers. Persistent credential ownership belongs
+//! to `ackplane-node`; migrating the CLI and local planes to that owner remains
+//! separate work under ADR-0100.
 
 use ed25519_dalek::{Signer, SigningKey};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -22,12 +17,23 @@ pub use ackplane_protocol::purge_confirmation_auth::{
 };
 pub use ackplane_protocol::v1::ClaimAuthentication;
 
+/// Non-secret failure categories that survive the client boundary unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SigningError {
+    #[error("the node signing identity is unavailable; restore the configured provider")]
+    Unavailable,
+    #[error("the node signing identity does not match its recorded binding")]
+    IdentityMismatch,
+    #[error("the node signing provider refused this operation")]
+    Refused,
+}
+
 /// A repository node's capability to prove its identity for a claim request.
 /// Deliberately agnostic to how the key is held -- only that it can sign.
-pub trait ClaimSigner {
+pub trait ClaimSigner: Send + Sync {
     fn signing_key_id(&self) -> &str;
     fn node_id(&self) -> &str;
-    fn sign(&self, bytes: &[u8]) -> Vec<u8>;
+    fn sign(&self, bytes: &[u8]) -> Result<Vec<u8>, SigningError>;
 }
 
 /// An Ed25519 [`ClaimSigner`] built directly from a 32-byte seed.
@@ -60,8 +66,8 @@ impl ClaimSigner for SeedSigner {
         &self.node_id
     }
 
-    fn sign(&self, bytes: &[u8]) -> Vec<u8> {
-        self.key.sign(bytes).to_bytes().to_vec()
+    fn sign(&self, bytes: &[u8]) -> Result<Vec<u8>, SigningError> {
+        Ok(self.key.sign(bytes).to_bytes().to_vec())
     }
 }
 
@@ -148,8 +154,8 @@ impl ClaimSigner for CredentialFacilitySigner {
         &self.node_id
     }
 
-    fn sign(&self, bytes: &[u8]) -> Vec<u8> {
-        self.key.sign(bytes).to_bytes().to_vec()
+    fn sign(&self, bytes: &[u8]) -> Result<Vec<u8>, SigningError> {
+        Ok(self.key.sign(bytes).to_bytes().to_vec())
     }
 }
 
@@ -169,7 +175,7 @@ pub fn authenticate(
     task_id: &str,
     owner_id: &str,
     operation: &ClaimOperation,
-) -> ClaimAuthentication {
+) -> Result<ClaimAuthentication, SigningError> {
     let mut authentication = unsigned_authentication(signer);
     let bytes = ackplane_protocol::claim_auth::claim_signing_bytes(
         tenant_id,
@@ -179,8 +185,8 @@ pub fn authenticate(
         operation,
         &authentication,
     );
-    authentication.signature = signer.sign(&bytes);
-    authentication
+    authentication.signature = signer.sign(&bytes)?;
+    Ok(authentication)
 }
 
 /// Build and sign an enrolled-key authentication for one Lifecycle-purge
@@ -191,7 +197,7 @@ pub fn authenticate_lifecycle_purge(
     tenant_id: &str,
     repository_id: &str,
     operation: &LifecyclePurgeOperation,
-) -> ClaimAuthentication {
+) -> Result<ClaimAuthentication, SigningError> {
     let mut authentication = unsigned_authentication(signer);
     let bytes = ackplane_protocol::purge_confirmation_auth::lifecycle_purge_signing_bytes(
         tenant_id,
@@ -199,8 +205,8 @@ pub fn authenticate_lifecycle_purge(
         operation,
         &authentication,
     );
-    authentication.signature = signer.sign(&bytes);
-    authentication
+    authentication.signature = signer.sign(&bytes)?;
+    Ok(authentication)
 }
 
 /// Build and sign an enrolled-key authentication for one Recovery-execution
@@ -212,7 +218,7 @@ pub fn authenticate_recovery_execution(
     tenant_id: &str,
     repository_id: &str,
     operation: &RecoveryExecutionOperation,
-) -> ClaimAuthentication {
+) -> Result<ClaimAuthentication, SigningError> {
     let mut authentication = unsigned_authentication(signer);
     let bytes = ackplane_protocol::purge_confirmation_auth::recovery_execution_signing_bytes(
         tenant_id,
@@ -220,8 +226,8 @@ pub fn authenticate_recovery_execution(
         operation,
         &authentication,
     );
-    authentication.signature = signer.sign(&bytes);
-    authentication
+    authentication.signature = signer.sign(&bytes)?;
+    Ok(authentication)
 }
 
 fn unsigned_authentication(signer: &dyn ClaimSigner) -> ClaimAuthentication {
@@ -237,6 +243,9 @@ fn unsigned_authentication(signer: &dyn ClaimSigner) -> ClaimAuthentication {
         signature: Vec::new(),
     }
 }
+
+#[cfg(test)]
+mod failure_tests;
 
 #[cfg(test)]
 mod tests {
@@ -269,7 +278,7 @@ mod tests {
             request_id: "purge-request-a",
         };
         let authentication =
-            authenticate_lifecycle_purge(&signer, "tenant-a", "repository-a", &operation);
+            authenticate_lifecycle_purge(&signer, "tenant-a", "repository-a", &operation).unwrap();
         let bytes = ackplane_protocol::purge_confirmation_auth::lifecycle_purge_signing_bytes(
             "tenant-a",
             "repository-a",
@@ -379,7 +388,10 @@ mod tests {
         let signer = CredentialFacilitySigner::load("key-1", "node-1", service, &account)
             .expect("the seed just stored should load back");
         let direct = SeedSigner::new("key-1", "node-1", &seed);
-        assert_eq!(signer.sign(b"message"), direct.sign(b"message"));
+        assert_eq!(
+            signer.sign(b"message").unwrap(),
+            direct.sign(b"message").unwrap()
+        );
         println!("passed: round-tripped for real through the OS credential facility");
 
         let _ = keyring::Entry::new(service, &account).and_then(|entry| entry.delete_password());

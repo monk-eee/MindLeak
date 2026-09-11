@@ -250,7 +250,8 @@ fn preview_body(
             confirmation_window_seconds: CONFIRMATION_WINDOW_SECONDS,
             idempotency_key: &idempotency_key,
         },
-    );
+    )
+    .unwrap();
     json!({
         "policy_id": policy_id,
         "snapshot_policy_id": snapshot_policy_id,
@@ -276,7 +277,8 @@ fn confirmation_body(
         tenant_id,
         repository_id,
         &RecoveryExecutionOperation::Confirm { request_id },
-    );
+    )
+    .unwrap();
     json!({
         "repository_id": repository_id,
         "authentication": authentication_json(authentication),

@@ -13,9 +13,15 @@
   authenticates two recovered NodeSync connections with one key and receipt.
   The incompatible short provider fingerprint was fixed this run with a
   failing-then-passing regression and one shared canonical protocol encoder.
-  The CLI and supervisor do not yet call these capabilities. The client's
-  `ClaimSigner::sign` is also infallible, so it cannot yet propagate the
-  persistent provider's failure without a panic or a misleading signature.
+  The client's `ClaimSigner::sign` and authentication helpers now propagate
+  typed provider failures; the NodeSync handshake sends no response after a
+  local refusal. `CredentialProvider::open_connection` now uses the reusable
+  client with its own binding and a private signer adapter, tested for recovered
+  authentication and credential loss. The erased signer retains `Send + Sync`,
+  verified by a failing-then-passing runtime-worker future regression. This
+  signing boundary was fixed this run.
+  The CLI and supervisor do not yet call these capabilities, and no companion
+  yet owns provider retention or monitors loss on already-authenticated streams.
   An operator can therefore finish enrollment yet still fail to start the
   supervisor with the same identity. Wire the persistent provider and
   non-secret binding handoff through the existing signer/IPC contracts; verify

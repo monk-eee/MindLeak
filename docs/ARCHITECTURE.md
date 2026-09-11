@@ -333,6 +333,17 @@ generating a replacement. Secret buffers are zeroized after use and diagnostics
 omit credential-store payloads. The real-service test proves exact activation
 replay and two authenticated NodeSync reconnects with the assigned key ID.
 
+`CredentialProvider::open_connection` now uses `ackplane-client::NodeSyncConnection`
+through a private `ClaimSigner` adapter. Tenant, repository, node and key IDs
+come from the provider's recorded binding, not another caller declaration. The
+credential is rechecked at signing time; loss and identity mismatch return typed,
+non-secret client errors. `ClaimSigner` retains `Send + Sync` so the connection
+future can run on a runtime worker rather than losing thread-safety at trait
+erasure. Credential loading and signing share one internal
+storage implementation with activation and `NodeSigner`. This operation exposes
+no new generic signing API. Its caller must retain the provider as credential
+owner; companion orchestration and already-open stream lifecycle remain unwired.
+
 The provider holds a kernel-backed repository file lock for its lifetime and
 refuses persistent rotation, retirement and destruction until those operations
 have an implemented durable lifecycle. `NodeProcessLock` uses `fs2` to refuse
@@ -395,8 +406,12 @@ bidirectional `Synchronize` stream, sends `Hello`, and completes the
 enrolled-key connection challenge -- the same handshake
 `ackplane-server::service::handshake` implements and tests server-side --
 returning a live authenticated frame sender/receiver only after `HelloAccepted`
-and `FlowControl` are observed. Signing goes through the existing
-`ClaimSigner` trait, never a raw key inline in this module. A wrong signature,
+and `FlowControl` are observed. Signing goes through the fallible
+`ClaimSigner` trait, never a raw key inline in this module. A local provider
+refusal returns `ClientError::Signing` and sends no challenge response.
+`authenticate`, lifecycle-purge authentication and recovery authentication also
+return `SigningError`; federation propagates it before opening a mutation RPC.
+A wrong signature,
 an unknown `signing_key_id`, or a revoked key surface as
 `ClientError::ConnectionRefused` carrying the server's own typed
 `RejectionReason`, not a bare stream failure. The connection-challenge byte

@@ -256,7 +256,8 @@ fn preview_body(
             confirmation_window_seconds: CONFIRMATION_WINDOW_SECONDS,
             idempotency_key: &idempotency_key,
         },
-    );
+    )
+    .unwrap();
     json!({
         "policy_id": policy_id,
         "data_category": DATA_CATEGORY,
@@ -278,7 +279,8 @@ fn confirmation_body(
         tenant_id,
         repository_id,
         &LifecyclePurgeOperation::Confirm { request_id },
-    );
+    )
+    .unwrap();
     json!({ "authentication": authentication_json(authentication) })
 }
 
