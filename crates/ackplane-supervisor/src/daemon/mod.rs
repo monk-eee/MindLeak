@@ -233,16 +233,18 @@ async fn serve_once(
         return Ok(exit);
     }
 
-    if runtime.finished && runtime.outbox.pending(1)?.is_empty() {
+    if runtime.acknowledge_finished()? {
         return Ok(DaemonExit::Finished);
     }
 
-    if let Some(exit) = disconnected_on_error(
-        connection
-            .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
-            .await,
-    ) {
-        return Ok(exit);
+    if !runtime.finished {
+        if let Some(exit) = disconnected_on_error(
+            connection
+                .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
+                .await,
+        ) {
+            return Ok(exit);
+        }
     }
 
     loop {
@@ -280,7 +282,7 @@ async fn serve_once(
         if let Some(exit) = resend_pending(&runtime.outbox, &mut connection).await? {
             return Ok(exit);
         }
-        if runtime.finished && runtime.outbox.pending(1)?.is_empty() {
+        if runtime.acknowledge_finished()? {
             return Ok(DaemonExit::Finished);
         }
         let interval = if config.workers.is_empty() {
@@ -298,12 +300,14 @@ async fn serve_once(
         }
         // Re-announcing the session is what asks for newly issued directives:
         // delivery is bound to the session frame, so this is the poll.
-        if let Some(exit) = disconnected_on_error(
-            connection
-                .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
-                .await,
-        ) {
-            return Ok(exit);
+        if !runtime.finished {
+            if let Some(exit) = disconnected_on_error(
+                connection
+                    .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
+                    .await,
+            ) {
+                return Ok(exit);
+            }
         }
     }
 }
@@ -415,7 +419,6 @@ async fn run_session(
             runtime.shutdown(config).await?;
             match serve_once(config, &mut runtime).await? {
                 DaemonExit::Finished => {
-                    runtime.acknowledge_finished()?;
                     return Ok(());
                 }
                 _ => return Err(DaemonError::Worker(
@@ -425,7 +428,6 @@ async fn run_session(
         };
         match step {
             DaemonExit::Finished => {
-                runtime.acknowledge_finished()?;
                 return Ok(());
             }
             DaemonExit::Disconnected => {

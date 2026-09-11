@@ -154,6 +154,13 @@ Normal worker completion cleans up its owned process group before a terminal
 lifecycle is reported. A parent process exiting does not permit a remaining
 descendant to continue writing after the task lease is released.
 
+The slot retains its session and run marker until its lease release is
+confirmed and all durable receipts are acknowledged. A release RPC failure
+leaves cleanup pending and is retried; a terminal worker is not announced as
+started again while waiting. A successful owner-guarded release no-op also
+confirms there is no live claim to give back. Shutdown keeps its thirty-second
+deadline and preserves existing recovery markers if cleanup cannot finish.
+
 ## Verify The Loop
 
 Set `ACKPLANE_TEST_DATABASE_URL` to the isolated `ackplane_test` database, never
@@ -170,7 +177,8 @@ prompts, credential separation, Work transitions, durable outcome receipts, and
 orderly shutdown of two active workers on Unix. It also holds both context
 replies after the real server has compiled them and verifies that shutdown
 releases the confirmed leases without spawning workers or inventing lifecycle
-receipts.
+receipts. Injected release RPC failures verify that both normal completion and
+shutdown retry before clearing run markers, without duplicate lifecycle receipts.
 The second tests graph input, lesson activation, retry feedback and refusal of
 cross-session or unleased requests. Without the database variable these gated
 tests skip; a skipped run is not verification. The fixtures test the runtime

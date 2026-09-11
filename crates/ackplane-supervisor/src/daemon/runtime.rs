@@ -350,7 +350,7 @@ impl WorkerRuntime {
             {
                 Ok(Ok(())) => {}
                 _ => {
-                    tracing::warn!(%task_id, "lease release could not be confirmed; the existing lease will expire")
+                    tracing::warn!(%task_id, "lease release could not be confirmed; retaining cleanup state for retry")
                 }
             }
         }
@@ -397,13 +397,13 @@ impl WorkerRuntime {
         Ok(())
     }
 
-    pub fn acknowledge_finished(&self) -> Result<(), DaemonError> {
-        if self.finished && self.outbox.pending(1)?.is_empty() {
-            if let Some(path) = &self.run_path {
-                std::fs::remove_file(path)
-                    .map_err(|error| DaemonError::Worker(error.to_string()))?;
-            }
+    pub fn acknowledge_finished(&self) -> Result<bool, DaemonError> {
+        if !self.finished || self.lease.is_some() || !self.outbox.pending(1)?.is_empty() {
+            return Ok(false);
         }
-        Ok(())
+        if let Some(path) = &self.run_path {
+            std::fs::remove_file(path).map_err(|error| DaemonError::Worker(error.to_string()))?;
+        }
+        Ok(true)
     }
 }

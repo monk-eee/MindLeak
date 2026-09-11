@@ -3,7 +3,10 @@ use std::{
     fs,
     future::Future,
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime},
 };
 
@@ -35,6 +38,27 @@ use tokio_stream::{
 };
 
 struct Daemon(GroupChild);
+
+#[derive(Clone)]
+struct ReleaseFailures(Arc<AtomicUsize>);
+
+impl tonic::service::Interceptor for ReleaseFailures {
+    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        if self
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            Err(tonic::Status::unavailable(
+                "injected lease release transport failure",
+            ))
+        } else {
+            Ok(request)
+        }
+    }
+}
 
 impl Daemon {
     async fn shutdown(&mut self) {
@@ -186,14 +210,14 @@ async fn assign(
 
 #[tokio::test]
 async fn server_runs_two_agents_with_separate_memory_prompts_and_durable_outcomes() {
-    exercise_two_workers(false, false).await;
+    exercise_two_workers(false, false, 0).await;
 }
 
 /// Stopping the supervisor used to abandon active processes and their durable receipts.
 #[cfg(unix)]
 #[tokio::test]
 async fn shutdown_stops_both_workers_releases_leases_and_flushes_receipts() {
-    exercise_two_workers(true, false).await;
+    exercise_two_workers(true, false, 0).await;
 }
 
 // Shutdown during context preparation used to report success but leave confirmed
@@ -201,10 +225,27 @@ async fn shutdown_stops_both_workers_releases_leases_and_flushes_receipts() {
 #[cfg(unix)]
 #[tokio::test]
 async fn shutdown_before_context_delivery_releases_confirmed_leases_without_spawning() {
-    exercise_two_workers(true, true).await;
+    exercise_two_workers(true, true, 0).await;
 }
 
-async fn exercise_two_workers(stop_while_active: bool, stop_before_spawn: bool) {
+// Completion cleared run markers after a release RPC failed, abandoning the
+// tracked leases. Retry release before declaring that the slots are reusable.
+#[tokio::test]
+async fn failed_lease_release_is_retried_before_worker_cleanup_finishes() {
+    exercise_two_workers(false, false, 2).await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shutdown_retries_lease_release_before_discarding_run_markers() {
+    exercise_two_workers(true, false, 2).await;
+}
+
+async fn exercise_two_workers(
+    stop_while_active: bool,
+    stop_before_spawn: bool,
+    release_failures: usize,
+) {
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
         eprintln!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
@@ -354,6 +395,8 @@ async fn exercise_two_workers(stop_while_active: bool, stop_before_spawn: bool) 
     };
     let claims = ClaimDelegationService::new(ClaimStore::connect(&pool).await.unwrap());
     let query = WorkQueryService::new(WorkStore::connect(&pool).await.unwrap());
+    let remaining_release_failures = Arc::new(AtomicUsize::new(0));
+    let interceptor_failures = remaining_release_failures.clone();
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         tonic::transport::Server::builder()
@@ -361,7 +404,10 @@ async fn exercise_two_workers(stop_while_active: bool, stop_before_spawn: bool) 
                 node_sync,
             ))
             .add_service(
-                v1::claim_delegation_service_server::ClaimDelegationServiceServer::new(claims),
+                v1::claim_delegation_service_server::ClaimDelegationServiceServer::with_interceptor(
+                    claims,
+                    ReleaseFailures(interceptor_failures),
+                ),
             )
             .add_service(v1::work_query_service_server::WorkQueryServiceServer::new(
                 query,
@@ -530,6 +576,7 @@ async fn exercise_two_workers(stop_while_active: bool, stop_before_spawn: bool) 
         })
         .await;
     }
+    remaining_release_failures.store(release_failures, Ordering::SeqCst);
     let expected_state = if stop_while_active {
         daemon.shutdown().await;
         fs::write(&gate, "finish").unwrap();
@@ -570,13 +617,46 @@ async fn exercise_two_workers(stop_while_active: bool, stop_before_spawn: bool) 
             .then_some(())
     })
     .await;
-    assert!(ClaimStore::connect(&pool)
-        .await
-        .unwrap()
-        .list_active(&tenant, repository, SystemTime::now())
-        .await
-        .unwrap()
-        .is_empty());
+    assert_eq!(
+        remaining_release_failures.load(Ordering::SeqCst),
+        0,
+        "all injected release failures must be exercised"
+    );
+    assert!(
+        ClaimStore::connect(&pool)
+            .await
+            .unwrap()
+            .list_active(&tenant, repository, SystemTime::now())
+            .await
+            .unwrap()
+            .is_empty(),
+        "run markers were cleared while completed workers still held task leases"
+    );
+    for session in &sessions {
+        let history = supervisors
+            .lifecycle_history(&tenant, repository, &session.session_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            history.len(),
+            2,
+            "cleanup retries must not invent additional lifecycle receipts"
+        );
+        assert_eq!(
+            history
+                .iter()
+                .filter(|entry| entry.receipt.state == SupervisorWorkerState::Started)
+                .count(),
+            1
+        );
+        assert_eq!(
+            history
+                .iter()
+                .filter(|entry| entry.receipt.state == expected_state)
+                .count(),
+            1
+        );
+    }
     drop(daemon);
     assert!(
         ["first", "second"].iter().all(|name| !root
