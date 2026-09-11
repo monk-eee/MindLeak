@@ -1,131 +1,19 @@
-use std::{
-    path::Path,
-    process::Output,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
 
-use ackplane_protocol::v1::{
-    self, node_enrollment_service_server::NodeEnrollmentService as EnrollmentRpc,
-    node_enrollment_service_server::NodeEnrollmentServiceServer,
-    node_sync_service_server::NodeSyncServiceServer, FlowControl,
-};
+use ackplane_protocol::v1;
 use ackplane_server::{
-    db_pool::{build_pool, PgPool, TEST_POOL_MAX_SIZE},
-    enrollment_service::NodeEnrollmentService,
+    db_pool::{build_pool, TEST_POOL_MAX_SIZE},
     enrollment_store::{EnrollmentApproval, EnrollmentStore},
-    ledger::LedgerStore,
-    service::NodeSyncService,
 };
 use serde_json::Value;
-use tokio::{process::Command, sync::oneshot};
-use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{transport::Server, Request, Response, Status};
 
-struct EnrollmentWithLostResponse {
-    inner: NodeEnrollmentService,
-    dropped: Option<Arc<Mutex<Option<v1::EnrollmentActivationResult>>>>,
-}
-
-#[tonic::async_trait]
-impl EnrollmentRpc for EnrollmentWithLostResponse {
-    async fn submit_enrollment_request(
-        &self,
-        request: Request<v1::EnrollmentRequest>,
-    ) -> Result<Response<v1::EnrollmentRequestStatus>, Status> {
-        self.inner.submit_enrollment_request(request).await
-    }
-
-    async fn get_activation_challenge(
-        &self,
-        request: Request<v1::EnrollmentChallengeRequest>,
-    ) -> Result<Response<v1::EnrollmentChallenge>, Status> {
-        self.inner.get_activation_challenge(request).await
-    }
-
-    async fn activate_enrollment(
-        &self,
-        request: Request<v1::EnrollmentActivationProof>,
-    ) -> Result<Response<v1::EnrollmentActivationResult>, Status> {
-        let response = self.inner.activate_enrollment(request).await?;
-        if let Some(dropped) = &self.dropped {
-            let mut original = dropped.lock().unwrap();
-            if original.is_none() {
-                *original = Some(response.get_ref().clone());
-                return Err(Status::unavailable("activation response lost after commit"));
-            }
-        }
-        Ok(response)
-    }
-
-    async fn rotate_node_key(
-        &self,
-        request: Request<v1::KeyRotationRequest>,
-    ) -> Result<Response<v1::KeyRotationResult>, Status> {
-        self.inner.rotate_node_key(request).await
-    }
-
-    async fn check_enrollment_status(
-        &self,
-        request: Request<v1::EnrollmentStatusRequest>,
-    ) -> Result<Response<v1::EnrollmentStatusResult>, Status> {
-        self.inner.check_enrollment_status(request).await
-    }
-}
-
-async fn run_cli(directory: &Path, args: &[&str]) -> Output {
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        Command::new(env!("CARGO_BIN_EXE_register-me"))
-            .current_dir(directory)
-            .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
-            .env_remove("MINDLEAK_ACKPLANE_TLS_CA_PATH")
-            .kill_on_drop(true)
-            .args(args)
-            .output(),
-    )
-    .await
-    .expect("the enrollment CLI must not hang")
-    .expect("the enrollment CLI must start")
-}
-
-async fn start_server(
-    pool: &PgPool,
-    with_sync: bool,
-    dropped: Option<Arc<Mutex<Option<v1::EnrollmentActivationResult>>>>,
-) -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
-    let enrollment = EnrollmentStore::connect(pool).await.unwrap();
-    let sync = if with_sync {
-        Some(NodeSyncServiceServer::new(NodeSyncService::new(
-            LedgerStore::connect(pool).await.unwrap(),
-            FlowControl {
-                max_in_flight_batches: 4,
-                max_batch_bytes: 1_048_576,
-            },
-        )))
-    } else {
-        None
-    };
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let server = tokio::spawn(async move {
-        Server::builder()
-            .add_service(NodeEnrollmentServiceServer::new(
-                EnrollmentWithLostResponse {
-                    inner: NodeEnrollmentService::new(enrollment),
-                    dropped,
-                },
-            ))
-            .add_optional_service(sync)
-            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .unwrap();
-    });
-    (endpoint, shutdown_tx, server)
-}
+#[path = "register_me_enrollment/companion_tests.rs"]
+mod companion_tests;
+#[path = "register_me_enrollment/request_tests.rs"]
+mod request_tests;
+#[path = "register_me_enrollment/support.rs"]
+mod support;
+use support::{run_cli, start_server, TestIdentity};
 
 // Activation used to discard its key ID and receipt before a failed sync, leaving no restart state.
 #[tokio::test]
@@ -147,8 +35,8 @@ async fn assert_activation_recovery(
         return;
     };
     let pool = build_pool(&database_url, TEST_POOL_MAX_SIZE).unwrap();
-    let (endpoint, shutdown_tx, server) = start_server(&pool, false, dropped.clone()).await;
-    let directory = tempfile::tempdir().unwrap();
+    let (endpoint, shutdown_tx, server) = start_server(&pool, false, dropped.clone(), None).await;
+    let directory = TestIdentity::new();
     let tenant = format!(
         "cli-{}-{}",
         std::process::id(),
@@ -156,6 +44,8 @@ async fn assert_activation_recovery(
     );
     let request_args = [
         "request",
+        "--provider",
+        "credential-facility-software",
         "--repo",
         "repo-test",
         "--node",
@@ -172,10 +62,24 @@ async fn assert_activation_recovery(
         String::from_utf8_lossy(&requested.stderr)
     );
 
-    let key_path = directory.path().join(ackplane_client::DEFAULT_KEY_PATH);
-    let state_path = key_path.with_extension("key.enrollment.json");
-    let original_key = std::fs::read(&key_path).unwrap();
-    let pending: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    let state_path = directory.path().join("enrolment.json");
+    let request_path = directory.path().join("enrollment-request.json");
+    let requested_bytes = std::fs::read(&request_path).unwrap();
+    let pending: Value = serde_json::from_slice(&requested_bytes).unwrap();
+    let original: Value = serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+    let original_key = original["public_key"].clone();
+    let original_handle = original["provider_handle"].clone();
+    assert!(!directory
+        .path()
+        .join(ackplane_client::DEFAULT_KEY_PATH)
+        .exists());
+    let repeated = run_cli(directory.path(), &request_args).await;
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    assert_eq!(std::fs::read(&request_path).unwrap(), requested_bytes);
     let request_id = pending["request_id"].as_str().unwrap();
     let store = EnrollmentStore::connect(&pool).await.unwrap();
     store
@@ -202,15 +106,15 @@ async fn assert_activation_recovery(
         let interrupted: Value = serde_json::from_slice(&interrupted_bytes).unwrap();
         assert!(interrupted["activation"].is_null());
         assert_eq!(
-            interrupted["activation_nonce"].as_array().map(Vec::len),
+            interrupted["challenge"]["nonce"].as_array().map(Vec::len),
             Some(32),
             "the original challenge must be saved before submitting the activation proof"
         );
-        assert!(std::fs::read(&key_path).unwrap() == original_key);
+        assert_eq!(interrupted["public_key"], original_key);
+        assert_eq!(interrupted["provider_handle"], original_handle);
 
         let mut corrupted = interrupted.clone();
-        let first_byte = corrupted["activation_nonce"][0].as_u64().unwrap();
-        corrupted["activation_nonce"][0] = serde_json::json!(first_byte ^ 1);
+        corrupted["challenge"]["request_id"] = serde_json::json!("another-request");
         let corrupted_bytes = serde_json::to_vec(&corrupted).unwrap();
         std::fs::write(&state_path, &corrupted_bytes).unwrap();
         let refused = run_cli(
@@ -220,9 +124,9 @@ async fn assert_activation_recovery(
         .await;
         assert!(
             !refused.status.success(),
-            "a different nonce must not recover a receipt"
+            "a different request binding must not recover a receipt"
         );
-        assert!(String::from_utf8_lossy(&refused.stderr).contains("activate_enrollment failed"));
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("does not match"));
         assert_eq!(std::fs::read(&state_path).unwrap(), corrupted_bytes);
         std::fs::write(&state_path, &interrupted_bytes).unwrap();
 
@@ -252,7 +156,7 @@ async fn assert_activation_recovery(
             original.enrolment_receipt_id
         );
         assert!(
-            saved["activation_nonce"].is_null(),
+            saved["challenge"].is_null(),
             "completed activation needs no retry nonce"
         );
     }
@@ -274,13 +178,10 @@ async fn assert_activation_recovery(
             .is_empty(),
         "the activation receipt must survive a failed sync"
     );
-    assert_eq!(saved["request_id"], pending["request_id"]);
-    assert_eq!(
-        saved["public_key_fingerprint"],
-        pending["public_key_fingerprint"]
-    );
+    assert_eq!(saved["activation"]["request_id"], pending["request_id"]);
+    assert_eq!(saved["fingerprint"], pending["public_key_fingerprint"]);
     assert!(
-        std::fs::read(&key_path).unwrap() == original_key,
+        saved["public_key"] == original_key,
         "activation must preserve the key"
     );
 
@@ -302,11 +203,12 @@ async fn assert_activation_recovery(
         !repeated.status.success(),
         "a new request must not erase existing enrollment"
     );
-    assert!(String::from_utf8_lossy(&repeated.stderr).contains("saved enrollment"));
+    assert!(String::from_utf8_lossy(&repeated.stderr).contains("already activated"));
     assert_eq!(std::fs::read(&state_path).unwrap(), saved_bytes);
-    assert!(std::fs::read(&key_path).unwrap() == original_key);
+    assert_eq!(saved["provider_handle"], original_handle);
+    assert_eq!(std::fs::read(&request_path).unwrap(), requested_bytes);
 
-    let (endpoint, shutdown_tx, server) = start_server(&pool, true, None).await;
+    let (endpoint, shutdown_tx, server) = start_server(&pool, true, None, None).await;
     for _attempt in 0..2 {
         let connected = run_cli(
             directory.path(),
@@ -326,7 +228,11 @@ async fn assert_activation_recovery(
         );
         assert!(String::from_utf8_lossy(&connected.stdout).contains("authenticated:"));
         assert_eq!(std::fs::read(&state_path).unwrap(), saved_bytes);
-        assert!(std::fs::read(&key_path).unwrap() == original_key);
+        assert_eq!(std::fs::read(&request_path).unwrap(), requested_bytes);
+        assert!(!directory
+            .path()
+            .join(ackplane_client::DEFAULT_KEY_PATH)
+            .exists());
     }
     let connection = pool.get().await.unwrap();
     let counts = connection
@@ -347,6 +253,8 @@ async fn assert_activation_recovery(
         1,
         "replay must not provision a replacement key"
     );
+    drop(connection);
+    companion_tests::exercise(&directory, &endpoint, &tenant, &pool, dropped.is_some()).await;
     shutdown_tx.send(()).unwrap();
     server.await.unwrap();
 }

@@ -7,14 +7,13 @@
 use std::fmt;
 use std::sync::Mutex;
 
+use ackplane_protocol::enrollment::public_key_fingerprint;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
-use sha2::{Digest, Sha256};
 
 use crate::signer::{KeyHandle, NodeIdentity, NodeSignerError, Signature, SigningBinding};
 use crate::NodeSigner;
 
-/// A signing key that can only be constructed by generating fresh random
-/// material and whose `Debug` impl never renders its bytes. `ed25519-dalek`'s
+/// A provider-owned signing key whose `Debug` impl never renders its bytes. `ed25519-dalek`'s
 /// `zeroize` feature makes the wrapped `SigningKey` zero its memory on drop.
 struct SecretSigningKey(SigningKey);
 
@@ -58,7 +57,7 @@ impl ActiveKey {
             node_id: self.node_id.clone(),
             signing_key_id: self.key_id.clone(),
             public_key,
-            fingerprint: fingerprint_of(&public_key),
+            fingerprint: public_key_fingerprint(&public_key),
         }
     }
 
@@ -83,11 +82,6 @@ impl ZeroizeLocal for [u8; 32] {
     }
 }
 
-fn fingerprint_of(public_key: &[u8; 32]) -> String {
-    let digest = Sha256::digest(public_key);
-    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
-}
-
 /// A development-only in-memory software provider. The key exists only in
 /// this process's memory for its lifetime; it is never written to disk,
 /// serialized, or exported.
@@ -105,6 +99,10 @@ impl SoftwareProvider {
     /// Creates a fresh provider with a newly generated active key.
     pub fn generate(tenant_id: &str, repository_id: &str, node_id: &str) -> Self {
         let active = ActiveKey::generate(tenant_id, repository_id, node_id, "key-1");
+        Self::from_active(active)
+    }
+
+    fn from_active(active: ActiveKey) -> Self {
         Self {
             state: Mutex::new(SoftwareProviderState {
                 active,
@@ -192,6 +190,7 @@ impl NodeSigner for SoftwareProvider {
 mod tests {
     use super::*;
     use ed25519_dalek::Verifier;
+    use sha2::{Digest, Sha256};
 
     fn binding_for(identity: &NodeIdentity) -> SigningBinding {
         SigningBinding {

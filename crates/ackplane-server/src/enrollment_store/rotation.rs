@@ -129,8 +129,8 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::enrollment::activation_challenge_bytes;
     use crate::enrollment_store::submission::tests::sample_submission_for;
+    use ackplane_protocol::enrollment::activation_challenge_bytes;
 
     #[tokio::test]
     async fn a_continuity_proven_rotation_retires_the_old_key_and_activates_the_new_one() {

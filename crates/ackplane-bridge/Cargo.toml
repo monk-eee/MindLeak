@@ -23,6 +23,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 ackplane-client = { path = "../ackplane-client" }
+ackplane-node = { path = "../ackplane-node" }
 # ADR-0116 slice 3's end-to-end test drives the real local supervisor inbox
 # rather than a stand-in, so the directive round trip is judged by the same
 # code a deployed supervisor runs.

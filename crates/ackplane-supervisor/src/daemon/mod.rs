@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use ackplane_client::{auth::ClaimSigner, node_sync::NodeSyncConnection, ClientError};
+use ackplane_client::ClientError;
 use ackplane_protocol::supervisor::{
     SupervisorCapabilities, SupervisorDirectiveCapability, SupervisorIdentity,
     SupervisorOutboxDurability, SupervisorRegistration, SupervisorRuntime, SupervisorSession,
@@ -74,29 +74,17 @@ pub enum DaemonError {
 const RUNTIME: SupervisorRuntime = SupervisorRuntime::LocalMachine;
 const SLOT_SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
-/// Build the signer this configuration selected.
-///
-/// The selection itself lives on [`NodeIdentity`], shared with every other
-/// process that authenticates as this node; only the error mapping is the
-/// daemon's.
-pub fn signer(config: &SupervisorConfig) -> Result<Box<dyn ClaimSigner>, DaemonError> {
-    config
-        .identity
-        .signer()
-        .map_err(|error| DaemonError::Signer(error.to_string()))
-}
-
 /// This supervisor's registration: an honest declaration of what it can do.
 ///
 /// Notification-only without workers; configured processes add assignment and
 /// force termination of owned groups, but no unsupported interactive controls.
-pub fn registration(config: &SupervisorConfig) -> SupervisorRegistration {
+pub fn registration(config: &SupervisorConfig, node_id: &str) -> SupervisorRegistration {
     SupervisorRegistration {
         supervisor_id: config.supervisor_id.clone(),
         identity: SupervisorIdentity {
-            tenant_id: config.identity.tenant_id.clone(),
-            repository_id: config.identity.repository_id.clone(),
-            node_id: config.identity.node_id.clone(),
+            tenant_id: config.node.tenant_id.clone(),
+            repository_id: config.node.repository_id.clone(),
+            node_id: node_id.to_string(),
         },
         supervisor_version: env!("CARGO_PKG_VERSION").to_string(),
         protocol_version: "v1".to_string(),
@@ -149,19 +137,22 @@ async fn serve_once(
 
     let mut connection = match tokio::time::timeout(
         Duration::from_secs(10),
-        NodeSyncConnection::open(
-            &config.endpoint,
-            runtime.signer.as_ref(),
-            &config.identity.tenant_id,
-            &config.identity.repository_id,
-            vec!["synchronize".to_string()],
+        config.node.open_sync(
             positions.acknowledged,
+            Some(ackplane_client::companion::wire::SupervisorScope {
+                supervisor_id: runtime.session.supervisor_id.clone(),
+                session_id: runtime.session.session_id.clone(),
+                worker_id: runtime.session.worker_id.clone(),
+            }),
         ),
     )
     .await
     {
         Ok(Ok(connection)) => connection,
-        _ => return Ok(DaemonExit::Disconnected),
+        Ok(Err(error)) => {
+            return disconnected_on_error::<()>(Err(error)).map(|_| DaemonExit::Disconnected)
+        }
+        Err(_) => return Ok(DaemonExit::Disconnected),
     };
 
     // REGISTER, THEN RECONCILE, THEN RESEND -- in that order, deliberately.
@@ -189,8 +180,7 @@ async fn serve_once(
     {
         Ok(receipt) => receipt,
         Err(error) => {
-            tracing::info!(%error, "the supervisor connection closed");
-            return Ok(DaemonExit::Disconnected);
+            return disconnected_on_error::<()>(Err(error)).map(|_| DaemonExit::Disconnected)
         }
     };
 
@@ -249,7 +239,7 @@ async fn serve_once(
             connection
                 .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
                 .await,
-        ) {
+        )? {
             return Ok(exit);
         }
     }
@@ -302,7 +292,7 @@ async fn serve_once(
             connection
                 .exchange_supervisor_frame(heartbeat_frame(&config.supervisor_id))
                 .await,
-        ) {
+        )? {
             return Ok(exit);
         }
         // Re-announcing the session is what asks for newly issued directives:
@@ -312,7 +302,7 @@ async fn serve_once(
                 connection
                     .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
                     .await,
-            ) {
+            )? {
                 return Ok(exit);
             }
         }
@@ -331,12 +321,21 @@ async fn serve_once(
 /// connection happened to drop while registering, announcing a session, or
 /// submitting a receipt therefore stopped permanently instead of retrying,
 /// for no reason tied to what actually failed.
-fn disconnected_on_error<T>(result: Result<T, ClientError>) -> Option<DaemonExit> {
+fn disconnected_on_error<T>(
+    result: Result<T, ClientError>,
+) -> Result<Option<DaemonExit>, DaemonError> {
     match result {
-        Ok(_) => None,
+        Ok(_) => Ok(None),
+        Err(
+            error @ (ClientError::Companion(_)
+            | ClientError::Signing(_)
+            | ClientError::ConnectionRefused {
+                retryable: false, ..
+            }),
+        ) => Err(Box::new(error).into()),
         Err(error) => {
             tracing::info!(%error, "the supervisor connection closed");
-            Some(DaemonExit::Disconnected)
+            Ok(Some(DaemonExit::Disconnected))
         }
     }
 }
@@ -466,7 +465,8 @@ async fn run_session(
     mut stopping: tokio::sync::watch::Receiver<bool>,
     stop_workers: Option<&tokio::sync::watch::Sender<bool>>,
 ) -> Result<(), DaemonError> {
-    let mut runtime = runtime::WorkerRuntime::new(config)?;
+    let identity = config.node.identity().await.map_err(Box::new)?;
+    let mut runtime = runtime::WorkerRuntime::new(config, &identity.node_id)?;
     let result = async {
         loop {
             runtime.observe(config).await?;
@@ -571,20 +571,17 @@ async fn run_session(
 mod tests {
     use super::*;
     use crate::SupervisorOutbox;
-    use ackplane_client::node_identity::{NodeIdentity, NodeSignerSource};
+    use ackplane_client::companion::NodeClient;
     use ackplane_protocol::v1;
     use std::path::PathBuf;
 
     fn config() -> SupervisorConfig {
         SupervisorConfig {
-            endpoint: "http://127.0.0.1:8443".to_string(),
-            identity: NodeIdentity {
-                tenant_id: "tenant-1".to_string(),
-                repository_id: "repository-1".to_string(),
-                node_id: "node-1".to_string(),
-                signing_key_id: "signing-key-1".to_string(),
-                signer_source: NodeSignerSource::Seed(Box::new([7; 32])),
-            },
+            node: NodeClient::new(
+                std::env::temp_dir().join("node-state"),
+                "tenant-1".into(),
+                "repository-1".into(),
+            ),
             supervisor_id: "supervisor-1".to_string(),
             state_dir: PathBuf::from(".mindleak/supervisor"),
             heartbeat_interval: Duration::from_secs(30),
@@ -600,7 +597,7 @@ mod tests {
     /// nothing performed is therefore unreachable, not merely unlikely.
     #[test]
     fn a_daemon_without_a_worker_declares_only_what_it_can_honour() {
-        let registration = registration(&config());
+        let registration = registration(&config(), "node-1");
         let declared = &registration.capabilities.supported_directives;
 
         assert_eq!(declared, &vec![SupervisorDirectiveCapability::Notify]);
@@ -694,7 +691,7 @@ mod tests {
     /// overstated in both, because only the wire one is believed.
     #[test]
     fn the_registration_frame_declares_the_same_capabilities() {
-        let registration = registration(&config());
+        let registration = registration(&config(), "node-1");
         let frame = registration_frame(&registration);
 
         let Some(v1::node_frame::Frame::SupervisorRegistration(wire)) = frame.frame else {
@@ -712,7 +709,7 @@ mod tests {
 
     #[test]
     fn the_registration_is_valid_and_carries_the_configured_identity() {
-        let registration = registration(&config());
+        let registration = registration(&config(), "node-1");
 
         registration
             .validate()
@@ -743,13 +740,13 @@ mod tests {
     #[test]
     fn a_transport_failure_disconnects_rather_than_ending_the_daemon() {
         let ok: Result<(), ClientError> = Ok(());
-        assert!(disconnected_on_error(ok).is_none());
+        assert!(disconnected_on_error(ok).unwrap().is_none());
 
         let dropped: Result<(), ClientError> =
             Err(ClientError::InvalidEndpoint("unreachable".to_string()));
         assert!(matches!(
             disconnected_on_error(dropped),
-            Some(DaemonExit::Disconnected)
+            Ok(Some(DaemonExit::Disconnected))
         ));
     }
 
@@ -777,7 +774,7 @@ mod tests {
         let config = config();
         let session = session(&config, OffsetDateTime::now_utc())
             .expect("the test config describes a valid session");
-        SupervisorOutbox::open_in_memory(registration(&config), session)
+        SupervisorOutbox::open_in_memory(registration(&config, "node-1"), session)
             .expect("an in-memory outbox opens")
     }
 

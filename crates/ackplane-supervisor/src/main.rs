@@ -8,11 +8,10 @@
 //! cargo run -p ackplane-server --bin register-me -- approve  --request-id ... --admin-database-url ...
 //! cargo run -p ackplane-server --bin register-me -- activate --request-id ...
 //!
-//! export MINDLEAK_ACKPLANE_ENDPOINT=http://127.0.0.1:8443
+//! cargo run -p ackplane-server --bin register-me -- serve --state-dir /absolute/node-state
+//! export MINDLEAK_ACKPLANE_STATE_DIR=/absolute/node-state
 //! export MINDLEAK_ACKPLANE_TENANT_ID=...       # printed by register-me
 //! export MINDLEAK_ACKPLANE_REPOSITORY_ID=my-repo
-//! export MINDLEAK_ACKPLANE_NODE_ID=my-node
-//! export MINDLEAK_ACKPLANE_SIGNING_KEY_ID=...  # printed by register-me activate
 //! export ACKPLANE_SUPERVISOR_ID=supervisor-1
 //! cargo run -p ackplane-supervisor
 //! ```
@@ -78,10 +77,9 @@ async fn main() -> ExitCode {
     };
 
     tracing::info!(
-        endpoint = %config.endpoint,
-        tenant_id = %config.identity.tenant_id,
-        repository_id = %config.identity.repository_id,
-        node_id = %config.identity.node_id,
+        node_state_dir = %config.node.state_dir.display(),
+        tenant_id = %config.node.tenant_id,
+        repository_id = %config.node.repository_id,
         supervisor_id = %config.supervisor_id,
         state_dir = %config.state_dir.display(),
         "starting the Ackplane supervisor"

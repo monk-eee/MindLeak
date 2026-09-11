@@ -27,6 +27,7 @@ use ackplane_protocol::connection_challenge_auth::{
     connection_challenge_bytes, ConnectionChallengeBinding,
 };
 use ackplane_protocol::v1::{self, node_sync_service_client::NodeSyncServiceClient};
+use prost::Message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Streaming;
@@ -46,7 +47,7 @@ const OUTBOUND_CHANNEL_CAPACITY: usize = 16;
 /// handshake is ever exposed as a value a caller could try to use.
 pub struct NodeSyncConnection {
     tx: mpsc::Sender<v1::NodeFrame>,
-    rx: Streaming<v1::AckplaneFrame>,
+    rx: Incoming,
     accepted_position: u64,
     enabled_capabilities: Vec<String>,
     flow_control: v1::FlowControl,
@@ -62,12 +63,68 @@ pub struct NodeSyncConnection {
     exchange_timed_out: bool,
 }
 
+enum Incoming {
+    Remote(Box<Streaming<v1::AckplaneFrame>>),
+    Local(mpsc::Receiver<Result<v1::AckplaneFrame, ClientError>>),
+}
+
 impl NodeSyncConnection {
+    pub(crate) fn from_companion(
+        stream: interprocess::local_socket::tokio::Stream,
+        accepted_position: u64,
+        enabled_capabilities: Vec<String>,
+        flow_control: v1::FlowControl,
+    ) -> Self {
+        let (tx, mut outgoing) = mpsc::channel::<v1::NodeFrame>(OUTBOUND_CHANNEL_CAPACITY);
+        let (incoming, rx) = mpsc::channel(OUTBOUND_CHANNEL_CAPACITY);
+        tokio::spawn(async move {
+            use crate::companion::{
+                checked, protocol_error,
+                wire::{read_message, write_message, NodeReply},
+            };
+            let (mut reader, mut writer) = tokio::io::split(stream);
+            let send = async {
+                while let Some(frame) = outgoing.recv().await {
+                    write_message(&mut writer, &frame.encode_to_vec()).await?;
+                }
+                Ok::<_, ClientError>(())
+            };
+            let receive = async {
+                loop {
+                    let reply: NodeReply = read_message(&mut reader).await?;
+                    let frame = match checked(reply)? {
+                        NodeReply::Frame(bytes) => v1::AckplaneFrame::decode(bytes.as_slice())
+                            .map_err(|_| protocol_error())?,
+                        _ => return Err(protocol_error()),
+                    };
+                    if incoming.send(Ok(frame)).await.is_err() {
+                        return Ok(());
+                    }
+                }
+            };
+            let result = tokio::select! { result = send => result, result = receive => result };
+            if let Err(error) = result {
+                let _ = incoming.send(Err(error)).await;
+            }
+        });
+        Self {
+            tx,
+            rx: Incoming::Local(rx),
+            accepted_position,
+            enabled_capabilities,
+            flow_control,
+            directives: VecDeque::new(),
+            exchange_timed_out: false,
+        }
+    }
+
     /// Opens a `Synchronize` stream to `endpoint`, sends `Hello`, and
     /// completes the enrolled-key challenge using `signer` (ADR-0116 decision
     /// 8: signing goes through the same [`ClaimSigner`] abstraction the claim
     /// flow already uses -- this method never touches a raw private key
     /// itself).
+    /// A local signing refusal returns [`ClientError::Signing`] before a
+    /// challenge response is sent and drops the unauthenticated stream.
     ///
     /// `capabilities` names the transport-level features this connection is
     /// declaring (ADR-0116 decision 4 keeps deciding what any of that
@@ -124,7 +181,7 @@ impl NodeSyncConnection {
             repository_id,
             producer_id: signer.node_id(),
             signing_key_id: signer.signing_key_id(),
-        }));
+        }))?;
         send(
             &tx,
             v1::NodeFrame {
@@ -158,7 +215,7 @@ impl NodeSyncConnection {
 
         Ok(Self {
             tx,
-            rx,
+            rx: Incoming::Remote(Box::new(rx)),
             accepted_position: accepted.accepted_position,
             enabled_capabilities: accepted.enabled_capabilities,
             flow_control,
@@ -188,14 +245,21 @@ impl NodeSyncConnection {
     }
 
     /// Send one frame on this authenticated connection.
-    pub async fn send(&self, frame: v1::NodeFrame) -> Result<(), ClientError> {
-        send(&self.tx, frame).await
+    pub fn send(
+        &self,
+        frame: v1::NodeFrame,
+    ) -> impl std::future::Future<Output = Result<(), ClientError>> + Send + 'static {
+        let sender = self.tx.clone();
+        async move { send(&sender, frame).await }
     }
 
     /// Receive the next frame from the server, or `Ok(None)` when the server
     /// closed the stream cleanly.
     pub async fn recv(&mut self) -> Result<Option<v1::AckplaneFrame>, ClientError> {
-        Ok(self.rx.message().await?)
+        match &mut self.rx {
+            Incoming::Remote(rx) => Ok(rx.message().await?),
+            Incoming::Local(rx) => rx.recv().await.transpose(),
+        }
     }
 
     /// Send one frame and wait for the receipt it earns.

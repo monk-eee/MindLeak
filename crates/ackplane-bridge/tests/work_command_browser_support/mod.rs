@@ -120,7 +120,10 @@ pub(super) struct TestDirectory(pub(super) PathBuf);
 
 impl TestDirectory {
     pub(super) fn new() -> Self {
-        let path = std::env::temp_dir().join(unique_id("bridge-work-runtime"));
+        let mut random = [0_u8; 6];
+        getrandom::getrandom(&mut random).expect("create a unique test directory name");
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let path = std::env::temp_dir().join(format!("bw-{suffix}"));
         fs::create_dir(&path).expect("create test-owned directory");
         Self(path.canonicalize().expect("canonical test directory"))
     }

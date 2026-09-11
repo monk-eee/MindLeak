@@ -1,5 +1,7 @@
 //! Real browser commands, authenticated supervision, and an OS child in one isolated run.
 
+#[path = "../../ackplane-node/tests/support/companion.rs"]
+mod companion;
 #[allow(dead_code)]
 mod supervisor_api_support;
 mod work_command_browser_support;
@@ -12,7 +14,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use ackplane_client::node_identity::{NodeIdentity, NodeSignerSource};
+use ackplane_client::companion::NodeClient;
 use ackplane_protocol::context_packet::ContextPacketUseStatus;
 use ackplane_server::{
     claim_store::ClaimStore,
@@ -129,6 +131,19 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
         .await
         .merge(supervisor_api_support::application(&pool, &database_url, &tenant_id).await);
     let server = SyncServer::start(&pool).await;
+    let node_directory = root.0.join("node");
+    let companion = companion::TestCompanion::start(
+        &server.endpoint,
+        ackplane_node::SigningBinding {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            node_id: node_id.clone(),
+            key_id: format!("signing-key-{unique}"),
+        },
+        &Sha256::digest(format!("key-{unique}").as_bytes()).into(),
+        &node_directory,
+    )
+    .await;
     let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let worker_directory = root.0.join("worker");
     fs::create_dir(&worker_directory).unwrap();
@@ -138,16 +153,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
     )
     .unwrap();
     let config = SupervisorConfig {
-        endpoint: server.endpoint.clone(),
-        identity: NodeIdentity {
-            tenant_id: tenant_id.clone(),
-            repository_id: repository_id.clone(),
-            node_id: node_id.clone(),
-            signing_key_id: format!("signing-key-{unique}"),
-            signer_source: NodeSignerSource::Seed(Box::new(
-                Sha256::digest(format!("key-{unique}").as_bytes()).into(),
-            )),
-        },
+        node: NodeClient::new(node_directory, tenant_id.clone(), repository_id.clone()),
         supervisor_id: "bridge-runtime".into(),
         state_dir: root.0.join("state"),
         heartbeat_interval: Duration::from_millis(25),
@@ -175,7 +181,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
     let scenario = tokio::spawn(async move {
         let _stop = StopOnDrop(stop);
         tokio::time::timeout(Duration::from_secs(40), async {
-            let identity = &scenario_config.identity;
+            let identity = &scenario_config.node;
             let work_uri = format!("/api/v1/repositories/{}/work", identity.repository_id);
             let commands_uri = format!("{work_uri}/commands");
             let task_id = format!("task-{unique}");
@@ -209,7 +215,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
             let (supervisor, session) = after_server_event(&mut changes, "assign-capable session through Bridge", || async {
                 let inventory = get_json(&app, &supervisors_uri).await;
                 for supervisor in inventory["entries"].as_array().unwrap() {
-                    if supervisor["node_id"] != identity.node_id
+                    if supervisor["node_id"] != node_id
                         || !supervisor["supported_directives"].as_array().unwrap().contains(&json!("assign")) {
                         continue;
                     }
@@ -329,6 +335,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
         daemon::run(&config, Duration::from_millis(25), stopping),
         scenario,
     );
+    drop(companion);
     server.shutdown().await;
     assert!(
         daemon_result.is_ok(),

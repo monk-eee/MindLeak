@@ -15,12 +15,12 @@ use ackplane_protocol::context_packet::{
     ContextPacketSource, ContextPacketUseReceipt, ContextPacketUseStatus, ContextProvenance,
     ContextSelectionReason, CONTEXT_PACKET_PROTOCOL_VERSION,
 };
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
     context_packet_compiler::{
         compile_context_packet, ContextPacketCandidate, ContextPacketCompilationRequest,
     },
     context_packet_store::ContextPacketStore,
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

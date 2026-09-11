@@ -95,6 +95,16 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --all
+      - name: Require a real persistent node signer restart (Windows)
+        if: matrix.os == 'windows-latest'
+        env:
+          MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
+        run: cargo test --locked -p ackplane-node a_persistent_provider_survives_a_real_process_restart -- --nocapture
+      - name: Require provider-backed CLI restart (Windows)
+        if: matrix.os == 'windows-latest'
+        env:
+          MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
+        run: cargo test --locked -p ackplane-server --test register_me_enrollment native_cli_request_recovers_the_same_credential_without_a_seed_file -- --nocapture
       # gaps.d/the-credential-facility-signer-is-unverified-outside-windows.md:
       # this test already prints which branch it took, but a passing test's
       # stdout is otherwise discarded, so the distinction was invisible here.
@@ -132,6 +142,14 @@ jobs:
         env:
           MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
         run: cargo test -p ackplane-client a_stored_seed_round_trips_through_the_real_credential_facility -- --nocapture
+      - name: Require a real persistent node signer restart
+        env:
+          MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
+        run: cargo test --locked -p ackplane-node a_persistent_provider_survives_a_real_process_restart -- --nocapture
+      - name: Require provider-backed CLI restart
+        env:
+          MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
+        run: cargo test --locked -p ackplane-server --test register_me_enrollment native_cli_request_recovers_the_same_credential_without_a_seed_file -- --nocapture
 
   # ADR-0088 keeps the repository-local planes usable without Ackplane's
   # container and PostgreSQL stack. Dependencies are installed before this
@@ -217,10 +235,10 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 20
-      - name: Install PostgreSQL 16 recovery tools
-        run: sudo -n apt-get install --yes postgresql-client-16
+      - name: Install recovery and isolated credential tools
+        run: sudo -n apt-get install --yes postgresql-client-16 gnome-keyring dbus-x11
       - name: Test the industrial runner
-        run: node --test scripts/industrial-test.test.mjs
+        run: node --test scripts/industrial-test.test.mjs scripts/credential-test.test.mjs
       - name: Build, migrate and test industrial integration
         env:
           ACKPLANE_TEST_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@127.0.0.1:5432/ackplane_test
@@ -362,11 +380,13 @@ jobs:
           cache-dependency-path: editors/vscode/package-lock.json
       - name: Install extension dependencies
         run: node scripts/npm-ci-retry.mjs --prefix editors/vscode
+      - name: Install isolated credential tools
+        run: sudo -n apt-get install --yes gnome-keyring dbus-x11
       - name: Run tests with coverage
         env:
           ACKPLANE_TEST_REHEARSAL_DATABASE_URL: postgresql://ackplane:ackplane-development-only-not-for-production@localhost:5432/ackplane_test
           ACKPLANE_TEST_DATABASE_URL: postgres://ackplane:ackplane-development-only-not-for-production@localhost:5432/ackplane_test
-        run: make coverage
+        run: node scripts/credential-test.mjs -- make coverage
       - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@v7

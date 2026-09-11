@@ -40,6 +40,7 @@ export function runIndustrialTests({
     environment[variable] = value;
   }
   environment.ACKPLANE_DATABASE_URL = environment.ACKPLANE_TEST_DATABASE_URL;
+  environment.MINDLEAK_REQUIRE_CREDENTIAL_FACILITY = "1";
 
   const steps = [
     { name: "check pg_dump", command: "pg_dump", args: ["--version"] },
@@ -74,8 +75,11 @@ export function runIndustrialTests({
     },
     {
       name: "test the workspace with database and recovery gates enabled",
-      command: "cargo",
+      command: process.execPath,
       args: [
+        fileURLToPath(new URL("./credential-test.mjs", import.meta.url)),
+        "--",
+        "cargo",
         "test",
         "--workspace",
         "--all-features",
@@ -106,7 +110,7 @@ export function runIndustrialTests({
     }
   }
   report(
-    "industrial-test: passed; database and recovery test gates were enabled",
+    "industrial-test: passed; database, recovery and native credential test gates were enabled",
   );
   return 0;
 }
@@ -115,7 +119,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const args = process.argv.slice(2);
   if (args.length === 1 && ["--help", "-h"].includes(args[0])) {
     console.log(
-      "Usage: node scripts/industrial-test.mjs\nRequires cargo, pg_dump, pg_restore and two explicit PostgreSQL URLs:\n  ACKPLANE_TEST_DATABASE_URL\n  ACKPLANE_TEST_REHEARSAL_DATABASE_URL\nUse disposable databases only. Migrations and tests write to them; recovery tests create and drop scratch databases. Never point this command at the running deployment.",
+      "Usage: node scripts/industrial-test.mjs\nRequires cargo, pg_dump, pg_restore and two explicit PostgreSQL URLs:\n  ACKPLANE_TEST_DATABASE_URL\n  ACKPLANE_TEST_REHEARSAL_DATABASE_URL\nNative credentials are required. Linux also requires dbus-run-session and gnome-keyring-daemon; the runner creates an isolated test session. Use disposable databases only. Migrations and tests write to them; recovery tests create and drop scratch databases. Never point this command at the running deployment.",
     );
   } else if (args.length > 0) {
     console.error("industrial-test: unexpected arguments; use --help");

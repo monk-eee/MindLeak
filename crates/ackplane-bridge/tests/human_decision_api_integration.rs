@@ -5,8 +5,8 @@
 use std::{sync::Arc, time::Duration, time::SystemTime};
 
 use ackplane_bridge::human_decision_api::{human_decision_routes, HumanDecisionApiState};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

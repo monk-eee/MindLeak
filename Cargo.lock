@@ -7,6 +7,7 @@ name = "ackplane-bridge"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "ackplane-server",
  "ackplane-supervisor",
@@ -36,7 +37,9 @@ dependencies = [
  "ackplane-server",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "interprocess",
  "keyring",
+ "prost",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -62,12 +65,14 @@ name = "ackplane-mcp"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "ackplane-server",
  "anyhow",
  "ed25519-dalek",
  "mindleak-session",
  "serde_json",
+ "tempfile",
  "thiserror",
  "time",
  "tokio",
@@ -80,14 +85,27 @@ dependencies = [
 name = "ackplane-node"
 version = "0.1.7-alpha"
 dependencies = [
+ "ackplane-client",
+ "ackplane-protocol",
+ "ackplane-server",
  "ed25519-dalek",
+ "fs2",
  "getrandom 0.2.17",
  "interprocess",
+ "keyring",
+ "prost",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "widestring",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -110,14 +128,17 @@ name = "ackplane-server"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "chacha20poly1305",
  "deadpool-postgres",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "keyring",
  "mindleak-model",
  "pgvector",
  "prost",
+ "security-framework",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -137,11 +158,13 @@ name = "ackplane-supervisor"
 version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
+ "ackplane-node",
  "ackplane-protocol",
  "ackplane-server",
  "command-group",
  "ed25519-dalek",
  "getrandom 0.2.17",
+ "interprocess",
  "nix 0.27.1",
  "prost",
  "rusqlite",
@@ -1064,6 +1087,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1559,8 +1592,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "798de1433ba514cc6c04c4144c2469af81396e4906195218737c776d47769572"
 dependencies = [
  "doctest-file",
+ "futures-core",
  "libc",
  "recvmsg",
+ "tokio",
  "widestring",
  "windows-sys 0.61.2",
 ]
@@ -1714,6 +1749,7 @@ version = "0.1.7-alpha"
 dependencies = [
  "ackplane-client",
  "ackplane-core",
+ "ackplane-node",
  "ackplane-protocol",
  "ackplane-server",
  "anyhow",
@@ -1723,6 +1759,7 @@ dependencies = [
  "mindleak-storage",
  "serde",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
  "tokio-postgres",
