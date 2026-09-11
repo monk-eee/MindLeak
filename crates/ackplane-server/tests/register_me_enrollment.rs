@@ -13,7 +13,9 @@ mod companion_tests;
 mod request_tests;
 #[path = "register_me_enrollment/support.rs"]
 mod support;
-use support::{run_cli, start_server, TestIdentity};
+#[path = "register_me_enrollment/tls_tests.rs"]
+mod tls_tests;
+use support::{start_server, TestIdentity};
 
 // Activation used to discard its key ID and receipt before a failed sync, leaving no restart state.
 #[tokio::test]
@@ -35,7 +37,8 @@ async fn assert_activation_recovery(
         return;
     };
     let pool = build_pool(&database_url, TEST_POOL_MAX_SIZE).unwrap();
-    let (endpoint, shutdown_tx, server) = start_server(&pool, false, dropped.clone(), None).await;
+    let (endpoint, shutdown_tx, server) =
+        start_server(&pool, false, dropped.clone(), None, None).await;
     let directory = TestIdentity::new();
     let tenant = format!(
         "cli-{}-{}",
@@ -55,7 +58,7 @@ async fn assert_activation_recovery(
         "--grpc-endpoint",
         &endpoint,
     ];
-    let requested = run_cli(directory.path(), &request_args).await;
+    let requested = directory.run(&request_args, None).await;
     assert!(
         requested.status.success(),
         "{}",
@@ -73,7 +76,7 @@ async fn assert_activation_recovery(
         .path()
         .join(ackplane_client::DEFAULT_KEY_PATH)
         .exists());
-    let repeated = run_cli(directory.path(), &request_args).await;
+    let repeated = directory.run(&request_args, None).await;
     assert!(
         repeated.status.success(),
         "{}",
@@ -97,7 +100,9 @@ async fn assert_activation_recovery(
         .await
         .unwrap();
 
-    let activated = run_cli(directory.path(), &["activate", "--request-id", request_id]).await;
+    let activated = directory
+        .run(&["activate", "--request-id", request_id], None)
+        .await;
     let activated = if dropped.is_some() {
         assert!(!activated.status.success());
         assert!(String::from_utf8_lossy(&activated.stderr)
@@ -117,11 +122,12 @@ async fn assert_activation_recovery(
         corrupted["challenge"]["request_id"] = serde_json::json!("another-request");
         let corrupted_bytes = serde_json::to_vec(&corrupted).unwrap();
         std::fs::write(&state_path, &corrupted_bytes).unwrap();
-        let refused = run_cli(
-            directory.path(),
-            &["activate", "--request-id", request_id, "--skip-sync"],
-        )
-        .await;
+        let refused = directory
+            .run(
+                &["activate", "--request-id", request_id, "--skip-sync"],
+                None,
+            )
+            .await;
         assert!(
             !refused.status.success(),
             "a different request binding must not recover a receipt"
@@ -130,7 +136,9 @@ async fn assert_activation_recovery(
         assert_eq!(std::fs::read(&state_path).unwrap(), corrupted_bytes);
         std::fs::write(&state_path, &interrupted_bytes).unwrap();
 
-        run_cli(directory.path(), &["activate", "--request-id", request_id]).await
+        directory
+            .run(&["activate", "--request-id", request_id], None)
+            .await
     } else {
         activated
     };
@@ -185,11 +193,12 @@ async fn assert_activation_recovery(
         "activation must preserve the key"
     );
 
-    let restarted = run_cli(
-        directory.path(),
-        &["activate", "--request-id", request_id, "--skip-sync"],
-    )
-    .await;
+    let restarted = directory
+        .run(
+            &["activate", "--request-id", request_id, "--skip-sync"],
+            None,
+        )
+        .await;
     assert!(
         restarted.status.success(),
         "{}",
@@ -198,7 +207,7 @@ async fn assert_activation_recovery(
     assert!(String::from_utf8_lossy(&restarted.stdout).contains("recorded activation"));
     assert_eq!(std::fs::read(&state_path).unwrap(), saved_bytes);
 
-    let repeated = run_cli(directory.path(), &request_args).await;
+    let repeated = directory.run(&request_args, None).await;
     assert!(
         !repeated.status.success(),
         "a new request must not erase existing enrollment"
@@ -208,19 +217,20 @@ async fn assert_activation_recovery(
     assert_eq!(saved["provider_handle"], original_handle);
     assert_eq!(std::fs::read(&request_path).unwrap(), requested_bytes);
 
-    let (endpoint, shutdown_tx, server) = start_server(&pool, true, None, None).await;
+    let (endpoint, shutdown_tx, server) = start_server(&pool, true, None, None, None).await;
     for _attempt in 0..2 {
-        let connected = run_cli(
-            directory.path(),
-            &[
-                "activate",
-                "--request-id",
-                request_id,
-                "--grpc-endpoint",
-                &endpoint,
-            ],
-        )
-        .await;
+        let connected = directory
+            .run(
+                &[
+                    "activate",
+                    "--request-id",
+                    request_id,
+                    "--grpc-endpoint",
+                    &endpoint,
+                ],
+                None,
+            )
+            .await;
         assert!(
             connected.status.success(),
             "{}",
