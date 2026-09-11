@@ -21,7 +21,7 @@ mod platform;
 mod resolve;
 mod worktree;
 
-pub use commit::commit_exists;
+pub use commit::{commit_exists, read_commit, CommitFacts};
 pub use identity::read_local_git_config;
 pub use resolve::{
     platform_state_root, resolve_database, resolve_database_in, resolve_workspace_path,

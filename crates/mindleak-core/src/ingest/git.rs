@@ -16,6 +16,37 @@ pub struct CommitRecord {
     pub timestamp: i64,
 }
 
+impl CommitRecord {
+    pub(crate) fn intent_node(&self, intent_id: &str) -> Node {
+        let first_line = self.message.lines().next().unwrap_or("").trim();
+        let mut content = self.message.clone();
+        let rationale = extract_rationale(&self.message);
+        if !rationale.is_empty() {
+            content.push_str("\n---\n");
+            content.push_str(&rationale.join("\n"));
+        }
+        Node::new(
+            intent_id,
+            NodeType::Intent,
+            clamp(first_line, 80),
+            self.timestamp,
+        )
+        .with_content(content)
+    }
+
+    pub(crate) fn changed_paths(&self, roots: &[&str]) -> Vec<String> {
+        let mut paths: Vec<_> = self
+            .changed_files
+            .iter()
+            .map(|file| repo_relative(file, roots))
+            .filter(|path| !is_ignored_path(path))
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+}
+
 /// Extract any explicit decision/rationale markers from a commit message or
 /// inline comment (`DECISION:`, `HACK:`, `WHY:`, `NOTE:`).
 pub fn extract_rationale(message: &str) -> Vec<String> {
@@ -42,7 +73,7 @@ pub fn extract_rationale(message: &str) -> Vec<String> {
 ///
 /// Anything shorter is an abbreviation, and an abbreviation cannot be expanded
 /// here — ingestion is deterministic and never shells out to git (invariant 1).
-fn is_full_commit_sha(sha: &str) -> bool {
+pub(crate) fn is_full_commit_sha(sha: &str) -> bool {
     matches!(sha.len(), 40 | 64) && sha.chars().all(|c| c.is_ascii_hexdigit())
 }
 
@@ -94,32 +125,10 @@ pub fn ingest_commit(
         None => short_hash(&format!("{}|{}", rec.message, rec.timestamp)),
     };
     let intent_id = format!("intent:{key}");
-    let first_line = rec.message.lines().next().unwrap_or("").trim();
-    let label = clamp(first_line, 80);
-
-    let mut content = rec.message.clone();
-    let rationale = extract_rationale(&rec.message);
-    if !rationale.is_empty() {
-        content.push_str("\n---\n");
-        content.push_str(&rationale.join("\n"));
-    }
-
-    let intent =
-        Node::new(&intent_id, NodeType::Intent, label, rec.timestamp).with_content(content);
-    let mut nodes = vec![intent];
+    let mut nodes = vec![rec.intent_node(&intent_id)];
     let mut edges = Vec::new();
 
-    let mut changed_files: Vec<String> = rec
-        .changed_files
-        .iter()
-        .map(|file| repo_relative(file, roots))
-        .collect();
-    changed_files.sort();
-    changed_files.dedup();
-    for path in changed_files {
-        if is_ignored_path(&path) {
-            continue;
-        }
+    for path in rec.changed_paths(roots) {
         let art_id = format!("artifact:{path}");
         let art = Node::new(&art_id, NodeType::Artifact, path.clone(), now);
         nodes.push(art);
@@ -131,7 +140,7 @@ pub fn ingest_commit(
         ));
     }
 
-    let mut outcome = store.upsert_facts(&nodes, &edges)?;
+    let mut outcome = store.upsert_facts(&nodes, &edges, None)?;
     outcome.node_ids.push(intent_id);
     Ok(outcome)
 }

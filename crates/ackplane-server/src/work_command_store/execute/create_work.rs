@@ -4,19 +4,7 @@ use tokio_postgres::Transaction;
 
 use super::ExecutionOutcome;
 use crate::work_command_store::model::{WorkCommand, WorkCommandStoreError};
-use crate::work_command_store::payload::CreateWorkPayload;
-
-fn create_work_digest(payload: &CreateWorkPayload) -> Vec<u8> {
-    let mut hasher = sha2::Sha256::new();
-    use sha2::Digest;
-    hasher.update(payload.task_id.as_bytes());
-    hasher.update(payload.title.as_bytes());
-    hasher.update(payload.acceptance.as_bytes());
-    if let Some(goal_id) = &payload.goal_id {
-        hasher.update(goal_id.as_bytes());
-    }
-    hasher.finalize().to_vec()
-}
+use crate::work_command_store::payload::{payload_digest, CreateWorkPayload, WorkCommandPayload};
 
 pub(super) async fn create_work(
     transaction: &Transaction<'_>,
@@ -24,13 +12,13 @@ pub(super) async fn create_work(
     payload: &CreateWorkPayload,
     now: SystemTime,
 ) -> Result<ExecutionOutcome, WorkCommandStoreError> {
-    let digest = create_work_digest(payload);
+    let digest = payload_digest(&WorkCommandPayload::CreateWork(payload.clone()))?;
     let inserted = transaction
         .execute(
             "INSERT INTO work_tasks (tenant_id, repository_id, task_id, title, acceptance, \
                  goal_id, state, declared_paths, declared_symbols, source_digest, published_by, \
                  version, created_at, updated_at) \
-             VALUES ($1,$2,$3,$4,$5,$6,1,ARRAY[]::text[],ARRAY[]::text[],$7,$8,1,$9,$9) \
+             VALUES ($1,$2,$3,$4,$5,$6,1,$10,$11,$7,$8,1,$9,$9) \
              ON CONFLICT (tenant_id, repository_id, task_id) DO NOTHING",
             &[
                 &command.tenant_id,
@@ -42,6 +30,8 @@ pub(super) async fn create_work(
                 &digest,
                 &command.issuing_principal_id,
                 &now,
+                &payload.declared_paths,
+                &payload.declared_symbols,
             ],
         )
         .await?;

@@ -181,6 +181,18 @@ fn blank_scope_identity_is_refused() {
     );
 }
 
+/// A valid digest must not make another tenant's context eligible for an agent's prompt.
+#[test]
+fn a_packet_cannot_seal_context_from_another_tenant() {
+    let mut packet = packet();
+    packet.selected[0].source_scope.tenant_id = "tenant-b".to_string();
+
+    assert!(
+        packet.seal().is_err(),
+        "foreign-tenant context was accepted"
+    );
+}
+
 #[test]
 fn expiry_at_issuance_is_refused() {
     let mut packet = packet();

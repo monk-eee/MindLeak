@@ -122,6 +122,11 @@ impl ContextPacket {
         let mut satisfied_requirements = HashSet::new();
         for selection in &self.selected {
             selection.validate()?;
+            if selection.source_scope.tenant_id != self.scope.tenant_id {
+                return Err(ContextPacketError::SourceTenantMismatch {
+                    item_id: selection.item_id.clone(),
+                });
+            }
             if !item_ids.insert(selection.item_id.as_str()) {
                 return Err(ContextPacketError::DuplicateSelectedItem {
                     item_id: selection.item_id.clone(),
@@ -237,6 +242,8 @@ pub enum ContextPacketLifecycle {
 pub enum ContextPacketError {
     #[error("{field} must not be empty")]
     EmptyField { field: &'static str },
+    #[error("context item {item_id:?} belongs to a different tenant")]
+    SourceTenantMismatch { item_id: String },
     #[error("context packet expiry must follow issuance")]
     ExpiryMustFollowIssuance,
     #[error("context item freshness expiry must follow its observation")]

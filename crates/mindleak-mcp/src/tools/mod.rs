@@ -348,7 +348,9 @@ fn requires_session(name: &str) -> bool {
         name,
         "record_architectural_decision"
             | "ingest_execution"
+            | "ingest_tool_invocation"
             | "ingest_commit"
+            | "repair_commit_attribution"
             | "ingest_file"
             | "boost_entity"
             | "working_set"

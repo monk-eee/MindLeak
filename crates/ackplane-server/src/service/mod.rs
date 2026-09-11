@@ -103,6 +103,8 @@ pub struct NodeSyncService {
     /// needs `&mut`.
     directives: Option<Arc<DirectiveStore>>,
     work: Option<Arc<Mutex<WorkStore>>>,
+    context: Option<Arc<crate::context_service::ContextService>>,
+    commands: Option<Arc<crate::work_command_store::WorkCommandService>>,
     flow_control: v1::FlowControl,
 }
 
@@ -116,6 +118,8 @@ impl NodeSyncService {
             supervisor: None,
             directives: None,
             work: None,
+            context: None,
+            commands: None,
             flow_control,
         }
     }
@@ -132,6 +136,8 @@ impl NodeSyncService {
             supervisor: Some(Arc::new(supervisor)),
             directives: None,
             work: None,
+            context: None,
+            commands: None,
             flow_control,
         }
     }
@@ -149,6 +155,8 @@ impl NodeSyncService {
             supervisor: Some(Arc::new(supervisor)),
             directives: Some(Arc::new(directives)),
             work: None,
+            context: None,
+            commands: None,
             flow_control,
         }
     }
@@ -165,6 +173,8 @@ impl NodeSyncService {
             supervisor: None,
             directives: None,
             work: Some(Arc::new(Mutex::new(work))),
+            context: None,
+            commands: None,
             flow_control,
         }
     }
@@ -183,8 +193,23 @@ impl NodeSyncService {
             supervisor: Some(Arc::new(supervisor)),
             directives: Some(Arc::new(directives)),
             work: Some(Arc::new(Mutex::new(work))),
+            context: None,
+            commands: None,
             flow_control,
         }
+    }
+
+    pub fn with_context_service(mut self, context: crate::context_service::ContextService) -> Self {
+        self.context = Some(Arc::new(context));
+        self
+    }
+
+    pub fn with_work_command_service(
+        mut self,
+        commands: crate::work_command_store::WorkCommandService,
+    ) -> Self {
+        self.commands = Some(Arc::new(commands));
+        self
     }
 }
 
@@ -200,6 +225,8 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
         let supervisor = self.supervisor.as_ref().map(Arc::clone);
         let directives = self.directives.as_ref().map(Arc::clone);
         let work = self.work.as_ref().map(Arc::clone);
+        let context = self.context.as_ref().map(Arc::clone);
+        let commands = self.commands.as_ref().map(Arc::clone);
         let flow_control = self.flow_control;
         let (sender, receiver) = mpsc::channel(8);
 
@@ -222,6 +249,24 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                             _ => None,
                         };
                         let responses = match authenticated_identity {
+                            Some((tenant_id, repository_id, node_id))
+                                if matches!(
+                                    frame.frame,
+                                    Some(
+                                        v1::node_frame::Frame::ContextPacketRequest(_)
+                                            | v1::node_frame::Frame::ContextPacketUseReport(_)
+                                    )
+                                ) =>
+                            {
+                                match context.as_ref() {
+                                    Some(context) => vec![
+                                        context
+                                            .handle(frame, &tenant_id, &repository_id, &node_id)
+                                            .await,
+                                    ],
+                                    None => vec![supervisor::unavailable_frame()],
+                                }
+                            }
                             Some((tenant_id, repository_id, node_id))
                                 if supervisor::is_supervisor_frame(&frame) =>
                             {
@@ -295,6 +340,7 @@ impl v1::node_sync_service_server::NodeSyncService for NodeSyncService {
                                                 &tenant_id,
                                                 &repository_id,
                                                 supervisor,
+                                                commands.as_deref(),
                                             )
                                             .await
                                             {

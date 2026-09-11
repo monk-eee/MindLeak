@@ -1,6 +1,9 @@
-//! Ask git whether a commit id names a real commit in a checkout.
+//! Resolve commit identities and their authoritative facts from git.
 
+use std::io;
 use std::path::Path;
+
+use serde::Serialize;
 
 use super::fs::git_command;
 
@@ -37,6 +40,109 @@ pub fn commit_exists(workspace: &Path, sha: &str) -> Option<bool> {
         Some(1) => Some(false),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommitFacts {
+    pub sha: String,
+    pub message: String,
+    pub changed_files: Vec<String>,
+    pub timestamp: i64,
+}
+
+/// Read one full commit's own delta, including only authored merge resolutions.
+pub fn read_commit(workspace: &Path, sha: &str) -> io::Result<CommitFacts> {
+    let sha = sha.trim().to_ascii_lowercase();
+    if !matches!(sha.len(), 40 | 64) || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a full commit hash is required",
+        ));
+    }
+    match commit_exists(workspace, &sha) {
+        Some(true) => {}
+        Some(false) => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "commit does not exist",
+            ))
+        }
+        None => return Err(io::Error::other("Git could not verify the commit")),
+    }
+    let read = |args: &[&str]| -> io::Result<String> {
+        let output = git_command()
+            .arg("--no-replace-objects")
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .args(args)
+            .current_dir(workspace)
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other("Git could not read the commit facts"));
+        }
+        if output.stdout.len() > 1_048_576 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "commit facts exceed 1 MiB",
+            ));
+        }
+        String::from_utf8(output.stdout)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    };
+    if read(&["rev-parse", "--is-shallow-repository"])?.trim() != "false" {
+        return Err(io::Error::other(
+            "commit repair requires complete Git history; fetch the missing history before retrying",
+        ));
+    }
+    let metadata = read(&[
+        "show",
+        "--no-patch",
+        "--no-show-signature",
+        "--encoding=UTF-8",
+        "--format=%H%x00%ct%x00%B",
+        &sha,
+    ])?;
+    let fields: Vec<_> = metadata.splitn(3, '\0').collect();
+    let [resolved_sha, timestamp, message] = fields.as_slice() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Git returned incomplete commit facts",
+        ));
+    };
+    if *resolved_sha != sha || message.contains('\0') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Git returned mismatched commit facts",
+        ));
+    }
+    let timestamp = timestamp
+        .parse::<i64>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let paths = read(&[
+        "show",
+        "--format=",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-relative",
+        "--ignore-submodules=none",
+        "--diff-merges=combined",
+        &sha,
+    ])?;
+    let mut changed_files: Vec<_> = paths
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect();
+    changed_files.sort();
+    changed_files.dedup();
+    Ok(CommitFacts {
+        sha,
+        message: message.trim_end_matches(['\r', '\n']).to_string(),
+        changed_files,
+        timestamp,
+    })
 }
 
 #[cfg(test)]
@@ -103,6 +209,143 @@ mod tests {
         let repo = TempGitRepo::create("real");
         let head = repo.rev_parse("HEAD");
         assert_eq!(commit_exists(&repo.path, &head), Some(true));
+    }
+
+    // Branch-wide publication polluted a commit with files it never changed.
+    // Repair must read that exact commit's own paths, rationale and timestamp.
+    #[test]
+    fn commit_facts_are_read_from_the_requested_commit_not_branch_scope() {
+        let repo = TempGitRepo::create("facts");
+        std::fs::write(repo.path.join("changed file.txt"), "changed\n").unwrap();
+        git_run(&repo.path, &["add", "changed file.txt"]);
+        let committed = git_command()
+            .args([
+                "commit",
+                "--quiet",
+                "-m",
+                "fix: exact commit",
+                "-m",
+                "WHY: attributed to this commit",
+            ])
+            .env("GIT_COMMITTER_DATE", "2009-02-13T23:31:30Z")
+            .current_dir(&repo.path)
+            .status()
+            .unwrap();
+        assert!(committed.success());
+        let sha = repo.rev_parse("HEAD");
+        std::fs::write(repo.path.join("later.txt"), "later\n").unwrap();
+        git_run(&repo.path, &["add", "later.txt"]);
+        git_run(&repo.path, &["commit", "--quiet", "-m", "later work"]);
+
+        let facts = read_commit(&repo.path, &sha).unwrap();
+
+        assert_eq!(facts.sha, sha);
+        assert_eq!(facts.changed_files, ["changed file.txt"]);
+        assert_eq!(facts.timestamp, 1_234_567_890);
+        assert_eq!(
+            facts.message,
+            "fix: exact commit\n\nWHY: attributed to this commit"
+        );
+    }
+
+    #[test]
+    fn commit_facts_refuse_unverifiable_sources_instead_of_returning_an_empty_delta() {
+        let repo = TempGitRepo::create("facts-refused");
+        assert_eq!(
+            read_commit(&repo.path, "HEAD").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            read_commit(&repo.path, &"0".repeat(40)).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            read_commit(&repo.path, &repo.rev_parse("HEAD^{tree}"))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(read_commit(&repo.path.join("absent"), &repo.rev_parse("HEAD")).is_err());
+    }
+
+    #[test]
+    fn merge_facts_distinguish_integration_from_authored_resolution() {
+        let repo = TempGitRepo::create("merge-facts");
+        git_run(&repo.path, &["checkout", "--quiet", "-b", "side"]);
+        std::fs::write(repo.path.join("f.txt"), "side\n").unwrap();
+        git_run(&repo.path, &["add", "f.txt"]);
+        git_run(&repo.path, &["commit", "--quiet", "-m", "side"]);
+        git_run(&repo.path, &["checkout", "--quiet", "main"]);
+        std::fs::write(repo.path.join("main.txt"), "main\n").unwrap();
+        git_run(&repo.path, &["add", "main.txt"]);
+        git_run(&repo.path, &["commit", "--quiet", "-m", "main"]);
+        git_run(&repo.path, &["merge", "--quiet", "--no-edit", "side"]);
+        let clean = read_commit(&repo.path, &repo.rev_parse("HEAD")).unwrap();
+        assert!(
+            clean.changed_files.is_empty(),
+            "a clean merge authored no files"
+        );
+
+        git_run(
+            &repo.path,
+            &["checkout", "--quiet", "-b", "conflicting", "HEAD^1"],
+        );
+        std::fs::write(repo.path.join("f.txt"), "conflicting\n").unwrap();
+        git_run(&repo.path, &["add", "f.txt"]);
+        git_run(&repo.path, &["commit", "--quiet", "-m", "conflicting"]);
+        git_run(&repo.path, &["checkout", "--quiet", "main"]);
+        let conflict = git_command()
+            .args(["merge", "--no-edit", "conflicting"])
+            .current_dir(&repo.path)
+            .output()
+            .unwrap();
+        assert_eq!(conflict.status.code(), Some(1));
+        std::fs::write(repo.path.join("f.txt"), "resolved\n").unwrap();
+        git_run(&repo.path, &["add", "f.txt"]);
+        git_run(&repo.path, &["commit", "--quiet", "-m", "resolved"]);
+        let resolved = read_commit(&repo.path, &repo.rev_parse("HEAD")).unwrap();
+        assert_eq!(resolved.changed_files, ["f.txt"]);
+    }
+
+    #[test]
+    fn commit_facts_ignore_replacement_refs_that_rewrite_the_named_object() {
+        let repo = TempGitRepo::create("replacement-facts");
+        let original = repo.rev_parse("HEAD");
+        std::fs::write(repo.path.join("replacement.txt"), "replacement\n").unwrap();
+        git_run(&repo.path, &["add", "replacement.txt"]);
+        git_run(&repo.path, &["commit", "--quiet", "-m", "replacement"]);
+        let replacement = repo.rev_parse("HEAD");
+        git_run(&repo.path, &["replace", &original, &replacement]);
+
+        let facts = read_commit(&repo.path, &original).unwrap();
+        assert_eq!(facts.sha, original);
+        assert_eq!(facts.message, "initial");
+        assert_eq!(facts.changed_files, ["f.txt"]);
+    }
+
+    // A shallow boundary looks like a root commit to Git and reports the whole
+    // tree as changed. It must not authorize a supposedly verified correction.
+    #[test]
+    fn commit_facts_refuse_a_shallow_history_instead_of_claiming_the_whole_tree() {
+        let repo = TempGitRepo::create("shallow-facts");
+        std::fs::write(repo.path.join("new.txt"), "new\n").unwrap();
+        git_run(&repo.path, &["add", "new.txt"]);
+        git_run(&repo.path, &["commit", "--quiet", "-m", "one file"]);
+        git_run(
+            &repo.path,
+            &[
+                "clone",
+                "--quiet",
+                "--no-local",
+                "--depth",
+                "1",
+                repo.path.to_str().unwrap(),
+                "shallow",
+            ],
+        );
+        let shallow = repo.path.join("shallow");
+        let error = read_commit(&shallow, &repo.rev_parse("HEAD")).unwrap_err();
+        assert!(error.to_string().contains("complete Git history"));
     }
 
     /// The case the shape check cannot reach: forty hex digits, correctly

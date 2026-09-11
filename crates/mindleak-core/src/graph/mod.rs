@@ -17,6 +17,7 @@ mod test_support;
 mod types;
 mod writes;
 
+pub use repair::CommitRepairOutcome;
 pub use types::{
     AgentActivity, AgentFootprintOverlap, ArtifactStub, BudgetReport, CompiledContext,
     ConformanceEvidence, Digest, DigestSourceSnapshot, DigestStatus, DigestStatusReport, Direction,
@@ -25,6 +26,7 @@ pub use types::{
     SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
     WeightedEdge, WorkingSetItem, WriteOutcome, STRUCTURE_EXTRACTOR_VERSION,
 };
+pub(crate) use writes::Observation;
 
 /// The persistent graph store.
 pub struct GraphStore {

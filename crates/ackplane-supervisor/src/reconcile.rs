@@ -3,23 +3,18 @@
 //! On a fresh connection a supervisor must decide, from durable state alone,
 //! whether it is resuming cleanly or has genuinely lost evidence. This is a
 //! pure comparison deliberately: it needs no connection, no clock, and no
-//! store, so the decision can be tested exhaustively and the daemon that will
-//! wire it (slice 5) only has to supply two numbers.
+//! store, so the daemon supplies the acknowledged and enqueued local boundaries
+//! plus the independently reported server position.
 //!
 //! The asymmetry between the two directions is the whole point, and it is easy
 //! to get backwards:
 //!
-//! - The server holding **less** than the supervisor is ordinary. It means
-//!   frames were queued and not yet accepted, which is exactly what an outbox
-//!   is for. The supervisor resends from the server's position.
-//! - The server holding **more** than the supervisor is not recoverable by
-//!   resending. It means the supervisor's own durable record is behind reality
-//!   -- a rolled-back, restored, or truncated file -- so there are frames it
-//!   published and can no longer describe. Resending from the server's position
-//!   would look identical to a clean resume while quietly skipping them, which
-//!   is precisely the "pretending it persisted an event it did not publish"
-//!   that ADR-0116 decision 3 forbids. It is reported, never repaired by
-//!   assumption.
+//! - A server position between acknowledged and last-enqueued is recoverable:
+//!   every not-yet-acknowledged frame remains available for idempotent replay.
+//!   Server acceptance without a received acknowledgement is an ordinary case.
+//! - A server beyond last-enqueued holds frames lost locally. A server below
+//!   acknowledged needs frames already pruned locally. Neither gap can be
+//!   repaired by replaying the retained interval, so both require recovery.
 
 use crate::outbox::OutboxPositions;
 
@@ -28,16 +23,17 @@ use crate::outbox::OutboxPositions;
 pub enum Reconciliation {
     /// Local and server agree and nothing is outstanding.
     UpToDate { position: u64 },
-    /// The server is behind the local outbox: resend from `resend_from`
-    /// inclusive. Ordinary catch-up, not a fault.
+    /// Replay retained frames from `resend_from` inclusive. Already-accepted
+    /// frames are included when their acknowledgement was lost.
     Resend { resend_from: u64, through: u64 },
-    /// The server holds evidence this supervisor cannot account for. Reported
-    /// rather than resolved: only an operator (or slice 5's daemon policy) can
-    /// decide whether to adopt the server's position or investigate.
+    /// One side needs evidence no longer retained by the other. Reported rather
+    /// than repaired by assuming a position proves the missing frame content.
     IncompleteEvidence {
-        /// The highest sequence local durable state can prove.
+        /// Frames through this position were acknowledged and pruned locally.
         local_acknowledged: u64,
-        /// The higher position the server reports having accepted.
+        /// The highest frame the local outbox has ever recorded.
+        local_last_enqueued: u64,
+        /// The server's position outside the locally recoverable interval.
         server_accepted: u64,
     },
 }
@@ -53,8 +49,12 @@ impl Reconciliation {
         match self {
             Self::IncompleteEvidence {
                 local_acknowledged,
+                local_last_enqueued,
                 server_accepted,
-            } => Some(server_accepted.saturating_sub(local_acknowledged)),
+            } => Some(
+                server_accepted.saturating_sub(local_last_enqueued)
+                    + local_acknowledged.saturating_sub(server_accepted),
+            ),
             _ => None,
         }
     }
@@ -62,19 +62,20 @@ impl Reconciliation {
 
 /// Compare durable local progress against the position the server reports.
 pub fn reconcile(local: OutboxPositions, server_accepted: u64) -> Reconciliation {
-    if server_accepted > local.acknowledged {
+    if server_accepted > local.last_enqueued || server_accepted < local.acknowledged {
         return Reconciliation::IncompleteEvidence {
             local_acknowledged: local.acknowledged,
+            local_last_enqueued: local.last_enqueued,
             server_accepted,
         };
     }
-    if server_accepted == local.last_enqueued {
+    if local.acknowledged == local.last_enqueued {
         return Reconciliation::UpToDate {
             position: server_accepted,
         };
     }
     Reconciliation::Resend {
-        resend_from: server_accepted.saturating_add(1),
+        resend_from: local.acknowledged.saturating_add(1),
         through: local.last_enqueued,
     }
 }
@@ -132,6 +133,7 @@ mod tests {
             outcome,
             Reconciliation::IncompleteEvidence {
                 local_acknowledged: 3,
+                local_last_enqueued: 3,
                 server_accepted: 8
             }
         );
@@ -164,5 +166,44 @@ mod tests {
     #[test]
     fn a_clean_resume_reports_no_missing_frames() {
         assert_eq!(reconcile(positions(2, 2), 2).missing_frames(), None);
+    }
+
+    /// Shutdown can interrupt an acknowledgement after the server stores the frame.
+    /// The retained frame is replayable, so this must not report lost evidence.
+    #[test]
+    fn a_lost_acknowledgement_replays_retained_frames() {
+        assert_eq!(
+            reconcile(positions(2, 4), 3),
+            Reconciliation::Resend {
+                resend_from: 3,
+                through: 4
+            }
+        );
+    }
+
+    #[test]
+    fn a_server_at_the_high_water_mark_still_confirms_pending_frames() {
+        assert_eq!(
+            reconcile(positions(2, 4), 4),
+            Reconciliation::Resend {
+                resend_from: 3,
+                through: 4
+            }
+        );
+    }
+
+    #[test]
+    fn missing_evidence_excludes_frames_still_retained_locally() {
+        let outcome = reconcile(positions(2, 4), 7);
+        assert!(!outcome.may_resume());
+        assert_eq!(outcome.missing_frames(), Some(3));
+    }
+
+    /// A rolled-back server cannot be repaired by replaying already-pruned frames.
+    #[test]
+    fn a_server_behind_pruned_frames_needs_recovery_not_a_fictitious_resend() {
+        let outcome = reconcile(positions(5, 7), 3);
+        assert!(!outcome.may_resume());
+        assert_eq!(outcome.missing_frames(), Some(2));
     }
 }

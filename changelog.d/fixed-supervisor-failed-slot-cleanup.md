@@ -1,0 +1,1 @@
+- Fatal supervisor session errors now signal peer slots before cleaning up their own worker and retrying confirmed lease release. Cleanup preserves the original failure, rejected outbox frames and recovery markers; terminal evidence is queued without being sent past a permanent rejection.

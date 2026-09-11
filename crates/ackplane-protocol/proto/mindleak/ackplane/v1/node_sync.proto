@@ -792,6 +792,7 @@ message SupervisorLifecycleReceipt {
   SupervisorWorkerState state = 5;
   SupervisorLifecycleReason reason = 6;
   string idempotency_key = 7;
+  optional uint64 outbox_sequence = 8;
 }
 
 enum SupervisorFrameOperation {
@@ -855,6 +856,8 @@ message NodeFrame {
     SupervisorSession supervisor_session = 8;
     SupervisorLifecycleReceipt supervisor_lifecycle_receipt = 9;
     WorkTaskCreate work_task_create = 10;
+    ContextPacketRequest context_packet_request = 11;
+    ContextPacketUseReport context_packet_use_report = 12;
   }
 }
 
@@ -869,7 +872,28 @@ message AckplaneFrame {
     AgentDirective agent_directive = 7;
     SupervisorFrameReceipt supervisor_frame_receipt = 8;
     WorkTaskReceipt work_task_receipt = 9;
+    ContextPacketReply context_packet_reply = 10;
+    ContextPacketUseAck context_packet_use_ack = 11;
   }
+}
+
+message ContextPacketRequest {
+  string directive_id = 1;
+  string agent_session_id = 2;
+  uint32 token_budget = 3;
+}
+
+message ContextPacketReply {
+  bytes packet_json = 1;
+}
+
+message ContextPacketUseReport {
+  bytes receipt_json = 1;
+  optional uint64 outbox_sequence = 2;
+}
+
+message ContextPacketUseAck {
+  string packet_id = 1;
 }
 
 // One immutable, authorized instruction for an enrolled agent supervisor

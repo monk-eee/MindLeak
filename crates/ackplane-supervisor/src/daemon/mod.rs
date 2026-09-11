@@ -1,36 +1,8 @@
-//! The supervisor daemon's run loop (ADR-0116: "an enrolled supervisor is the
-//! only Industrial runtime endpoint").
+//! Authenticated supervisor connections and concurrent, runtime-neutral worker slots.
 //!
-//! This assembles slices 1-4 into something an operator can actually run:
-//! connect and authenticate, register, open a session, receive directives and
-//! durably receipt them, heartbeat, and on reconnect reconcile position rather
-//! than assuming a clean resume.
-//!
-//! # What this daemon deliberately cannot do
-//!
-//! No [`WorkerAdapter`](crate::WorkerAdapter) is wired in, so it cannot drive a
-//! worker process — and it says so in its own declaration rather than by a
-//! special case at delivery time.
-//!
-//! It declares exactly one capability: `Notify`. That is not a placeholder. A
-//! `NotifyDirective` carries a message *to the supervisor*, so receiving it and
-//! durably recording it **is** the whole action; there is no worker step being
-//! skipped, and an `Accepted` receipt for one is truthful. Every other
-//! capability — `Prompt`, `Assign`, `Steer`, `Pause`, `Resume`, `Drain`,
-//! `TerminateGracefully`, `TerminateForce` — needs a worker to act on, so this
-//! build declares none of them.
-//!
-//! The consequence is what ADR-0116 decision 10 asks for, enforced by the
-//! declaration rather than by remembering to check: a directive this supervisor
-//! cannot execute is refused by the server before it is ever enqueued, and if
-//! one is delivered anyway the existing [`SupervisorInbox`](crate::SupervisorInbox)
-//! answers it with a durable `Refused` / `CapabilityMissing` receipt. An
-//! `Accepted` receipt for work nothing performed is unreachable, not merely
-//! unlikely.
-//!
-//! Declaring a capability this build cannot honour is the one mistake worth
-//! preventing structurally: it would produce a receipt saying work happened
-//! when it did not, and every layer above believes the receipt.
+//! Configured workers acquire leases, receive scoped context, and report durable
+//! effects through the existing inbox/outbox. An unconfigured daemon only accepts
+//! notifications. Native processes do not promise checkpoint, pause, or sandboxing.
 
 use std::time::Duration;
 
@@ -42,8 +14,10 @@ use ackplane_protocol::supervisor::{
 };
 use time::OffsetDateTime;
 
+mod claims;
 mod delivery;
 mod frames;
+mod runtime;
 
 use delivery::enqueue_receipt;
 pub use delivery::resend_pending;
@@ -52,19 +26,21 @@ use frames::{heartbeat_frame, registration_frame, session_frame};
 use crate::{
     config::SupervisorConfig,
     reconcile::{reconcile, Reconciliation},
-    InboxError, OutboxError, SupervisorInbox, SupervisorOutbox,
+    InboxError, OutboxError,
 };
 
 /// How the daemon stopped, so a caller can distinguish an orderly shutdown
 /// from a condition that needs a person.
 #[derive(Debug)]
 pub enum DaemonExit {
+    Finished,
     /// The connection closed and the daemon stopped cleanly.
     Disconnected,
     /// Durable local state cannot account for what the server holds. Reported
     /// rather than resumed (ADR-0116 decision 3); an operator decides.
     IncompleteEvidence {
         local_acknowledged: u64,
+        local_last_enqueued: u64,
         server_accepted: u64,
     },
 }
@@ -72,6 +48,8 @@ pub enum DaemonExit {
 /// Everything that can stop the daemon before it is running.
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
+    #[error("worker runtime: {0}")]
+    Worker(String),
     #[error("the supervisor's signing key could not be loaded: {0}")]
     Signer(String),
     #[error("connecting to Ackplane failed: {0}")]
@@ -80,6 +58,12 @@ pub enum DaemonError {
     Inbox(#[from] InboxError),
     #[error("the durable outbox could not be opened: {0}")]
     Outbox(#[from] OutboxError),
+    #[error("Ackplane permanently rejected outbox frame {sequence} ({reason:?}): {diagnostic}; queued evidence retained for operator recovery")]
+    RejectedFrame {
+        sequence: u64,
+        reason: ackplane_protocol::v1::RejectionReason,
+        diagnostic: String,
+    },
     #[error("the supervisor clock is outside the representable range")]
     Clock,
 }
@@ -88,6 +72,7 @@ pub enum DaemonError {
 /// machine it runs on; it does not claim a container or cloud runtime it has
 /// no way to verify.
 const RUNTIME: SupervisorRuntime = SupervisorRuntime::LocalMachine;
+const SLOT_SHUTDOWN_GRACE: Duration = Duration::from_secs(30);
 
 /// Build the signer this configuration selected.
 ///
@@ -103,10 +88,8 @@ pub fn signer(config: &SupervisorConfig) -> Result<Box<dyn ClaimSigner>, DaemonE
 
 /// This supervisor's registration: an honest declaration of what it can do.
 ///
-/// `Notify` only. A notification is complete once durably recorded, so this
-/// build can genuinely honour it. Every worker-driving capability is omitted,
-/// which makes the server refuse to enqueue such a directive in the first
-/// place rather than this daemon having to refuse it after delivery.
+/// Notification-only without workers; configured processes add assignment and
+/// force termination of owned groups, but no unsupported interactive controls.
 pub fn registration(config: &SupervisorConfig) -> SupervisorRegistration {
     SupervisorRegistration {
         supervisor_id: config.supervisor_id.clone(),
@@ -118,11 +101,17 @@ pub fn registration(config: &SupervisorConfig) -> SupervisorRegistration {
         supervisor_version: env!("CARGO_PKG_VERSION").to_string(),
         protocol_version: "v1".to_string(),
         capabilities: SupervisorCapabilities {
-            supported_directives: vec![SupervisorDirectiveCapability::Notify],
-            // Without a worker there is nothing to checkpoint or terminate.
-            // Claiming either would be a promise this build cannot keep.
+            supported_directives: if config.workers.is_empty() {
+                vec![SupervisorDirectiveCapability::Notify]
+            } else {
+                vec![
+                    SupervisorDirectiveCapability::Notify,
+                    SupervisorDirectiveCapability::Assign,
+                    SupervisorDirectiveCapability::TerminateForce,
+                ]
+            },
             supports_checkpoint: false,
-            supports_force_termination: false,
+            supports_force_termination: !config.workers.is_empty(),
             outbox_durability: SupervisorOutboxDurability::Persistent,
             recoverable_outbox: true,
         },
@@ -151,27 +140,29 @@ pub fn session(
 /// how many times, whether to give up) is an operator concern, and burying it
 /// in the loop would make it untestable and unconfigurable. [`run`] supplies a
 /// simple policy over this.
-pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonError> {
-    let started_at = OffsetDateTime::now_utc();
-    let registration = registration(config);
-    let session = session(config, started_at)?;
+async fn serve_once(
+    config: &SupervisorConfig,
+    runtime: &mut runtime::WorkerRuntime,
+) -> Result<DaemonExit, DaemonError> {
+    let started_at = runtime.started_at;
+    let positions = runtime.outbox.positions()?;
 
-    let inbox = SupervisorInbox::open(config.inbox_path(), registration.clone(), session.clone())?;
-    let outbox =
-        SupervisorOutbox::open(config.outbox_path(), registration.clone(), session.clone())?;
-    let positions = outbox.positions()?;
-
-    let signer = signer(config)?;
-    let mut connection = NodeSyncConnection::open(
-        &config.endpoint,
-        signer.as_ref(),
-        &config.identity.tenant_id,
-        &config.identity.repository_id,
-        vec!["synchronize".to_string()],
-        positions.acknowledged,
+    let mut connection = match tokio::time::timeout(
+        Duration::from_secs(10),
+        NodeSyncConnection::open(
+            &config.endpoint,
+            runtime.signer.as_ref(),
+            &config.identity.tenant_id,
+            &config.identity.repository_id,
+            vec!["synchronize".to_string()],
+            positions.acknowledged,
+        ),
     )
     .await
-    .map_err(Box::new)?;
+    {
+        Ok(Ok(connection)) => connection,
+        _ => return Ok(DaemonExit::Disconnected),
+    };
 
     // REGISTER, THEN RECONCILE, THEN RESEND -- in that order, deliberately.
     //
@@ -193,7 +184,7 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
     // only `producer_id`. That is why registration now precedes the resend
     // rather than following it.
     let registration_receipt = match connection
-        .exchange_supervisor_frame(registration_frame(&registration))
+        .exchange_supervisor_frame(registration_frame(&runtime.registration))
         .await
     {
         Ok(receipt) => receipt,
@@ -213,16 +204,19 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
         match reconcile(positions, server_accepted) {
             Reconciliation::IncompleteEvidence {
                 local_acknowledged,
+                local_last_enqueued,
                 server_accepted,
             } => {
                 tracing::error!(
                     local_acknowledged,
+                    local_last_enqueued,
                     server_accepted,
-                    "Ackplane has durably accepted supervisor frames this outbox cannot \
-                     account for; stopping rather than resuming on incomplete evidence"
+                    "Ackplane's receipt position is outside this outbox's recoverable \
+                     interval; stopping rather than resuming on incomplete evidence"
                 );
                 return Ok(DaemonExit::IncompleteEvidence {
                     local_acknowledged,
+                    local_last_enqueued,
                     server_accepted,
                 });
             }
@@ -242,34 +236,38 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
         }
     }
 
-    if let Some(exit) = resend_pending(&outbox, &mut connection).await? {
+    if let Some(exit) = resend_pending(&runtime.outbox, &mut connection).await? {
         return Ok(exit);
     }
 
-    if let Some(exit) = disconnected_on_error(
-        connection
-            .exchange_supervisor_frame(session_frame(&session, started_at)?)
-            .await,
-    ) {
-        return Ok(exit);
+    if runtime.acknowledge_finished()? {
+        return Ok(DaemonExit::Finished);
+    }
+
+    if !runtime.finished {
+        if let Some(exit) = disconnected_on_error(
+            connection
+                .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
+                .await,
+        ) {
+            return Ok(exit);
+        }
     }
 
     loop {
+        runtime.observe(config).await?;
         // The session frame delivers this session's pending directives ahead
         // of its own receipt, so they are already in hand here.
         while let Some(directive) = connection.next_directive() {
-            let receipt = match inbox.receive(&directive, OffsetDateTime::now_utc()) {
+            let receipt = match runtime.dispatch(config, &mut connection, &directive).await {
                 Ok(receipt) => receipt,
                 Err(error) => {
-                    // A directive this inbox refuses outright (wrong target, a
-                    // changed digest for a known id) has no receipt to return.
-                    // It is reported rather than dropped quietly.
                     tracing::warn!(
                         directive_id = %directive.directive_id,
                         %error,
-                        "the supervisor refused a directive before receipting it"
+                        "directive processing stopped; terminating owned workers rather than continuing without durable receipts"
                     );
-                    continue;
+                    return Err(error);
                 }
             };
             tracing::info!(
@@ -285,18 +283,21 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
             // entirely on the server redelivering the directive to be sent
             // again -- true today, but a guarantee held by the other side of a
             // connection that had just failed.
-            let (sequence, receipt) = enqueue_receipt(&outbox, receipt)?;
-            if let Some(exit) =
-                disconnected_on_error(connection.submit_directive_receipt(receipt).await)
-            {
-                return Ok(exit);
-            }
-            // Acknowledged only once the server's own frame receipt confirms
-            // it, so an unconfirmed receipt survives to be resent.
-            outbox.acknowledge_through(sequence)?;
+            enqueue_receipt(&runtime.outbox, receipt)?;
         }
 
-        tokio::time::sleep(config.heartbeat_interval).await;
+        if let Some(exit) = resend_pending(&runtime.outbox, &mut connection).await? {
+            return Ok(exit);
+        }
+        if runtime.acknowledge_finished()? {
+            return Ok(DaemonExit::Finished);
+        }
+        let interval = if config.workers.is_empty() {
+            config.heartbeat_interval
+        } else {
+            config.heartbeat_interval.min(Duration::from_secs(1))
+        };
+        tokio::time::sleep(interval).await;
         if let Some(exit) = disconnected_on_error(
             connection
                 .exchange_supervisor_frame(heartbeat_frame(&config.supervisor_id))
@@ -306,12 +307,14 @@ pub async fn serve_once(config: &SupervisorConfig) -> Result<DaemonExit, DaemonE
         }
         // Re-announcing the session is what asks for newly issued directives:
         // delivery is bound to the session frame, so this is the poll.
-        if let Some(exit) = disconnected_on_error(
-            connection
-                .exchange_supervisor_frame(session_frame(&session, started_at)?)
-                .await,
-        ) {
-            return Ok(exit);
+        if !runtime.finished {
+            if let Some(exit) = disconnected_on_error(
+                connection
+                    .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
+                    .await,
+            ) {
+                return Ok(exit);
+            }
         }
     }
 }
@@ -343,36 +346,231 @@ fn disconnected_on_error<T>(result: Result<T, ClientError>) -> Option<DaemonExit
 /// `IncompleteEvidence` deliberately stops the daemon instead of retrying:
 /// reconnecting cannot restore a durable record that is already gone, so a
 /// retry loop would turn a reportable condition into an invisible one.
-pub async fn run(config: &SupervisorConfig, reconnect_delay: Duration) -> Result<(), DaemonError> {
-    loop {
-        match serve_once(config).await? {
-            DaemonExit::Disconnected => {
-                tracing::info!(
-                    delay_seconds = reconnect_delay.as_secs(),
-                    "reconnecting to Ackplane"
-                );
-                tokio::time::sleep(reconnect_delay).await;
+pub async fn run(
+    config: &SupervisorConfig,
+    reconnect_delay: Duration,
+    stopping: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), DaemonError> {
+    let _state_ownership = crate::storage::claim_state_directory(&config.state_dir)
+        .map_err(|error| DaemonError::Worker(error.to_string()))?;
+    if config.workers.is_empty() {
+        return run_session(config, reconnect_delay, stopping, None).await;
+    }
+    let mut directories = std::collections::HashSet::new();
+    for (name, command) in &config.workers {
+        let run_path = config.worker_run_path(name);
+        if run_path.exists() {
+            return Err(DaemonError::Worker(format!(
+                "worker {name} has an unaccounted previous run at {}; inspect its processes and durable receipts before recovery",
+                run_path.display(),
+            )));
+        }
+        let path = command
+            .working_directory
+            .canonicalize()
+            .map_err(|error| DaemonError::Worker(error.to_string()))?;
+        let metadata = path
+            .metadata()
+            .map_err(|error| DaemonError::Worker(error.to_string()))?;
+        if !metadata.is_dir() {
+            return Err(DaemonError::Worker(format!(
+                "worker {name} working directory is not a directory: {}",
+                path.display(),
+            )));
+        }
+        if !directories.insert(path) {
+            return Err(DaemonError::Worker(
+                "worker directories resolve to the same workspace".into(),
+            ));
+        }
+    }
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut stopping = stopping;
+            let (stop_workers, worker_stopping) = tokio::sync::watch::channel(*stopping.borrow());
+            let mut workers: tokio::task::JoinSet<Result<(), DaemonError>> =
+                tokio::task::JoinSet::new();
+            for (name, command) in &config.workers {
+                let mut config = config.clone();
+                let name = name.clone();
+                let command = command.clone();
+                let stopping = worker_stopping.clone();
+                let stop_workers = stop_workers.clone();
+                workers.spawn_local(async move {
+                    let base = config.supervisor_id.clone();
+                    while !*stopping.borrow() {
+                        let mut nonce = [0_u8; 8];
+                        getrandom::getrandom(&mut nonce)
+                            .map_err(|error| DaemonError::Worker(error.to_string()))?;
+                        let suffix = nonce
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>();
+                        config.supervisor_id = format!("{base}-{name}-{suffix}");
+                        config.workers = [(name.clone(), command.clone())].into_iter().collect();
+                        run_session(
+                            &config,
+                            reconnect_delay,
+                            stopping.clone(),
+                            Some(&stop_workers),
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                });
             }
-            DaemonExit::IncompleteEvidence {
-                local_acknowledged,
-                server_accepted,
-            } => {
-                tracing::error!(
+            let mut first_error = None;
+            let mut shutdown_deadline = None;
+            while !workers.is_empty() {
+                let result = if let Some(deadline) = shutdown_deadline {
+                    match tokio::time::timeout_at(deadline, workers.join_next()).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            tracing::error!(remaining_slots = workers.len(), "worker shutdown deadline exceeded; unfinished recovery evidence is retained");
+                            return Err(first_error.unwrap_or_else(|| DaemonError::Worker(
+                                "worker shutdown deadline exceeded; unfinished recovery evidence is retained".into(),
+                            )));
+                        }
+                    }
+                } else {
+                    tokio::select! {
+                        result = workers.join_next() => result,
+                        _ = stopping.wait_for(|stop| *stop) => {
+                            stop_workers.send_replace(true);
+                            shutdown_deadline = Some(tokio::time::Instant::now() + SLOT_SHUTDOWN_GRACE);
+                            continue;
+                        }
+                    }
+                };
+                let Some(result) = result else { break; };
+                if let Err(error) = result
+                    .map_err(|error| DaemonError::Worker(error.to_string()))
+                    .and_then(|result| result)
+                {
+                    tracing::error!(%error, "worker slot failed; stopping remaining slots through their shutdown path");
+                    if first_error.is_none() {
+                        first_error = Some(error);
+                    }
+                    stop_workers.send_replace(true);
+                    shutdown_deadline.get_or_insert_with(|| tokio::time::Instant::now() + SLOT_SHUTDOWN_GRACE);
+                }
+            }
+            first_error.map_or(Ok(()), Err)
+        })
+        .await
+}
+
+async fn run_session(
+    config: &SupervisorConfig,
+    reconnect_delay: Duration,
+    mut stopping: tokio::sync::watch::Receiver<bool>,
+    stop_workers: Option<&tokio::sync::watch::Sender<bool>>,
+) -> Result<(), DaemonError> {
+    let mut runtime = runtime::WorkerRuntime::new(config)?;
+    let result = async {
+        loop {
+            runtime.observe(config).await?;
+            let step = tokio::select! {
+                biased;
+                _ = stopping.wait_for(|stop| *stop) => None,
+                result = serve_once(config, &mut runtime) => Some(result?),
+            };
+            let Some(step) = step else {
+                return tokio::time::timeout(SLOT_SHUTDOWN_GRACE, async {
+                    runtime.shutdown(config).await?;
+                    loop {
+                        match serve_once(config, &mut runtime).await? {
+                            DaemonExit::Finished => return Ok(()),
+                            DaemonExit::Disconnected => {
+                                tracing::info!(
+                                    delay_seconds = reconnect_delay.as_secs(),
+                                    "reconnecting to acknowledge shutdown receipts"
+                                );
+                                tokio::time::sleep(reconnect_delay).await;
+                            }
+                            DaemonExit::IncompleteEvidence { .. } => {
+                                return Err(DaemonError::Worker(
+                                    "server evidence is outside this runtime's recoverable interval".into(),
+                                ));
+                            }
+                        }
+                    }
+                })
+                .await
+                .map_err(|_| DaemonError::Worker(
+                    "worker shutdown deadline exceeded; durable state is retained for recovery".into(),
+                ))?;
+            };
+            match step {
+                DaemonExit::Finished => {
+                    return Ok(());
+                }
+                DaemonExit::Disconnected => {
+                    tracing::info!(
+                        delay_seconds = reconnect_delay.as_secs(),
+                        "reconnecting to Ackplane"
+                    );
+                    tokio::select! {
+                        _ = stopping.wait_for(|stop| *stop) => {},
+                        _ = tokio::time::sleep(reconnect_delay) => {},
+                    }
+                }
+                DaemonExit::IncompleteEvidence {
                     local_acknowledged,
+                    local_last_enqueued,
                     server_accepted,
-                    missing = server_accepted.saturating_sub(local_acknowledged),
-                    "Ackplane holds supervisor evidence this node cannot account for; \
-                     refusing to resume. Investigate the durable state before restarting."
-                );
-                return Ok(());
+                } => {
+                    tracing::error!(
+                        local_acknowledged,
+                        local_last_enqueued,
+                        server_accepted,
+                        missing = server_accepted.saturating_sub(local_last_enqueued)
+                            + local_acknowledged.saturating_sub(server_accepted),
+                        "Ackplane and this outbox cannot reconcile retained supervisor evidence; \
+                         refusing to resume. Investigate the durable state before restarting."
+                    );
+                    return Err(DaemonError::Worker(
+                        "server evidence is outside this runtime's recoverable interval".into(),
+                    ));
+                }
             }
         }
     }
+    .await;
+    if let Err(error) = &result {
+        if let Some(stop_workers) = stop_workers {
+            stop_workers.send_replace(true);
+        }
+        tracing::warn!(%error, "session failed; stopping owned workers and releasing confirmed leases while retaining queued evidence");
+        match tokio::time::timeout(SLOT_SHUTDOWN_GRACE, async {
+            loop {
+                runtime.shutdown(config).await?;
+                if runtime.lease.is_none() {
+                    return Ok::<(), DaemonError>(());
+                }
+                tokio::time::sleep(reconnect_delay).await;
+            }
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(cleanup_error)) => {
+                tracing::error!(%cleanup_error, "failed slot cleanup stopped; recovery evidence is retained");
+            }
+            Err(_) => {
+                tracing::error!(
+                    "failed slot cleanup deadline exceeded; recovery evidence is retained"
+                );
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SupervisorOutbox;
     use ackplane_client::node_identity::{NodeIdentity, NodeSignerSource};
     use ackplane_protocol::v1;
     use std::path::PathBuf;
@@ -390,6 +588,7 @@ mod tests {
             supervisor_id: "supervisor-1".to_string(),
             state_dir: PathBuf::from(".mindleak/supervisor"),
             heartbeat_interval: Duration::from_secs(30),
+            workers: Default::default(),
         }
     }
 
@@ -423,6 +622,71 @@ mod tests {
         }
         assert!(!registration.capabilities.supports_checkpoint);
         assert!(!registration.capabilities.supports_force_termination);
+    }
+
+    #[tokio::test]
+    async fn an_unaccounted_worker_run_refuses_startup_before_reusing_its_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = config();
+        config.state_dir = root.path().into();
+        config.workers.insert(
+            "first".into(),
+            crate::WorkerCommand {
+                command: "must-not-run".into(),
+                args: vec!["{prompt}".into()],
+                working_directory: root.path().into(),
+                branch: "agents/first".into(),
+            },
+        );
+        let marker = config.worker_run_path("first");
+        std::fs::write(&marker, "unconfirmed previous run").unwrap();
+        let (_stop, stopping) = tokio::sync::watch::channel(false);
+        let error = run(&config, Duration::ZERO, stopping).await.unwrap_err();
+        assert!(error.to_string().contains("unaccounted previous run"));
+        assert!(
+            marker.exists(),
+            "refusal must preserve the previous run's evidence"
+        );
+    }
+
+    // Canonicalization accepted regular files as workspaces, deferring the error
+    // until a claimed task tried to spawn. Refuse them during startup instead.
+    #[tokio::test]
+    async fn startup_requires_worker_workspaces_to_be_directories() {
+        for is_directory in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let workspace = root.path().join("workspace");
+            if is_directory {
+                std::fs::create_dir(&workspace).unwrap();
+            } else {
+                std::fs::write(&workspace, "not a directory").unwrap();
+            }
+            let mut config = config();
+            config.state_dir = root.path().join("state");
+            config.workers.insert(
+                "first".into(),
+                crate::WorkerCommand {
+                    command: "must-not-run".into(),
+                    args: vec!["{prompt}".into()],
+                    working_directory: workspace.clone(),
+                    branch: "agents/first".into(),
+                },
+            );
+            let (_stop, stopping) = tokio::sync::watch::channel(true);
+            let result = run(&config, Duration::ZERO, stopping).await;
+            if is_directory {
+                result.unwrap();
+            } else {
+                let error = result.expect_err("a file is not a worker workspace");
+                assert!(error.to_string().contains("first"));
+                assert!(error.to_string().contains("not a directory"));
+                assert_eq!(
+                    std::fs::read_to_string(&workspace).unwrap(),
+                    "not a directory"
+                );
+            }
+            assert!(!config.worker_run_path("first").exists());
+        }
     }
 
     /// The wire frame must carry the same declaration: a registration that is

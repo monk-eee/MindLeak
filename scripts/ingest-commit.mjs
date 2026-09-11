@@ -27,19 +27,20 @@
 //   that had timed out minutes earlier. Never blocking and never reporting are
 //   different promises; only the first one is load-bearing.
 //
-//   It records only what git already knows -- sha, subject, changed paths, and
+//   It records only what git already knows -- sha, full message, changed paths, and
 //   the commit's own timestamp. No interpretation, no model, no tokens. That
 //   keeps it on the deterministic ingest path (invariant 1).
 
 import { execFileSync, spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
-/** Facts about the commit just made, straight from git. */
-export function readCommit(run) {
+/** Facts about one exact commit, straight from git. */
+export function readCommit(run, revision = "HEAD") {
   const [sha, at, subject] = run([
     "log",
     "-1",
-    "--format=%H%x00%ct%x00%s",
+    "--format=%H%x00%ct%x00%B",
+    revision,
   ]).split("\0");
   const changed = run(["show", "--name-only", "--format=", sha])
     .split(/\r?\n/)

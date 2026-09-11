@@ -210,7 +210,7 @@ impl Consolidator {
     ) -> Result<(String, WriteOutcome)> {
         let summary = self.consolidate(logs)?;
         let facts = facts_from_summary(&summary, logs.len(), now)?;
-        let mut outcome = store.upsert_facts(&facts.nodes, &facts.edges)?;
+        let mut outcome = store.upsert_facts(&facts.nodes, &facts.edges, None)?;
         outcome.node_ids.push(facts.intent_id.clone());
         Ok((facts.intent_id, outcome))
     }

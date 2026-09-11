@@ -1,15 +1,16 @@
 //! Directive validation and receipt decisions for one local supervisor inbox.
 //!
-//! ADR-0116 requires a local supervisor to retain receipt and sequencing state
-//! across reconnects. This crate deliberately does not open a network listener,
-//! launch a worker, or execute a directive. A future transport adapter feeds
-//! [`SupervisorInbox::receive`] the directives it received over NodeSync.
+//! ADR-0116 requires durable sequencing and receipts across reconnects.
+//! `receive` validates delivery; `apply` records a guarded local effect without
+//! replaying a completed or uncertain execution attempt.
 
 use std::{fs, path::Path};
 
 use crate::storage::{
-    configure, ensure_supervisor_identity, load_receipt, next_sequence, store_receipt,
+    configure, ensure_supervisor_identity, load_effect, load_receipt, next_sequence, store_effect,
+    store_receipt,
 };
+use prost::Message;
 
 use ackplane_protocol::{
     supervisor::{
@@ -112,6 +113,9 @@ impl SupervisorInbox {
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         if let Some(stored) = load_receipt(&transaction, &directive.directive_id)? {
             if stored.payload_digest == directive.payload_digest {
+                if let Some(effect) = load_effect(&transaction, &directive.directive_id)? {
+                    return Ok(v1::DirectiveReceipt::decode(effect.as_slice())?);
+                }
                 return Ok(stored.into_receipt());
             }
             return Err(InboxError::PayloadDigestMismatch {
@@ -192,6 +196,59 @@ impl SupervisorInbox {
         Ok(receipt)
     }
 
+    pub fn apply(
+        &self,
+        directive: &v1::AgentDirective,
+        now: OffsetDateTime,
+        evidence_refs: Vec<String>,
+        effect: impl FnOnce() -> Result<(), crate::AdapterError>,
+    ) -> Result<v1::DirectiveReceipt, InboxError> {
+        let mut receipt = self.receive(directive, now)?;
+        if receipt.status != v1::DirectiveReceiptStatus::Accepted as i32 {
+            return Ok(receipt);
+        }
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        if let Some(stored) = load_effect(&transaction, &directive.directive_id)? {
+            return Ok(v1::DirectiveReceipt::decode(stored.as_slice())?);
+        }
+        receipt.status = v1::DirectiveReceiptStatus::Failed as i32;
+        receipt.reason = v1::DirectiveReceiptReason::SupervisorFailed as i32;
+        receipt.diagnostic = "Execution outcome was not confirmed; this directive must not be replayed into a second worker".into();
+        receipt.evidence_refs = evidence_refs;
+        store_effect(
+            &transaction,
+            &directive.directive_id,
+            &receipt.encode_to_vec(),
+        )?;
+        transaction.commit()?;
+        match effect() {
+            Ok(()) => {
+                receipt.status = v1::DirectiveReceiptStatus::Applied as i32;
+                receipt.reason = v1::DirectiveReceiptReason::None as i32;
+                receipt.diagnostic.clear();
+            }
+            Err(error) => {
+                receipt.status = match error {
+                    crate::AdapterError::SpawnFailed(_)
+                    | crate::AdapterError::StopFailed(_)
+                    | crate::AdapterError::WaitFailed(_) => v1::DirectiveReceiptStatus::Failed,
+                    crate::AdapterError::InvalidAssignment(_)
+                    | crate::AdapterError::UnknownWorker(_)
+                    | crate::AdapterError::DuplicateWorker(_)
+                    | crate::AdapterError::Unsupported(_) => v1::DirectiveReceiptStatus::Refused,
+                } as i32;
+                receipt.reason = v1::DirectiveReceiptReason::InvalidState as i32;
+                receipt.diagnostic = error.to_string();
+            }
+        }
+        store_effect(
+            &self.conn,
+            &directive.directive_id,
+            &receipt.encode_to_vec(),
+        )?;
+        Ok(receipt)
+    }
+
     fn validate_target(&self, directive: &v1::AgentDirective) -> Result<(), InboxError> {
         let identity = &self.registration.identity;
         if directive.tenant_id != identity.tenant_id
@@ -210,6 +267,8 @@ impl SupervisorInbox {
 /// Durable-inbox errors are explicit so a transport adapter can report a typed receipt or refusal.
 #[derive(Debug, Error)]
 pub enum InboxError {
+    #[error("stored directive effect receipt is unreadable: {0}")]
+    ReceiptDecode(#[from] prost::DecodeError),
     #[error("invalid supervisor declaration: {0}")]
     Supervisor(#[from] SupervisorError),
     #[error("supervisor session does not belong to the configured supervisor")]

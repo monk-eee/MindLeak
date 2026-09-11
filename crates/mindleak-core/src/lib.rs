@@ -34,12 +34,12 @@ pub use error::{
 };
 pub use facade::observability::ToolOutcome;
 pub use graph::{
-    AgentActivity, AgentFootprintOverlap, ArtifactStub, BudgetReport, CompiledContext,
-    ConformanceEvidence, Digest, DigestSourceSnapshot, DigestStatus, DigestStatusReport, Direction,
-    EvidenceProvenance, ExcludedCandidate, ForgetOutcome, GraphExport, GraphStore, Preflight,
-    PreflightNode, PromotionCandidate, PruneOutcome, ReconcileOutcome, ResetOutcome, ScoredNode,
-    SessionConsolidationOutcome, SignalCandidate, SignalConsolidationOutcome, Subgraph,
-    WeightedEdge, WorkingSetItem, WriteOutcome,
+    AgentActivity, AgentFootprintOverlap, ArtifactStub, BudgetReport, CommitRepairOutcome,
+    CompiledContext, ConformanceEvidence, Digest, DigestSourceSnapshot, DigestStatus,
+    DigestStatusReport, Direction, EvidenceProvenance, ExcludedCandidate, ForgetOutcome,
+    GraphExport, GraphStore, Preflight, PreflightNode, PromotionCandidate, PruneOutcome,
+    ReconcileOutcome, ResetOutcome, ScoredNode, SessionConsolidationOutcome, SignalCandidate,
+    SignalConsolidationOutcome, Subgraph, WeightedEdge, WorkingSetItem, WriteOutcome,
 };
 pub use model::{Edge, Node, NodeType, RelationType};
 

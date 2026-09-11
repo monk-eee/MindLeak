@@ -28,7 +28,8 @@
 //     counts. (This is the case that blocked PR #234: an illustrative rename.)
 //
 // Cross-platform, dependency-free Node (toolchain rule). Reads the working tree
-// via `git ls-files`, so it validates the state you are about to commit.
+// via Git's tracked and non-ignored untracked file lists, so it validates the
+// state you are about to commit.
 //   node scripts/link-check.mjs
 //
 // Scope: every tracked markdown file, `docs/adr/` included. That tree was once
@@ -49,7 +50,7 @@ import { fileURLToPath } from "node:url";
 
 const SCREENSHOT_EXEMPT = /(^|\/)media\/screenshots\//;
 
-/** Every tracked path, and the set of directories they imply. */
+/** Every present repository path, and the set of directories they imply. */
 export function treeSets(files) {
   const fileSet = new Set(files);
   const dirSet = new Set();
@@ -149,14 +150,18 @@ export function brokenLinksIn(rel, text, { fileSet, dirSet }) {
 }
 
 export function checkRepo(root) {
-  const tracked = execFileSync("git", ["ls-files"], {
-    cwd: root,
-    encoding: "utf8",
-  })
+  const files = execFileSync(
+    "git",
+    ["ls-files", "--cached", "--others", "--exclude-standard"],
+    {
+      cwd: root,
+      encoding: "utf8",
+    },
+  )
     .trim()
     .split(/\r?\n/)
     .filter(Boolean);
-  const present = tracked.filter((rel) => existsSync(path.join(root, rel)));
+  const present = files.filter((rel) => existsSync(path.join(root, rel)));
   const sets = treeSets(present);
   const broken = [];
   for (const rel of present.filter((f) => f.endsWith(".md"))) {

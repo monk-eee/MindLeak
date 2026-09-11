@@ -29,7 +29,7 @@ mod types;
 
 pub use degradation::{sustained_degradation, Sustained};
 pub use record::{ensure_table, record};
-pub use snapshot::snapshot;
+pub use snapshot::{event, snapshot};
 pub use tracing_init::init_tracing;
 pub use types::{EventRow, MemoryHabit, NameMetric, Snapshot, UsageMetric, UsageRetrospective};
 

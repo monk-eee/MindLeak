@@ -86,6 +86,10 @@ impl MindLeak {
         telemetry::snapshot(&self.store.conn, recent_limit)
     }
 
+    pub fn telemetry_event(&self, id: i64) -> Result<Option<telemetry::EventRow>> {
+        telemetry::event(&self.store.conn, id)
+    }
+
     /// Optional work that has been failing long enough to be worth volunteering.
     ///
     /// A degraded pass is recorded once and then goes quiet on purpose, which is

@@ -125,6 +125,7 @@ const stubLedger = (root, { claims = [], overlaps = [], boardShape = "array" } =
       : claims;
   const source = [
     'import { createInterface } from "node:readline";',
+    'import { writeFileSync } from "node:fs";',
     `const board = ${JSON.stringify(board)};`,
     `const overlaps = ${JSON.stringify(overlaps)};`,
     "const reply = (id, value) =>",
@@ -142,7 +143,10 @@ const stubLedger = (root, { claims = [], overlaps = [], boardShape = "array" } =
     "  const name = message.params?.name;",
     "  const view = message.params?.arguments?.view;",
     `  if (name === "open_session") reply(message.id, { agent_id: ${JSON.stringify(AGENT)} });`,
-    '  else if (name === "ingest_commit") reply(message.id, { node_ids: ["intent:test"] });',
+    '  else if (name === "ingest_commit") {',
+    `    writeFileSync(${JSON.stringify(join(root, "publication-record.json"))}, JSON.stringify(message.params.arguments));`,
+    '    reply(message.id, { node_ids: ["intent:test"] });',
+    "  }",
     // The task cluster collapsed to one verb per stage, so the board and the
     // overlap report are views of `task_query` rather than tools of their own.
     // A stub answering only the retired names leaves every call unanswered, and
@@ -381,10 +385,11 @@ describe("canonical-push", () => {
   );
 
   it(
-    "publishes the current fleet branch's exact HEAD",
+    "publishes the current fleet branch's exact HEAD and records only that commit's files",
     () => {
       const { root, remote, repo } = sandbox();
       git(repo, ["checkout", "-b", "fleet/canonical"]);
+      commitFile(repo, "earlier.txt", "earlier\n", "earlier branch work");
       commitFile(repo, "feature.txt", "feature\n", "fleet feature");
       const expected = git(repo, ["rev-parse", "HEAD"]);
 
@@ -395,6 +400,13 @@ describe("canonical-push", () => {
       expect(git(root, ["--git-dir", remote, "rev-parse", "refs/heads/fleet/canonical"])).toBe(
         expected
       );
+      expect(JSON.parse(readFileSync(join(root, "publication-record.json"), "utf8"))).toEqual({
+        session_id: SESSION,
+        sha: expected,
+        message: "fleet feature",
+        changed_files: ["feature.txt"],
+        timestamp: Number(git(repo, ["log", "-1", "--format=%ct", expected])),
+      });
     },
     TIMEOUT_MS
   );

@@ -4,6 +4,10 @@
 // is indistinguishable, to `check_conformance`, from never recording anything
 // at all -- both read as "evidence contains no provenance-bearing mutation".
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -28,7 +32,7 @@ test("a resolved Memory Plane does not refuse", () => {
   assert.equal(memoryPlaneRefusal("C:/somewhere/mindleak-mcp.exe"), null);
 });
 
-test("the record carries the files the push made visible", () => {
+test("the record carries the supplied commit facts", () => {
   const record = publicationRecord({
     sessionId: SESSION,
     sha: "012f515",
@@ -138,5 +142,130 @@ test("a session id that is not a 128-bit token is refused", () => {
     assert.match(notice, /will not certify/);
   } finally {
     if (previous !== undefined) process.env.MINDLEAK_MCP_BIN = previous;
+  }
+});
+
+// Publication used to reattribute the whole branch diff to its newest commit.
+// Only that commit's own paths and timestamp may enter mutation provenance.
+test("publication records the exact commit rather than caller-supplied branch facts", () => {
+  const sha = "b".repeat(40);
+  const calls = [];
+  const notice = recordPublication(
+    {
+      repoRoot: "/publication-fixture",
+      sessionId: SESSION,
+      sha,
+      message: "untrusted branch description",
+      changedFiles: ["earlier.rs", "latest.rs"],
+      timestamp: 2000,
+    },
+    {
+      resolve: () => "fixture-mindleak",
+      run: (args) => {
+        assert.equal(
+          args.at(-1),
+          sha,
+          "Git must read the published commit, not a later HEAD",
+        );
+        if (args[0] === "log")
+          return `${sha}\u00001000\u0000fix: actual\n\nWHY: actual rationale`;
+        if (args[0] === "show") return "latest.rs\n";
+        assert.fail(`unexpected git ${args}`);
+      },
+      call: (_server, _root, requests) => calls.push(...requests),
+    },
+  );
+  assert.equal(notice, null);
+  assert.deepEqual(
+    calls.find((request) => request.name === "ingest_commit")?.arguments,
+    {
+      session_id: SESSION,
+      sha,
+      message: "fix: actual\n\nWHY: actual rationale",
+      changed_files: ["latest.rs"],
+      timestamp: 1000,
+    },
+  );
+});
+
+test("publication does not invent evidence when Git cannot read the commit", () => {
+  const notice = recordPublication(
+    {
+      repoRoot: "/publication-fixture",
+      sessionId: SESSION,
+      sha: "c".repeat(40),
+    },
+    {
+      resolve: () => "fixture-mindleak",
+      run: () => {
+        throw new Error("missing commit");
+      },
+      call: () => assert.fail("unresolved commit facts must never be ingested"),
+    },
+  );
+  assert.match(notice, /Git could not read the published commit/);
+});
+
+test("publishing one commit never attributes earlier branch work or a later HEAD to it", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "mindleak-publication-"));
+  const env = { ...process.env };
+  for (const variable of Object.keys(env)) {
+    if (variable.startsWith("GIT_")) delete env[variable];
+  }
+  const run = (args) =>
+    execFileSync("git", args, {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: "pipe",
+      env,
+    }).trim();
+  const calls = [];
+  try {
+    run(["init", "-b", "main"]);
+    run(["config", "user.name", "Publication Test"]);
+    run(["config", "user.email", "publication@example.invalid"]);
+    run(["config", "core.hooksPath", join(repoRoot, "no-hooks")]);
+    for (const name of ["earlier", "published", "later"]) {
+      writeFileSync(join(repoRoot, `${name}.rs`), `${name}\n`);
+      run(["add", `${name}.rs`]);
+      run([
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-m",
+        `fix: ${name}`,
+        "-m",
+        `WHY: ${name} only`,
+      ]);
+    }
+    const sha = run(["rev-parse", "HEAD~1"]);
+    const timestamp = Number(run(["log", "-1", "--format=%ct", sha]));
+    const notice = recordPublication(
+      {
+        repoRoot,
+        sessionId: SESSION,
+        sha,
+        changedFiles: ["earlier.rs", "published.rs", "later.rs"],
+        timestamp: timestamp + 86400,
+      },
+      {
+        resolve: () => "fixture-mindleak",
+        run,
+        call: (_server, _root, requests) => calls.push(...requests),
+      },
+    );
+    assert.equal(notice, null);
+    assert.deepEqual(
+      calls.find((request) => request.name === "ingest_commit")?.arguments,
+      {
+        session_id: SESSION,
+        sha,
+        timestamp,
+        message: "fix: published\n\nWHY: published only",
+        changed_files: ["published.rs"],
+      },
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
   }
 });
