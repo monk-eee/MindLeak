@@ -53,7 +53,7 @@ fn oversized_binding_does_not_publish_an_unrecoverable_credential() {
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
-fn binding() -> SigningBinding {
+pub(super) fn binding() -> SigningBinding {
     SigningBinding {
         tenant_id: "tenant-test".to_string(),
         repository_id: "repo-test".to_string(),

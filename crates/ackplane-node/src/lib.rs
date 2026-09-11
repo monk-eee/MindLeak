@@ -14,7 +14,9 @@
 //! a hardware non-exportable key. `CredentialCandidate` persists enrollment
 //! challenges and binds accepted authority responses to that same key. Request
 //! orchestration, runtime integration, persistent rotation, and hardware/workload
-//! providers remain separate requirements.
+//! providers remain separate requirements. `CredentialProvider::open_connection`
+//! authenticates through the reusable client with a private, fallible signer
+//! adapter and the provider's recorded binding.
 
 mod enrolment;
 mod process_lock;

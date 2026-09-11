@@ -1,13 +1,10 @@
 use std::time::Duration;
 
-use ackplane_protocol::{
-    connection_challenge_auth::{connection_challenge_bytes, ConnectionChallengeBinding},
-    v1::{
-        self, node_enrollment_service_client::NodeEnrollmentServiceClient,
-        node_enrollment_service_server::NodeEnrollmentServiceServer,
-        node_sync_service_client::NodeSyncServiceClient,
-        node_sync_service_server::NodeSyncServiceServer,
-    },
+use ackplane_client::{ClientError, SigningError};
+use ackplane_protocol::v1::{
+    self, node_enrollment_service_client::NodeEnrollmentServiceClient,
+    node_enrollment_service_server::NodeEnrollmentServiceServer,
+    node_sync_service_server::NodeSyncServiceServer,
 };
 use ackplane_server::{
     db_pool::{build_pool, TEST_POOL_MAX_SIZE},
@@ -16,12 +13,12 @@ use ackplane_server::{
     ledger::LedgerStore,
     service::NodeSyncService,
 };
-use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::{ReceiverStream, TcpListenerStream};
+use tokio::sync::oneshot;
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::{transport::Server, Request};
 
 use super::{tests::credential, CredentialCandidate, CredentialProvider};
-use crate::{NodeSigner, SigningBinding};
+use crate::NodeSigner;
 
 #[tokio::test]
 async fn a_recovered_candidate_replays_activation_and_authenticates_with_the_assigned_key() {
@@ -155,72 +152,30 @@ async fn a_recovered_candidate_replays_activation_and_authenticates_with_the_ass
             let identity = provider.identity();
             assert_eq!(identity.public_key, original.public_key);
             assert_eq!(identity.signing_key_id, committed.signing_key_id);
-            let mut sync = NodeSyncServiceClient::connect(endpoint.clone())
+            let connection = provider
+                .open_connection(&endpoint, vec!["synchronize".to_string()], 0)
                 .await
                 .unwrap();
-            let (outgoing, requests) = mpsc::channel::<v1::NodeFrame>(4);
-            let mut incoming = sync
-                .synchronize(Request::new(ReceiverStream::new(requests)))
-                .await
-                .unwrap()
-                .into_inner();
-            outgoing
-                .send(v1::NodeFrame {
-                    frame: Some(v1::node_frame::Frame::Hello(v1::Hello {
-                        tenant_id: tenant_id.clone(),
-                        repository_id: "repo-test".to_string(),
-                        producer_id: identity.node_id.clone(),
-                        last_accepted_position: 0,
-                        capabilities: vec!["synchronize".to_string()],
-                        signing_key_id: identity.signing_key_id.clone(),
-                    })),
-                })
-                .await
-                .unwrap();
-            let nonce = match incoming.message().await.unwrap().unwrap().frame {
-                Some(v1::ackplane_frame::Frame::ConnectionChallenge(challenge)) => challenge.nonce,
-                other => panic!("expected connection challenge, got {other:?}"),
-            };
-            let bytes = connection_challenge_bytes(&ConnectionChallengeBinding {
-                nonce: &nonce,
-                tenant_id: &tenant_id,
-                repository_id: "repo-test",
-                producer_id: &identity.node_id,
-                signing_key_id: &identity.signing_key_id,
-            });
-            let signature = provider
-                .sign(
-                    "node_sync.connection",
-                    &SigningBinding {
-                        tenant_id: tenant_id.clone(),
-                        repository_id: "repo-test".to_string(),
-                        node_id: identity.node_id,
-                        key_id: identity.signing_key_id,
-                    },
-                    &bytes,
-                )
-                .unwrap();
-            outgoing
-                .send(v1::NodeFrame {
-                    frame: Some(v1::node_frame::Frame::ChallengeResponse(
-                        v1::ChallengeResponse {
-                            signature: signature.as_bytes().to_vec(),
-                        },
-                    )),
-                })
-                .await
-                .unwrap();
-            assert!(matches!(
-                incoming.message().await.unwrap().unwrap().frame,
-                Some(v1::ackplane_frame::Frame::HelloAccepted(_))
-            ));
-            assert!(matches!(
-                incoming.message().await.unwrap().unwrap().frame,
-                Some(v1::ackplane_frame::Frame::FlowControl(_))
-            ));
-            drop(outgoing);
-            assert!(incoming.message().await.unwrap().is_none());
+            assert_eq!(connection.accepted_position(), 0);
+            assert!(
+                connection.enabled_capabilities().is_empty(),
+                "requested capabilities must not be mistaken for server-enabled capabilities"
+            );
+            assert_eq!(connection.flow_control().max_in_flight_batches, 4);
+            drop(connection);
         }
+        let provider =
+            CredentialProvider::recover_with(&tenant_id, "repo-test", directory.path(), |_| {
+                Ok(entry.clone())
+            })
+            .unwrap();
+        entry.delete_password().unwrap();
+        assert!(matches!(
+            provider
+                .open_connection(&endpoint, vec!["synchronize".to_string()], 0)
+                .await,
+            Err(ClientError::Signing(SigningError::Unavailable)),
+        ));
         let connection = pool.get().await.unwrap();
         for table in ["signing_keys", "enrollment_receipts"] {
             let count: i64 = connection

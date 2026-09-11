@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Repository-side identity owner: a non-exporting signer companion (ADR-0100)."
 
 [dependencies]
+ackplane-client = { path = "../ackplane-client" }
 ackplane-protocol = { path = "../ackplane-protocol" }
 ed25519-dalek = { version = "2.1", features = ["zeroize"] }
 fs2 = "0.4.3"

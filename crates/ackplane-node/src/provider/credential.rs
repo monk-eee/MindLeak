@@ -1,13 +1,12 @@
 use std::{fmt, path::Path};
 
-use ed25519_dalek::Signer;
-
 use crate::{
     EnrollmentActivation, EnrolmentError, KeyHandle, LockError, NodeIdentity, NodeSigner,
     NodeSignerError, Signature, SigningBinding,
 };
 
 mod candidate;
+mod connection;
 mod storage;
 
 pub use candidate::CredentialCandidate;
@@ -192,11 +191,9 @@ impl NodeSigner for CredentialProvider {
                 requested: binding.clone(),
             });
         }
-        let key = self
-            .storage
-            .read_key()
-            .map_err(|error| NodeSignerError::ProviderRefused(error.to_string()))?;
-        Ok(Signature::from_bytes(key.sign(message_digest).to_bytes()))
+        self.storage
+            .sign(message_digest)
+            .map_err(|error| NodeSignerError::ProviderRefused(error.to_string()))
     }
 
     fn provision_successor(&self) -> Result<NodeIdentity, NodeSignerError> {

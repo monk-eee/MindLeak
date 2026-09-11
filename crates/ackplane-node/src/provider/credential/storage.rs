@@ -4,7 +4,7 @@ use std::{
 };
 
 use ackplane_protocol::enrollment::public_key_fingerprint;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
@@ -13,6 +13,7 @@ use super::CredentialProviderError;
 use crate::EnrollmentChallengeRecord;
 use crate::{
     CandidateIdentity, EnrollmentActivation, EnrolmentError, EnrolmentRecord, NodeProcessLock,
+    Signature,
 };
 
 const SCHEME: &str = "credential-facility-software";
@@ -220,12 +221,18 @@ impl CredentialStorage {
         Ok(key)
     }
 
-    pub(super) fn read_key(&self) -> Result<SigningKey, CredentialProviderError> {
+    fn read_key(&self) -> Result<SigningKey, CredentialProviderError> {
         let stored = self.load_credential()?;
         if stored.record != self.record {
             return Err(CredentialProviderError::IdentityMismatch);
         }
         Self::verify_key(&stored)
+    }
+
+    pub(super) fn sign(&self, bytes: &[u8]) -> Result<Signature, CredentialProviderError> {
+        Ok(Signature::from_bytes(
+            self.read_key()?.sign(bytes).to_bytes(),
+        ))
     }
 
     fn store(entry: &Entry, stored: &StoredCredential) -> Result<(), CredentialProviderError> {

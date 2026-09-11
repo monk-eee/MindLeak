@@ -1,7 +1,6 @@
 use std::{fmt, path::Path, sync::Arc};
 
 use ackplane_protocol::{enrollment::activation_challenge_bytes, v1};
-use ed25519_dalek::Signer;
 use keyring::Entry;
 
 use super::{CredentialProvider, CredentialProviderError, CredentialStorage};
@@ -94,7 +93,7 @@ impl CredentialCandidate {
             &record.node_id,
             &record.fingerprint,
         );
-        let signature = self.storage.read_key()?.sign(&bytes).to_bytes().to_vec();
+        let signature = self.storage.sign(&bytes)?.as_bytes().to_vec();
         Ok(v1::EnrollmentActivationProof {
             request_id: challenge.request_id.clone(),
             tenant_id: record.tenant_id.clone(),
