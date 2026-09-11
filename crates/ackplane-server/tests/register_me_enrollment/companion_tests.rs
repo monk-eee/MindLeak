@@ -1,4 +1,5 @@
 use std::{
+    path::Path,
     process::Stdio,
     time::{Duration, SystemTime},
 };
@@ -11,20 +12,21 @@ use ackplane_server::{
 };
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
-    process::{Child, Command},
+    process::Child,
 };
 
-use super::support::{run_cli, TestIdentity};
+use super::support::TestIdentity;
 
-async fn start(directory: &TestIdentity, endpoint: &str) -> Child {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_register-me"))
-        .args(["serve", "--grpc-endpoint", endpoint, "--state-dir"])
-        .arg(directory.path())
-        .env_remove("MINDLEAK_ACKPLANE_TLS_CA_PATH")
+pub(super) async fn start(
+    directory: &TestIdentity,
+    endpoint: &str,
+    ca_path: Option<&Path>,
+) -> Child {
+    let mut child = directory
+        .command(&["serve", "--grpc-endpoint", endpoint], ca_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .stdin(Stdio::null())
-        .kill_on_drop(true)
         .spawn()
         .unwrap();
     let ready = tokio::time::timeout(
@@ -51,7 +53,7 @@ pub(super) async fn exercise(
     revoke: bool,
 ) {
     let metadata = std::fs::read(directory.path().join("enrolment.json")).unwrap();
-    let mut child = start(directory, endpoint).await;
+    let mut child = start(directory, endpoint, None).await;
     let node = NodeClient::new(directory.path().into(), tenant.into(), "repo-test".into());
     let original = node.identity().await.unwrap();
     assert_eq!(original.node_id, "node-test");
@@ -81,7 +83,9 @@ pub(super) async fn exercise(
     let status = node.status().await.unwrap();
     assert!(status.verified);
     assert_eq!(status.state, v1::EnrollmentState::Active as i32);
-    let duplicate = run_cli(directory.path(), &["serve", "--grpc-endpoint", endpoint]).await;
+    let duplicate = directory
+        .run(&["serve", "--grpc-endpoint", endpoint], None)
+        .await;
     assert!(
         !duplicate.status.success(),
         "a second provider owner must be refused"
@@ -90,7 +94,7 @@ pub(super) async fn exercise(
     child.kill().await.unwrap();
     child.wait().await.unwrap();
     assert!(node.identity().await.is_err());
-    let mut child = start(directory, endpoint).await;
+    let mut child = start(directory, endpoint, None).await;
     assert_eq!(node.identity().await.unwrap(), original);
     let scope = SupervisorScope {
         supervisor_id: "enrolled-runtime".into(),
@@ -166,7 +170,9 @@ pub(super) async fn exercise(
         "an established stream survived authority loss"
     );
     assert!(node.open_sync(0, None).await.is_err());
-    let refused = run_cli(directory.path(), &["serve", "--grpc-endpoint", endpoint]).await;
+    let refused = directory
+        .run(&["serve", "--grpc-endpoint", endpoint], None)
+        .await;
     assert!(
         !refused.status.success(),
         "authority loss must not provision a replacement"
