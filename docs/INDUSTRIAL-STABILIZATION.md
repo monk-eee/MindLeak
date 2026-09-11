@@ -49,8 +49,8 @@ repository. They are provisional, not deadlines; reassess after STAB-03.
 
 | Task | Ledger ID | Status | Estimate | Acceptance Summary |
 | --- | --- | --- | --- | --- |
-| STAB-01: Reproducible build and database gate | `task:52eb3f6d82bd` | Locally validated; awaiting review/CI | 1-3 days | Fail closed without database/recovery prerequisites; migrate explicitly; compile every target; run all-feature workspace tests against disposable Postgres in CI and locally. |
-| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | Queued after STAB-01 | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
+| STAB-01: Reproducible build and database gate | `task:52eb3f6d82bd` | Merged, CI passed, required check enabled | 1-3 days | Fail closed without database/recovery prerequisites; migrate explicitly; compile every target; run all-feature workspace tests against disposable Postgres in CI and locally. |
+| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: durable activation; runtime handoff open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
 | STAB-03: Real worker execution and isolation | `task:df1e790eefca` | Queued after STAB-02 | 5-10 days | Addressed, authenticated work drives a real configured worker with bounded current context in its own worktree; two-node isolation and peer-impersonation refusals pass. |
 | STAB-04: Completion and restart recovery | `task:a200ebd9ec16` | Queued after STAB-03 | 5-8 days | Attributed evidence and conformance govern completion; crashes, reconnects, duplicate messages, expired claims and lost outbox state cannot silently lose or repeat work. |
 | STAB-05: Shared context and honest freshness | `task:8edce4b7d4a9` | Queued after STAB-04 | 4-7 days | Enrolled-node embedding production feeds shared recall; invalidation, cross-tenant refusal and explicit unembedded/stale/unavailable states are tested. Resolve the Work freshness design mismatch explicitly. |
@@ -96,10 +96,11 @@ Existing ignored tests requiring external models or a platform credential servic
 retain their own prerequisites. An enabled database gate is not a claim that
 those external integrations ran.
 
-The new CI job must run successfully on the published branch, and
-**Industrial (database and recovery)** must become a required protected-branch
-check before this is a merge-enforced release gate. Neither publication nor
-branch-protection changes have been performed by the local implementation.
+PR [#920](https://github.com/monk-eee/MindLeak/pull/920) merged as
+`7991ba3a9aafe4d6a6012fd160b405856abb7b3c` after all applicable CI jobs passed.
+With explicit user approval, **Industrial (database and recovery)** is now a
+required check on `main`, preserving the six previous checks and strict
+up-to-date enforcement. STAB-01 is complete with aligned conformance.
 
 ## Baseline Evidence
 
@@ -120,3 +121,71 @@ branch-protection changes have been performed by the local implementation.
 The detailed acceptance text and ownership live in Lodestar. This document is a
 portable roadmap, not a second task-state authority. Update evidence at each
 reviewed checkpoint and retain the tested commit identity.
+
+## Enrollment Identity Safety
+
+The first STAB-02 change preserves the existing ignored key file at
+`.mindleak/ackplane-node.key` (or the explicit `--key-path` /
+`MINDLEAK_ACKPLANE_KEY_PATH`). No second copy of the private key belongs in a
+dotenv file. A dotenv may hold non-secret configuration, but `register-me` does
+not load dotenv files itself; its caller must supply the environment.
+
+An unreadable or malformed key is an error, never permission to regenerate it.
+If enrollment state exists but its key is gone, restore the original key from
+protected backup. Activation only loads an existing key and verifies its public
+fingerprint against the saved enrollment before connecting. Only a new request
+with neither a key nor saved enrollment may create a key; concurrent creation
+publishes one complete key without overwriting a winner.
+
+Validation: all 18 enrollment CLI tests pass, including the two accidental
+replacement cases first reproduced against the old implementation. Scoped
+Clippy is warning-free. The full industrial gate passes 2,562 tests with three
+existing ignored tests against a fresh disposable PostgreSQL instance.
+
+This does not complete STAB-02: clean installation, activation-to-runtime
+configuration, idempotent enrollment and the administrative approval surface
+remain to be verified and completed.
+
+## Activation Recovery
+
+`register-me activate` now writes the assigned `signing_key_id` and
+`enrolment_receipt_id` under `activation` in the existing
+`<key-path>.enrollment.json` file. The atomic write happens before NodeSync, and
+contains no private seed. Malformed or mismatched activation responses cannot
+replace the pending record. A failed write is a failure, not a reported success.
+
+After a successful local save, repeating `activate` uses the recorded key ID
+without requesting a second activation. The normal path still opens a fresh
+authenticated NodeSync connection; a revoked or unavailable identity is not
+made authoritative by a local file. The standalone `--skip-sync` flag reports
+recorded activation only, including while the service is offline. New `request`
+invocations refuse an existing enrollment record instead of overwriting it.
+
+The CLI integration test uses real gRPC and disposable Postgres: activation
+succeeds without a sync service, sync fails, the public identity survives a
+new CLI process, and the same key authenticates twice after sync is restored.
+Unit tests cover missing fields, wrong requests, rejected responses, file-write
+failure and no-overwrite request persistence. Approval errors also retain their
+failure category without repeating the password-bearing database URL.
+
+The CLI also records the public `activation_nonce` before submitting proof. If
+Ackplane commits activation but its response is lost, a new CLI process signs
+that same nonce with the same approved key and uses the existing exact-replay
+contract to recover the original receipt and key ID. A still-pending approval
+may return a refreshed challenge; receipt persistence clears the retry nonce.
+Failed writes preserve the previous retry state. No private seed or reusable
+signature is saved in the sidecar.
+
+The fault-injection test deliberately drops a successful server response and
+then restarts the CLI. A corrupted nonce is refused, a valid retry returns the
+original result, and the database still contains exactly one receipt and key.
+The server's replay lookup now binds the key to that original receipt instead
+of selecting the newest key for the same node. Existing proof verification and
+bootstrap expiry checks remain in force; this is recovery of a recorded result,
+not permission to reactivate an expired enrollment or claim current authority.
+
+Losing the whole sidecar, including the retry nonce, still requires restoring
+the protected enrollment state. Saving a receipt is not signer provisioning; see the
+[runtime identity handoff gap](../gaps.d/enrollment-runtime-identity-handoff-is-not-wired.md).
+That remains STAB-02 work, not an invitation to generate a new key or to copy a
+private seed into dotenv.

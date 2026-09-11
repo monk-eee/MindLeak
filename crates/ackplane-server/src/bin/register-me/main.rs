@@ -36,8 +36,7 @@ use std::{
     process::ExitCode,
 };
 
-use ed25519_dalek::{Signer, SigningKey};
-use serde::{Deserialize, Serialize};
+use ed25519_dalek::Signer;
 use sha2::{Digest, Sha256};
 use tonic::Request;
 
@@ -48,18 +47,6 @@ use ackplane_server::enrollment_store::{EnrollmentApproval, EnrollmentStore};
 use ackplane_server::envelope_signature::envelope_signing_bytes;
 
 const DEFAULT_GRPC_ENDPOINT: &str = "http://127.0.0.1:8443";
-
-/// Enrollment state `request` saves and `activate` reads back, so the node
-/// only has to type its request id a second time, never re-derive anything.
-#[derive(Serialize, Deserialize)]
-struct SavedRequest {
-    request_id: String,
-    tenant_id: String,
-    repository_id: String,
-    node_id: String,
-    public_key_fingerprint: String,
-    grpc_endpoint: String,
-}
 
 fn now_rfc3339() -> String {
     time::OffsetDateTime::now_utc()
@@ -90,7 +77,9 @@ fn parse_flags(args: &[String]) -> HashMap<String, String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if let Some(name) = arg.strip_prefix("--") {
-            if let Some(value) = iter.next() {
+            if name == "skip-sync" {
+                flags.insert(name.to_string(), String::new());
+            } else if let Some(value) = iter.next() {
                 flags.insert(name.to_string(), value.clone());
             }
         }
@@ -138,25 +127,12 @@ fn resolve_tenant_id(flags: &HashMap<String, String>) -> Result<String, String> 
     Ok(dev_tenant_token(&salt, tenant_name))
 }
 
-fn load_or_generate_key(path: &Path) -> std::io::Result<SigningKey> {
-    if let Ok(existing) = std::fs::read(path) {
-        if let Ok(seed) = <[u8; 32]>::try_from(existing.as_slice()) {
-            return Ok(SigningKey::from_bytes(&seed));
-        }
-    }
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    let mut seed = [0_u8; 32];
-    getrandom::getrandom(&mut seed)
-        .map_err(|error| std::io::Error::other(format!("could not generate a key: {error}")))?;
-    std::fs::write(path, seed)?;
-    Ok(SigningKey::from_bytes(&seed))
-}
-
 mod commands;
+mod keys;
+mod state;
+
+use keys::{load_key, load_or_generate_key};
+use state::SavedRequest;
 
 fn print_usage() {
     eprintln!(
@@ -172,6 +148,9 @@ fn print_usage() {
          `--key-path` defaults to the same repository-local path on every subcommand\n\
          (see `ackplane_client::identity::DEFAULT_KEY_PATH`; override with\n\
          `MINDLEAK_ACKPLANE_KEY_PATH` or an explicit flag).\n\n\
+         Activation saves the assigned key ID and receipt before attempting NodeSync.\n\
+         Repeating `activate` reuses that record; `--skip-sync` reports recorded activation\n\
+         only and does not verify that the node is currently live or authorized.\n\n\
          `--tenant-name` + `--salt-path` derive the same tenant id the Bridge queries for --\n\
          use it, or the enrolled repository will never appear there.\n\
          `--tenant-id` is a raw override for a deployment that assigns tenant ids some other way.\n\n\
@@ -226,6 +205,22 @@ mod tests {
         assert_eq!(flags.get("repo").map(String::as_str), Some("r"));
         assert_eq!(flags.get("node").map(String::as_str), Some("n"));
         assert_eq!(flags.len(), 2);
+    }
+
+    #[test]
+    fn parse_flags_keeps_skip_sync_separate_from_value_flags() {
+        for args in [
+            ["--skip-sync", "--request-id", "request-test"],
+            ["--request-id", "request-test", "--skip-sync"],
+        ] {
+            let flags = parse_flags(&args.map(str::to_string));
+            assert!(flags.contains_key("skip-sync"));
+            assert_eq!(
+                flags.get("request-id").map(String::as_str),
+                Some("request-test")
+            );
+            assert_eq!(flags.len(), 2);
+        }
     }
 
     #[test]
@@ -342,5 +337,80 @@ mod tests {
         assert_eq!(first.to_bytes(), second.to_bytes());
 
         std::fs::remove_file(&path).ok();
+    }
+
+    // A corrupt key used to be overwritten, changing an enrolled identity without consent.
+    #[test]
+    fn load_or_generate_key_preserves_a_corrupt_existing_seed() {
+        let path = std::env::temp_dir().join(format!(
+            "register-me-corrupt-key-test-{}.key",
+            std::process::id()
+        ));
+        let corrupt = b"damaged-enrollment-key";
+        std::fs::write(&path, corrupt).expect("write corrupt fixture");
+
+        let result = load_or_generate_key(&path);
+        let preserved = std::fs::read(&path).expect("read fixture") == corrupt;
+        std::fs::remove_file(&path).expect("remove fixture");
+
+        assert!(preserved, "an invalid persistent key must not be replaced");
+        assert_eq!(
+            result.err().map(|error| error.kind()),
+            Some(std::io::ErrorKind::InvalidData)
+        );
+    }
+
+    // Activation must use the approved key, never silently generate a different identity.
+    #[tokio::test]
+    async fn activation_preserves_missing_corrupt_and_mismatched_approved_keys() {
+        let approved = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        for (existing, expected_error) in [
+            (None, "key"),
+            (Some(vec![7; 3]), "32-byte Ed25519 seed"),
+            (Some(vec![8; 32]), "saved enrollment fingerprint"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("node.key");
+            let state = state_path(&path);
+            let saved = SavedRequest {
+                request_id: "request-test".to_string(),
+                tenant_id: "tenant-test".to_string(),
+                repository_id: "repository-test".to_string(),
+                node_id: "node-test".to_string(),
+                public_key_fingerprint: public_key_fingerprint(
+                    &approved.verifying_key().to_bytes(),
+                ),
+                grpc_endpoint: "http://127.0.0.1:1".to_string(),
+                activation_nonce: None,
+                activation: None,
+            };
+            let saved_bytes = serde_json::to_vec(&saved).unwrap();
+            std::fs::write(&state, &saved_bytes).unwrap();
+            if let Some(bytes) = &existing {
+                std::fs::write(&path, bytes).unwrap();
+            }
+            let flags = HashMap::from([
+                ("request-id".to_string(), saved.request_id),
+                ("key-path".to_string(), path.to_string_lossy().into_owned()),
+            ]);
+
+            let error = commands::run_activate(flags)
+                .await
+                .expect_err("must refuse the key");
+
+            assert!(error.contains(expected_error));
+            assert!(
+                !error.contains("could not reach"),
+                "refuse before contacting Ackplane"
+            );
+            match existing {
+                Some(bytes) => assert_eq!(std::fs::read(&path).unwrap(), bytes),
+                None => assert!(
+                    !path.exists(),
+                    "activation must not create a replacement key"
+                ),
+            }
+            assert_eq!(std::fs::read(&state).unwrap(), saved_bytes);
+        }
     }
 }

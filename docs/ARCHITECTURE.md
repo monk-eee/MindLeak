@@ -514,13 +514,25 @@ atomically consumes it while recording `activating`. Key rotation remains
 explicitly unavailable until the continuity proof required by ADR-0085 is
 implemented.
 
-`register-me` (`src/bin/register-me.rs`) drives that ceremony from the command
+`register-me` (`src/bin/register-me/main.rs`) drives that ceremony from the command
 line as three subcommands — `request`, `approve`, `activate` — mirroring the
 real actors: a node runs `request`/`activate` unattended; `approve` is a
 documented local-dev database shortcut standing in for the administrative
 approval RPC/UI that does not exist yet. `activate` proves possession, opens
 one real `NodeSync` stream, and sends a signed heartbeat event using the
-`signing_key_id` `EnrollmentActivationResult` returns directly.
+`signing_key_id` `EnrollmentActivationResult` returns directly. The CLI's
+`state.rs` atomically records that key ID and receipt in the existing enrollment
+sidecar before synchronization, so a failed sync does not discard activation.
+New requests cannot replace saved enrollment; repeated activation reuses the
+record and still authenticates each NodeSync connection. Before submitting proof,
+the CLI persists the bound public challenge nonce so a lost activation response
+can be recovered through the existing exact-proof replay contract. A pending
+approval can refresh its challenge; an already consumed proof returns the
+original receipt and its original key, not a newer node key. The retry nonce is
+cleared only when the activation result has been saved. `--skip-sync` reports
+only recorded activation, not current authorization or liveness. Private key
+bytes remain outside this record; wiring an accepted persistent signer into the
+runtime is a separate STAB-02 requirement.
 
 `KnowledgeService` (`knowledge_store.rs`/`knowledge_service.rs`) is the first
 slice of Ackplane's PostgreSQL-backed knowledge domain (ADR-0106 decision 3;
