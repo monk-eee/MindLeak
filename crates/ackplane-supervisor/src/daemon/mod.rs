@@ -354,7 +354,7 @@ pub async fn run(
     let _state_ownership = crate::storage::claim_state_directory(&config.state_dir)
         .map_err(|error| DaemonError::Worker(error.to_string()))?;
     if config.workers.is_empty() {
-        return run_session(config, reconnect_delay, stopping).await;
+        return run_session(config, reconnect_delay, stopping, None).await;
     }
     let mut directories = std::collections::HashSet::new();
     for (name, command) in &config.workers {
@@ -386,6 +386,7 @@ pub async fn run(
                 let name = name.clone();
                 let command = command.clone();
                 let stopping = worker_stopping.clone();
+                let stop_workers = stop_workers.clone();
                 workers.spawn_local(async move {
                     let base = config.supervisor_id.clone();
                     while !*stopping.borrow() {
@@ -398,7 +399,13 @@ pub async fn run(
                             .collect::<String>();
                         config.supervisor_id = format!("{base}-{name}-{suffix}");
                         config.workers = [(name.clone(), command.clone())].into_iter().collect();
-                        run_session(&config, reconnect_delay, stopping.clone()).await?;
+                        run_session(
+                            &config,
+                            reconnect_delay,
+                            stopping.clone(),
+                            Some(&stop_workers),
+                        )
+                        .await?;
                     }
                     Ok(())
                 });
@@ -448,60 +455,92 @@ async fn run_session(
     config: &SupervisorConfig,
     reconnect_delay: Duration,
     mut stopping: tokio::sync::watch::Receiver<bool>,
+    stop_workers: Option<&tokio::sync::watch::Sender<bool>>,
 ) -> Result<(), DaemonError> {
     let mut runtime = runtime::WorkerRuntime::new(config)?;
-    loop {
-        runtime.observe(config).await?;
-        let step = tokio::select! {
-            biased;
-            _ = stopping.wait_for(|stop| *stop) => None,
-            result = serve_once(config, &mut runtime) => Some(result?),
-        };
-        let Some(step) = step else {
-            runtime.shutdown(config).await?;
-            match serve_once(config, &mut runtime).await? {
+    let result = async {
+        loop {
+            runtime.observe(config).await?;
+            let step = tokio::select! {
+                biased;
+                _ = stopping.wait_for(|stop| *stop) => None,
+                result = serve_once(config, &mut runtime) => Some(result?),
+            };
+            let Some(step) = step else {
+                runtime.shutdown(config).await?;
+                match serve_once(config, &mut runtime).await? {
+                    DaemonExit::Finished => {
+                        return Ok(());
+                    }
+                    _ => return Err(DaemonError::Worker(
+                        "workers stopped but receipts could not be acknowledged; durable state is retained for recovery".into(),
+                    )),
+                }
+            };
+            match step {
                 DaemonExit::Finished => {
                     return Ok(());
                 }
-                _ => return Err(DaemonError::Worker(
-                    "workers stopped but receipts could not be acknowledged; durable state is retained for recovery".into(),
-                )),
-            }
-        };
-        match step {
-            DaemonExit::Finished => {
-                return Ok(());
-            }
-            DaemonExit::Disconnected => {
-                tracing::info!(
-                    delay_seconds = reconnect_delay.as_secs(),
-                    "reconnecting to Ackplane"
-                );
-                tokio::select! {
-                    _ = stopping.wait_for(|stop| *stop) => {},
-                    _ = tokio::time::sleep(reconnect_delay) => {},
+                DaemonExit::Disconnected => {
+                    tracing::info!(
+                        delay_seconds = reconnect_delay.as_secs(),
+                        "reconnecting to Ackplane"
+                    );
+                    tokio::select! {
+                        _ = stopping.wait_for(|stop| *stop) => {},
+                        _ = tokio::time::sleep(reconnect_delay) => {},
+                    }
                 }
-            }
-            DaemonExit::IncompleteEvidence {
-                local_acknowledged,
-                local_last_enqueued,
-                server_accepted,
-            } => {
-                tracing::error!(
+                DaemonExit::IncompleteEvidence {
                     local_acknowledged,
                     local_last_enqueued,
                     server_accepted,
-                    missing = server_accepted.saturating_sub(local_last_enqueued)
-                        + local_acknowledged.saturating_sub(server_accepted),
-                    "Ackplane and this outbox cannot reconcile retained supervisor evidence; \
-                     refusing to resume. Investigate the durable state before restarting."
-                );
-                return Err(DaemonError::Worker(
-                    "server evidence is outside this runtime's recoverable interval".into(),
-                ));
+                } => {
+                    tracing::error!(
+                        local_acknowledged,
+                        local_last_enqueued,
+                        server_accepted,
+                        missing = server_accepted.saturating_sub(local_last_enqueued)
+                            + local_acknowledged.saturating_sub(server_accepted),
+                        "Ackplane and this outbox cannot reconcile retained supervisor evidence; \
+                         refusing to resume. Investigate the durable state before restarting."
+                    );
+                    return Err(DaemonError::Worker(
+                        "server evidence is outside this runtime's recoverable interval".into(),
+                    ));
+                }
             }
         }
     }
+    .await;
+    if let Err(error) = &result {
+        if let Some(stop_workers) = stop_workers {
+            stop_workers.send_replace(true);
+        }
+        tracing::warn!(%error, "session failed; stopping owned workers and releasing confirmed leases while retaining queued evidence");
+        match tokio::time::timeout(SLOT_SHUTDOWN_GRACE, async {
+            loop {
+                runtime.shutdown(config).await?;
+                if runtime.lease.is_none() {
+                    return Ok::<(), DaemonError>(());
+                }
+                tokio::time::sleep(reconnect_delay).await;
+            }
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(cleanup_error)) => {
+                tracing::error!(%cleanup_error, "failed slot cleanup stopped; recovery evidence is retained");
+            }
+            Err(_) => {
+                tracing::error!(
+                    "failed slot cleanup deadline exceeded; recovery evidence is retained"
+                );
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]

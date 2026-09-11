@@ -30,7 +30,7 @@ use ackplane_server::{
     work_query_service::WorkQueryService,
     work_store::{NewWorkTask, WorkStore, WorkTaskState},
 };
-use ackplane_supervisor::WorkerCommand;
+use ackplane_supervisor::{OutboxPositions, SupervisorOutbox, WorkerCommand};
 use command_group::{CommandGroup, GroupChild};
 use tokio_stream::{
     wrappers::{ReceiverStream, TcpListenerStream},
@@ -311,10 +311,23 @@ async fn shutdown_retries_lease_release_before_discarding_run_markers() {
 
 // A fatal slot result dropped the entire task group, bypassing active peers'
 // lease release and terminal receipts. Drain peers before returning the failure.
+// The failed slot also bypassed shutdown, retaining its lease until expiry.
 #[tokio::test]
-async fn a_failed_slot_drains_its_active_peer_before_supervisor_exit() {
+async fn a_failed_slot_releases_its_lease_and_drains_its_active_peer() {
     exercise_two_workers(Scenario {
         fail_first_slot: true,
+        ..Scenario::default()
+    })
+    .await;
+}
+
+// Fatal delivery must not abandon release retries or send later evidence past
+// the rejected frame while cleaning up its own worker.
+#[tokio::test]
+async fn a_failed_slot_retries_lease_release_without_losing_rejected_evidence() {
+    exercise_two_workers(Scenario {
+        fail_first_slot: true,
+        release_failures: 2,
         ..Scenario::default()
     })
     .await;
@@ -676,6 +689,32 @@ async fn exercise_two_workers(scenario: Scenario) {
                 .then_some(())
         })
         .await;
+        let failed = &sessions[0];
+        let registration = supervisors
+            .list_supervisors(&tenant, repository)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.registration.supervisor_id == failed.supervisor_id)
+            .unwrap()
+            .registration;
+        let marker: serde_json::Value = serde_json::from_slice(
+            &fs::read(root.path().join("state/first.worker-run.json")).unwrap(),
+        )
+        .unwrap();
+        let outbox_path = marker["outbox"].as_str().unwrap();
+        let outbox =
+            SupervisorOutbox::open(outbox_path, registration.clone(), failed.clone()).unwrap();
+        let retained = outbox.pending(10).unwrap();
+        assert_eq!(
+            outbox.positions().unwrap(),
+            OutboxPositions {
+                acknowledged: 0,
+                last_enqueued: 3,
+            }
+        );
+        drop(outbox);
+        remaining_release_failures.store(release_failures, Ordering::SeqCst);
         reject_first_use.add_permits(1);
         let exit = daemon.wait().await;
         assert!(
@@ -697,6 +736,15 @@ async fn exercise_two_workers(scenario: Scenario) {
             claims.iter().all(|claim| claim.task_id != "task:second"),
             "the failed slot aborted its healthy peer without releasing the peer lease"
         );
+        assert!(
+            claims.is_empty(),
+            "the failed slot stopped without releasing its confirmed task lease"
+        );
+        assert_eq!(
+            remaining_release_failures.load(Ordering::SeqCst),
+            0,
+            "fatal cleanup must exercise every injected release failure"
+        );
         let history = supervisors
             .lifecycle_history(&tenant, repository, &peer.session_id)
             .await
@@ -714,6 +762,33 @@ async fn exercise_two_workers(scenario: Scenario) {
             root.path().join("state/first.worker-run.json").exists(),
             "the failed slot must retain its unacknowledged evidence"
         );
+        let reopened = SupervisorOutbox::open(outbox_path, registration, failed.clone()).unwrap();
+        assert_eq!(
+            reopened.positions().unwrap(),
+            OutboxPositions {
+                acknowledged: 0,
+                last_enqueued: 4,
+            },
+            "fatal cleanup must queue its terminal receipt without acknowledging rejected evidence"
+        );
+        let pending = reopened.pending(10).unwrap();
+        assert_eq!(&pending[..retained.len()], retained.as_slice());
+        let Some(v1::node_frame::Frame::SupervisorLifecycleReceipt(terminal)) =
+            &pending.last().unwrap().frame.frame
+        else {
+            panic!("the failed worker must retain a terminal receipt after the rejected evidence");
+        };
+        assert_eq!(terminal.state, v1::SupervisorWorkerState::Terminated as i32);
+        assert_eq!(terminal.session_id, failed.session_id);
+        assert!(
+            supervisors
+                .lifecycle_history(&tenant, repository, &failed.session_id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "fatal cleanup must not send lifecycle evidence past the rejected context-use frame"
+        );
+        drop(reopened);
         drop(daemon);
         let _ = shutdown.send(());
         server.await.unwrap();
