@@ -138,6 +138,12 @@ pub enum ProjectionError {
     },
     #[error("projection database error: {0}")]
     Database(#[from] tokio_postgres::Error),
+    #[error(
+        "projection pgvector schema migration failed; ensure pgvector is installed on the \
+         PostgreSQL server and the migration role can create the vector extension; \
+         check the PostgreSQL server log for the underlying error"
+    )]
+    EmbeddingsMigration(#[source] tokio_postgres::Error),
     #[error("projection store could not obtain a database connection: {0}")]
     PoolExhausted(#[from] deadpool_postgres::PoolError),
 }
@@ -179,7 +185,8 @@ impl Projector {
             crate::migration_lock::key::PROJECTED_NODE_EMBEDDINGS,
             EMBEDDINGS_MIGRATION,
         )
-        .await?;
+        .await
+        .map_err(ProjectionError::EmbeddingsMigration)?;
         Ok(Self { pool: pool.clone() })
     }
 
@@ -206,6 +213,26 @@ pub use rebuild::run_projection_worker;
 pub(crate) mod tests {
     use super::*;
     use crate::ledger::{DedupKey, EventEnvelope, ProvenanceClass};
+
+    // Regression: the driver rendered missing pgvector as only "db error", leaving
+    // operators without a prerequisite diagnosis. Keep server details out of the hint.
+    #[test]
+    fn pgvector_migration_diagnostic_names_prerequisites_without_exposing_details() {
+        let source = "host=localhost port=operator-private-value"
+            .parse::<tokio_postgres::Config>()
+            .unwrap_err();
+        let error = ProjectionError::EmbeddingsMigration(source);
+        let message = error.to_string();
+
+        assert_eq!(
+            message,
+            "projection pgvector schema migration failed; ensure pgvector is installed on the \
+             PostgreSQL server and the migration role can create the vector extension; \
+             check the PostgreSQL server log for the underlying error"
+        );
+        assert!(!message.contains("operator-private-value"));
+        assert!(std::error::Error::source(&error).is_some());
+    }
 
     pub(crate) fn structural_fact_envelope(
         key: DedupKey,
