@@ -2,99 +2,24 @@
 
 #[allow(dead_code)]
 mod supervisor_api_support;
+#[allow(dead_code)]
+mod work_command_browser_support;
 
-use std::sync::Arc;
-
-use ackplane_bridge::{
-    work_api::{work_routes, WorkApiState},
-    work_command_api::{work_command_routes, WorkCommandApiState},
-};
-use ackplane_server::{
-    db_pool::{build_pool, TEST_POOL_MAX_SIZE},
-    fleet::FleetStore,
-    work_command_store::WorkCommandService,
-    work_store::WorkStore,
-};
 use axum::{
-    body::{to_bytes, Body},
-    http::{header::CONTENT_TYPE, Method, Request, StatusCode},
-    response::Response,
-    Router,
+    body::to_bytes,
+    http::{header::CONTENT_TYPE, Method, StatusCode},
 };
-use serde_json::{json, Value};
+use serde_json::json;
 use supervisor_api_support::{body_json, enroll_repository, unique_id};
-use tower::ServiceExt;
-
-async fn application(database_url: &str, tenant_id: &str) -> Router {
-    let pool = build_pool(database_url, TEST_POOL_MAX_SIZE).expect("build isolated test pool");
-    let work = Arc::new(WorkStore::connect(&pool).await.expect("connect Work store"));
-    let fleet = Arc::new(
-        FleetStore::connect(&pool)
-            .await
-            .expect("connect Fleet store"),
-    );
-    let commands = Arc::new(
-        WorkCommandService::connect(&pool)
-            .await
-            .expect("connect Work command service"),
-    );
-    work_routes(WorkApiState::new(work, fleet.clone(), Arc::from(tenant_id))).merge(
-        work_command_routes(WorkCommandApiState::new(
-            commands,
-            fleet,
-            Arc::from(tenant_id),
-        )),
-    )
-}
-
-async fn request(router: &Router, method: Method, uri: &str, body: Option<Value>) -> Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
-                .header(CONTENT_TYPE, "application/json")
-                .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
-                .expect("build browser request"),
-        )
-        .await
-        .expect("serve browser request")
-}
-
-async fn post_json(router: &Router, uri: &str, body: Value) -> Value {
-    let response = request(router, Method::POST, uri, Some(body.clone())).await;
-    assert_eq!(response.status(), StatusCode::OK, "POST {uri}: {body}");
-    body_json(response).await
-}
-
-fn envelope(mut payload: Value, existing_task: Option<(&str, i64)>) -> Value {
-    payload["idempotency_key"] = json!(unique_id("browser-command"));
-    payload["rationale"] = json!("Exercise the browser command contract");
-    payload["expires_at_seconds"] = json!(4_000_000_000_u64);
-    if let Some((task_id, version)) = existing_task {
-        payload["existing_task_id"] = json!(task_id);
-        payload["expected_task_version"] = json!(version);
-    }
-    payload
-}
+use work_command_browser_support::{application, envelope, post_json, request, test_database_url};
 
 /// Preview retries previously changed an immutable receipt's timestamp and
 /// returned HTTP 500. Reuse the recorded command time while preserving guards.
 #[tokio::test]
 async fn browser_work_commands_replay_without_receipt_conflicts_and_preserve_guards() {
-    let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
-        eprintln!("not run: ACKPLANE_TEST_DATABASE_URL must point to isolated ackplane_test");
+    let Some(database_url) = test_database_url() else {
         return;
     };
-    let config = database_url
-        .parse::<tokio_postgres::Config>()
-        .unwrap_or_else(|_| panic!("the test database configuration must be valid"));
-    assert_eq!(
-        config.get_dbname(),
-        Some("ackplane_test"),
-        "browser integration tests must never use the live database"
-    );
 
     let unique = unique_id("work-command-browser");
     let tenant_id = format!("tenant-{unique}");
@@ -147,6 +72,9 @@ async fn browser_work_commands_replay_without_receipt_conflicts_and_preserve_gua
         "task_id": task_id,
         "title": "Browser-created work",
         "acceptance": "A confirmed browser request creates exactly one task",
+        "goal_id": "goal:browser-build",
+        "declared_paths": ["src/build.rs", "tests/build.rs"],
+        "declared_symbols": ["symbol:src/build.rs:build"],
     });
     let submission = envelope(create_payload.clone(), None);
     let preview = post_json(&app, &commands_uri, submission.clone()).await;
@@ -189,6 +117,22 @@ async fn browser_work_commands_replay_without_receipt_conflicts_and_preserve_gua
     assert_eq!(explicit_preview["status"], json!("pending_confirmation"));
     assert!(!explicit_preview.to_string().contains(&tenant_id));
 
+    let changed_scope_uri = format!(
+        "{commands_uri}/{}/confirm",
+        explicit_preview["command_id"]
+            .as_str()
+            .expect("preview command id")
+    );
+    let mut changed_scope = create_payload.clone();
+    changed_scope["declared_paths"] = json!(["outside-the-preview.rs"]);
+    let refused_scope = post_json(&app, &changed_scope_uri, changed_scope).await;
+    assert_eq!(refused_scope["outcome"], json!("refused"));
+    assert!(refused_scope["reason"].as_str().unwrap().contains("digest"));
+    assert_eq!(
+        request(&app, Method::GET, &task_uri, None).await.status(),
+        StatusCode::NOT_FOUND
+    );
+
     let confirm_uri = format!(
         "{commands_uri}/{}/confirm",
         preview["command_id"].as_str().expect("preview command id")
@@ -211,6 +155,15 @@ async fn browser_work_commands_replay_without_receipt_conflicts_and_preserve_gua
         .expect("detail must expose the authoritative task version");
     assert_eq!(version, 1);
     assert_eq!(detail["task"]["state"], json!("open"));
+    assert_eq!(detail["task"]["goal_id"], json!("goal:browser-build"));
+    assert_eq!(
+        detail["task"]["declared_paths"],
+        json!(["src/build.rs", "tests/build.rs"])
+    );
+    assert_eq!(
+        detail["task"]["declared_symbols"],
+        json!(["symbol:src/build.rs:build"])
+    );
     let list = body_json(request(&app, Method::GET, &work_uri, None).await).await;
     assert_eq!(list["total"], json!(1));
     assert_eq!(list["items"][0]["version"], json!(version));

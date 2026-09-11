@@ -3,7 +3,7 @@ import { WorkCommandClient } from "./work-command-client.mjs";
 const labels = { create_work: "Create task", assign: "Assign", answer_wait: "Answer questions", submit_review: "Submit review", route_work: "Route", release_lease: "Release lease", pause: "Pause", resume: "Resume", steer: "Steer", drain: "Drain" };
 const targeted = new Set(["assign", "pause", "resume", "steer", "drain"]);
 const definitions = {
-  create_work: [["title", "Title"], ["acceptance", "Acceptance", "textarea"], ["goal_id", "Goal (optional)"]],
+  create_work: [["title", "Title"], ["acceptance", "Acceptance", "textarea"], ["goal_id", "Goal", "select"], ["declared_paths", "Files and folders", "textarea"], ["declared_symbols", "Symbols (optional)", "textarea"]],
   answer_wait: [["wait_id", "Question", "select"], ["answer", "Answer", "textarea"]],
   submit_review: [["disposition", "Decision", "select"], ["review_rationale", "Review rationale", "textarea"]],
   route_work: [["route_reference", "Route reference"]],
@@ -22,7 +22,7 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
   const api = (repository) => `/api/v1/repositories/${encodeURIComponent(repository)}`;
   const pair = (node, label, value) => node.append(make("dt", label), make("dd", String(value ?? "Not reported")));
   const taskButtons = new Map(), commandButtons = new Map();
-  let repository = "", page = 1, commands = [], workers = [], detail = null, selected = "", loadToken = 0, selectionToken = 0, flow = null, workerError = "";
+  let repository = "", page = 1, commands = [], workers = [], goals = [], detail = null, selected = "", loadToken = 0, selectionToken = 0, flow = null, workerError = "", goalError = "";
   const unanswered = (value) => (value?.waits || []).filter((wait) => wait.answer == null && wait.answered_at_seconds == null);
   const workerName = (worker) => `${worker.worker_id} (${words(worker.runtime)}, process ${words(worker.state)})`;
   const owner = (task) => workers.find((worker) => worker.session_id === task.owner_session_id)?.worker_id || task.owner_id || "Unassigned";
@@ -40,14 +40,22 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
       return sessions.entries.map((session) => ({ ...supervisor, ...session }));
     }))).flat();
   }
+  async function getGoals(repo) {
+    const constitution = await get(`${api(repo)}/constitution`);
+    if (constitution.found !== true) return [];
+    if (!Array.isArray(constitution.clauses)) throw new Error("Published goals are unavailable.");
+    return constitution.clauses.filter((clause) => clause.kind === "objective" && clause.status === "active");
+  }
   function commandReason(kind) {
     const capability = commands.find((entry) => entry.operation === kind);
     if (!capability) return "Command not advertised for this repository.";
     if (capability.state !== "available_without_policy") return capability.reason || "Authorization unavailable.";
-    if (kind === "create_work") return "";
+    if (kind === "create_work") return goals.length ? "" : goalError || "No active goals are published for this repository.";
     if (!detail) return "Select a task with available detail.";
     if (!Number.isSafeInteger(detail.task.version) || detail.task.version < 0) return "Task version unavailable. Reload after the server is updated.";
     if (["completed", "abandoned"].includes(detail.task.state)) return `Task is ${words(detail.task.state)}.`;
+    if (kind === "assign" && !goals.some((goal) => goal.id === detail.task.goal_id)) return "Task must name a currently published goal.";
+    if (kind === "assign" && !detail.task.declared_paths?.length && !detail.task.declared_symbols?.length) return "Task must declare its file or symbol scope.";
     if (kind === "answer_wait" && !unanswered(detail).length) return "No unanswered questions.";
     if (kind === "release_lease" && (!detail.task.owner_id || !Number.isFinite(detail.task.lease_expires_at_seconds))) return "No published lease to release.";
     if (targeted.has(kind) && !eligible(kind).length) return workerError || "No current agent session advertises this capability.";
@@ -112,7 +120,7 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
   }
   function invalidateCommand() { flow = null; if (element("command-dialog").open) element("command-dialog").close(); }
   function clear() {
-    ++loadToken; ++selectionToken; invalidateCommand(); repository = ""; selected = ""; detail = null; commands = []; workers = []; workerError = "";
+    ++loadToken; ++selectionToken; invalidateCommand(); repository = ""; selected = ""; detail = null; commands = []; workers = []; goals = []; workerError = ""; goalError = "";
     taskButtons.clear(); element("task-detail").hidden = true; element("publication").hidden = true; element("worker-status").textContent = "";
     element("prev-page").disabled = true; element("next-page").disabled = true; element("pager-summary").textContent = ""; element("load-work").disabled = false;
     emptyRows("Select a repository."); renderCommands(); say("");
@@ -124,10 +132,11 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
     if (element("state-filter").value) query.set("state", element("state-filter").value);
     element("load-work").disabled = true; element("rows").setAttribute("aria-busy", "true"); emptyRows("Loading tasks..."); say("Loading tasks...");
     try {
-      const [result, agents] = await Promise.all([get(`${api(repo)}/work?${query}`), getWorkers(repo).then((entries) => ({ entries })).catch((error) => ({ entries: [], error: error.message }))]);
+      const [result, agents, publishedGoals] = await Promise.all([get(`${api(repo)}/work?${query}`), getWorkers(repo).then((entries) => ({ entries })).catch((error) => ({ entries: [], error: error.message })), getGoals(repo).then((entries) => ({ entries })).catch((error) => ({ entries: [], error: error.message }))]);
       if (token !== loadToken) return;
       if (!Array.isArray(result.items)) throw new Error("Invalid Work list response.");
       workers = agents.entries; workerError = agents.error ? `Agent inventory unavailable: ${agents.error}` : ""; commands = result.commands || [];
+      goals = publishedGoals.entries; goalError = publishedGoals.error ? `Published goals unavailable: ${publishedGoals.error}` : "";
       element("worker-status").textContent = workerError; renderTasks(result); renderPublication(result.publication); renderCommands(); say("");
       history.replaceState(null, "", `/work?${new URLSearchParams({ repository_id: repo, state: element("state-filter").value, page: String(page) })}`);
       if (preferredTask || result.items.length) await selectTask(preferredTask || result.items[0].task_id, false);
@@ -147,7 +156,7 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
   }
   function field(key, label, type = "text", choices = []) {
     const wrapper = make("label", label), control = make(["select", "textarea"].includes(type) ? type : "input");
-    control.id = `field-${key}`; wrapper.htmlFor = control.id; control.required = !["goal_id", "checkpoint_required"].includes(key);
+    control.id = `field-${key}`; wrapper.htmlFor = control.id; control.required = !["declared_paths", "declared_symbols", "checkpoint_required"].includes(key);
     if (!["select", "textarea"].includes(type)) control.type = type;
     if (type === "select") for (const [value, text] of [["", "Select..."], ...choices]) { const option = make("option", text); option.value = value; control.append(option); }
     if (type === "number") { control.min = "1"; control.max = "10"; control.step = "1"; control.value = "5"; }
@@ -163,7 +172,7 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
     element("cancel-command").textContent = "Cancel";
     if (targeted.has(kind)) field("worker", "Agent", "select", flow.targets.map((worker, index) => [String(index), `${workerName(worker)} / ${worker.supervisor_id}`]));
     for (const [key, label, type] of definitions[kind] || []) {
-      const choices = key === "wait_id" ? unanswered(detail).map((wait) => [wait.wait_id, wait.question]) : key === "disposition" ? [["accept", "Accept"], ["request_changes", "Request changes"]] : [];
+      const choices = key === "goal_id" ? goals.map((goal) => [goal.id, goal.title]) : key === "wait_id" ? unanswered(detail).map((wait) => [wait.wait_id, wait.question]) : key === "disposition" ? [["accept", "Accept"], ["request_changes", "Request changes"]] : [];
       field(key, label, type, choices);
     }
     if (flow.inputs.has("checkpoint_required")) {
@@ -181,7 +190,13 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
     const payload = { kind: current.kind };
     if (worker) Object.assign(payload, { target_node_id: worker.node_id, target_session_id: worker.session_id });
     switch (current.kind) {
-      case "create_work": Object.assign(payload, { task_id: `task:${uuid()}`, title: values.title, acceptance: values.acceptance }); if (values.goal_id) payload.goal_id = values.goal_id; break;
+      case "create_work": {
+        if (!goals.some((goal) => goal.id === values.goal_id)) throw new Error("Select a currently published goal.");
+        const scope = Object.fromEntries(["declared_paths", "declared_symbols"].map((key) => [key, [...new Set(values[key].split(/\r?\n/).map((value) => value.trim()).filter(Boolean))]]));
+        if (!scope.declared_paths.length && !scope.declared_symbols.length) throw new Error("Declare file or symbol scope for this task.");
+        Object.assign(payload, { task_id: `task:${uuid()}`, title: values.title, acceptance: values.acceptance, goal_id: values.goal_id, ...scope });
+        break;
+      }
       case "answer_wait": if (!unanswered(detail).some((wait) => wait.wait_id === values.wait_id)) throw new Error("This question was already answered. Close and reload."); Object.assign(payload, { wait_id: values.wait_id, answer: values.answer }); break;
       case "submit_review": Object.assign(payload, { disposition: values.disposition, review_rationale: values.review_rationale }); break;
       case "route_work": payload.route_reference = values.route_reference; break;
@@ -201,7 +216,8 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
     if (worker) pair(node, "Agent", `${workerName(worker)} / ${worker.supervisor_id}`);
     for (const [key, value] of Object.entries(payload)) {
       if (["kind", "title", "task_id", "target_node_id", "target_session_id"].includes(key)) continue;
-      pair(node, words(key), key.endsWith("_seconds") ? when(value) : typeof value === "boolean" ? value ? "Yes" : "No" : value);
+      const label = definitions[current.kind]?.find(([field]) => field === key)?.[1] || words(key);
+      pair(node, label, key === "goal_id" ? goals.find((goal) => goal.id === value)?.title || value : Array.isArray(value) ? value.join("\n") || "None" : key.endsWith("_seconds") ? when(value) : typeof value === "boolean" ? value ? "Yes" : "No" : value);
     }
     element("command-preview").hidden = false;
     element("command-fields").hidden = true;
@@ -222,9 +238,9 @@ export function mountWorkPage({ document: doc = globalThis.document, fetchImpl =
         if (!rationale) throw new Error("A reason is required.");
         for (const [key, control] of current.inputs) if (control.required && !values[key]) throw new Error("Complete the required fields.");
         if (current.kind === "drain" && (!Number.isInteger(Number(values.deadline)) || Number(values.deadline) < 1 || Number(values.deadline) > 10)) throw new Error("Deadline must be between 1 and 10 whole minutes.");
-        const [fresh, agents] = await Promise.all([current.kind === "create_work" ? null : get(`${api(current.repo)}/work/${encodeURIComponent(current.taskId)}`), targeted.has(current.kind) ? getWorkers(current.repo) : workers]);
+        const [fresh, agents, publishedGoals] = await Promise.all([current.kind === "create_work" ? null : get(`${api(current.repo)}/work/${encodeURIComponent(current.taskId)}`), targeted.has(current.kind) ? getWorkers(current.repo) : workers, ["create_work", "assign"].includes(current.kind) ? getGoals(current.repo) : goals]);
         if (flow !== current) return;
-        workers = agents;
+        workers = agents; goals = publishedGoals;
         if (fresh) { if (fresh.task?.task_id !== current.taskId) throw new Error("Task detail does not match the selection."); detail = fresh; renderDetail(); }
         const reason = commandReason(current.kind); if (reason) throw new Error(reason);
         const worker = targeted.has(current.kind) ? eligible(current.kind).find((entry) => entry.node_id === candidate?.node_id && entry.session_id === candidate?.session_id) : null;

@@ -11,12 +11,15 @@ Select a repository, then select a task. The detail view shows acceptance,
 declared scope, questions, and links to evidence and conformance. Task identifiers,
 version, lease, and history remain available under the record disclosures.
 
-- **Create task:** supply a title, acceptance criteria, and an optional goal.
-  The browser generates the task and idempotency identifiers. This version of
-  the form does not author file scope; use an already scoped published task for
-  a worker that requires scoped assignments.
+- **Create task:** supply a title, acceptance criteria, a published objective,
+  and file or symbol scope. Enter one scope item per line; blank lines and exact
+  duplicates are removed before preview. The browser generates the task and
+  idempotency identifiers. Goal selection uses the repository's active
+  constitution, not a manually copied identifier or an automatically adopted goal.
 - **Assign:** choose a current, advertised agent session. The page resolves its
-  node/session target and refreshes the task version before preparing a command.
+  node/session target and refreshes the task version and active goals before
+  preparing a command. Tasks without a currently published goal or declared
+  scope cannot be assigned from this page.
 - **Answer questions:** select a published unanswered question and provide the
   answer. A question answered in the meantime cannot be silently answered again.
 - **Submit review:** record the review disposition and rationale. This submits
@@ -57,11 +60,19 @@ lifecycle state.
 ```text
 node --test scripts/bridge-work-command-client.test.mjs scripts/bridge-work-page.test.mjs
 cargo test --locked -p ackplane-bridge --test work_command_browser_integration
+cargo test --locked -p ackplane-bridge --test work_command_runtime_integration
 ```
 
-The database test requires `ACKPLANE_TEST_DATABASE_URL` naming an isolated
+The database tests require `ACKPLANE_TEST_DATABASE_URL` naming an isolated
 `ackplane_test` database with the normal Ackplane migrations and pgvector.
 An absent database variable is not verification. See the
 [developer guide](../DEVELOPERS.md) for database-gated validation and the
 [command API](../crates/ackplane-bridge/src/work_command_api/mod.rs) for the
 authorization boundary.
+
+The runtime test creates and confirms scoped work through real Bridge routes,
+selects an actually registered supervisor session, assigns through the command
+API, and runs an OS child through the authenticated supervisor. It checks the
+prompt's goal and scope, durable lifecycle receipts, lease release, cleanup,
+and the distinction between process exit, review submission, and task completion.
+Its child is a deterministic fixture, not a vendor model or a login check.

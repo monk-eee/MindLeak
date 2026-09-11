@@ -84,6 +84,7 @@ const task = {
   title: "Repair build",
   state: "open",
   version: 3,
+  goal_id: "goal:build",
   owner_id: null,
   owner_session_id: null,
   declared_paths: ["src/build.rs"],
@@ -170,6 +171,24 @@ function fixture(overrides = {}) {
       supervisors: [structuredClone(supervisor)],
       sessions: [structuredClone(session)],
       commands: structuredClone(capabilities),
+      constitution: {
+        found: true,
+        status: "adopted",
+        clauses: [
+          {
+            id: "goal:build",
+            title: "Reliable builds",
+            kind: "objective",
+            status: "active",
+          },
+          {
+            id: "rule:scope",
+            title: "Stay in scope",
+            kind: "constraint",
+            status: "active",
+          },
+        ],
+      },
       responses: [pending],
       items: [structuredClone(task)],
       total: 1,
@@ -189,6 +208,7 @@ function fixture(overrides = {}) {
     if (url.endsWith("/supervisors"))
       return success({ entries: state.supervisors });
     if (url.endsWith("/sessions")) return success({ entries: state.sessions });
+    if (url.endsWith("/constitution")) return success(state.constitution);
     if (url.includes("/work?"))
       return success({
         items: state.items,
@@ -285,10 +305,20 @@ test("assignment fetches the latest task version then awaits explicit immutable 
   assert.equal(context.element("confirm-command").hidden, true);
 });
 
-test("create sends only supported fields and never invents declared scope", async () => {
+test("created work accepts an adopted constitution and binds its active goal and explicit scope", async () => {
   const context = await ready("create_work");
   context.element("field-title").value = "New task";
   context.element("field-acceptance").value = "Tests pass";
+  assert.equal(context.element("field-goal_id").tagName, "select");
+  assert.match(context.element("field-goal_id").textContent, /Reliable builds/);
+  assert.doesNotMatch(
+    context.element("field-goal_id").textContent,
+    /Stay in scope/,
+  );
+  context.element("field-goal_id").value = "goal:build";
+  context.element("field-declared_paths").value =
+    " src/build.rs\r\n tests/build.rs\n src/build.rs ";
+  context.element("field-declared_symbols").value = "symbol:src/build.rs:build";
   await context.app.prepare();
   assert.deepEqual(JSON.parse(context.posts()[0].body), {
     idempotency_key: "uuid-2",
@@ -298,8 +328,74 @@ test("create sends only supported fields and never invents declared scope", asyn
     task_id: "task:uuid-1",
     title: "New task",
     acceptance: "Tests pass",
+    goal_id: "goal:build",
+    declared_paths: ["src/build.rs", "tests/build.rs"],
+    declared_symbols: ["symbol:src/build.rs:build"],
   });
-  assert.equal(context.element("field-declared_paths"), undefined);
+  assert.match(
+    context.element("preview-values").textContent,
+    /tests\/build.rs/,
+  );
+  context.element("field-declared_paths").value = "outside-preview.rs";
+  context.state.responses.push({
+    ...pending,
+    status: "executed",
+    outcome: "applied",
+    reason: "Created",
+  });
+  await context.app.confirm();
+  const confirmed = JSON.parse(context.posts()[1].body);
+  assert.deepEqual(confirmed.declared_paths, [
+    "src/build.rs",
+    "tests/build.rs",
+  ]);
+  assert.deepEqual(confirmed.declared_symbols, ["symbol:src/build.rs:build"]);
+});
+
+test("unscoped or goal-less work cannot be offered to a worker that would refuse its context", async () => {
+  for (const patch of [
+    { goal_id: null },
+    { declared_paths: [], declared_symbols: [] },
+  ]) {
+    const context = fixture({
+      detail: { ...detail, task: { ...task, ...patch } },
+    });
+    await context.app.load();
+    assert.equal(context.button("assign").disabled, true);
+    assert.match(context.button("assign").title, /goal|scope/i);
+  }
+});
+
+test("creating work refuses an empty scope, an unpublished goal, or a goal retired during preview", async () => {
+  for (const invalid of ["scope", "goal", "retired"]) {
+    const context = await ready("create_work");
+    context.element("field-title").value = "Scoped task";
+    context.element("field-acceptance").value = "Checks pass";
+    context.element("field-goal_id").value =
+      invalid === "goal" ? "goal:unpublished" : "goal:build";
+    context.element("field-declared_paths").value =
+      invalid === "scope" ? " \n " : "src/build.rs";
+    if (invalid === "retired")
+      context.state.constitution.clauses[0].status = "retired";
+    await context.app.prepare();
+    assert.equal(context.posts().length, 0);
+    assert.match(context.element("command-status").textContent, /goal|scope/i);
+  }
+});
+
+test("symbol-only scope remains explicit and missing constitution leaves reads available", async () => {
+  const context = await ready("create_work");
+  context.element("field-title").value = "One symbol";
+  context.element("field-acceptance").value = "Symbol checks pass";
+  context.element("field-goal_id").value = "goal:build";
+  context.element("field-declared_symbols").value = "symbol:src/build.rs:build";
+  await context.app.prepare();
+  assert.deepEqual(JSON.parse(context.posts()[0].body).declared_paths, []);
+  context.state.constitution = { found: false, clauses: [] };
+  await context.app.load();
+  assert.equal(context.button("create_work").disabled, true);
+  assert.match(context.button("create_work").title, /goal|constitution/i);
+  assert.match(context.element("rows").textContent, /Repair build/);
 });
 
 test("missing versions, authorization, stale workers and unadvertised capabilities fail closed", async () => {
