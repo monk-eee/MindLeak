@@ -19,14 +19,17 @@ from source.
 ## 1. Prerequisites
 
 - Stable Rust 1.88+ (`cargo build` for the binaries below).
+- Node.js 20+ for the portable helper commands.
 - Docker, or a drop-in `docker compose` (Podman's `podman compose` works the
   same way; substitute it for every `docker compose` command below).
+- An available OS credential facility for the explicitly selected software
+  provider. Keep its state in a user-local directory, outside Git and cloud sync.
 
 ---
 
 ## 2. Bring up the stack
 
-```bash
+```text
 node scripts/ackplane-compose.mjs up
 ```
 
@@ -37,8 +40,8 @@ generated development TLS certificate, the `ackplane` gRPC service
 
 Confirm it's up:
 
-```bash
-curl -sS http://127.0.0.1:3000/live -o /dev/null -w "%{http_code}\n"
+```text
+curl --fail http://127.0.0.1:3000/live
 ```
 
 If anything is not healthy yet: `ackplane` waits for the schema migration and
@@ -47,50 +50,67 @@ the generated TLS material; `bridge` waits for the schema migration only.
 
 ---
 
-## 3. Trust the development TLS certificate
+## 3. Prepare Local Trust
 
-`ackplane` serves real TLS by default (ADR-0132), using a certificate
-`tls-init` generated into a named volume. Every client in this repo
-(`register-me`, `ackplane-mcp`, `ackplane-supervisor`, `lodestar-mcp`'s
-federation client) trusts a CA the same way — extract it once and point
-`MINDLEAK_ACKPLANE_TLS_CA_PATH` at it:
+Choose a user-local configuration directory outside Git and cloud sync. Run:
 
-```bash
-mkdir -p .mindleak
-docker compose cp ackplane:/tls/ca.crt .mindleak/ackplane-dev-ca.pem
-export MINDLEAK_ACKPLANE_TLS_CA_PATH="$PWD/.mindleak/ackplane-dev-ca.pem"
+```text
+node scripts/ackplane-compose.mjs prepare ABSOLUTE_CONFIG_DIR
 ```
 
-Skipping this produces an opaque transport/h2 error, not a clear
-"certificate untrusted" message — if a client below can't connect, check this
-variable first.
+The helper copies only the public development CA and the Bridge's tenant salt
+into `ackplane-dev-ca.pem` and `bridge.salt`. It validates both before publishing
+either, creates new files with restrictive permissions, and leaves identical
+files unchanged on repeat runs. Different existing trust material is refused,
+never overwritten. No private signing key or TLS server key is exported.
+
+Copy or validation failure leaves existing trust untouched. A late filesystem
+failure may leave one newly created file; rerun preparation to fill the missing
+partner after resolving the error. Do not delete existing trust to suppress a
+mismatch. Check the source stack and the intended configuration directory first.
 
 ---
 
-## 4. Match the Bridge's tenant, or enrollment stays invisible
+## 4. Configure Once
 
 The Bridge derives its tenant id as `hex(SHA-256(salt || tenant_name))`
 (ADR-0098 decision 3) from its own salt file and
 `ACKPLANE_BRIDGE_DEVELOPMENT_TENANT` (`local-development` in the Compose
-default). A node enrolled under a *different* name or salt derives a
-*different* tenant id, enrolls successfully, and then never appears anywhere
-in the Bridge — silently, with no error at any step. Extract the Bridge's
-actual salt and reuse it instead of inventing your own:
+default). Enrollment must use that same name and the prepared salt, or its
+records belong to a different tenant and will not appear in this Bridge.
 
-```bash
-docker compose cp bridge:/var/lib/ackplane-bridge/salt .mindleak/bridge.salt
+In the repository's ignored `.env` file, set the CA path for enrollment and the
+companion:
+
+```dotenv
+MINDLEAK_ACKPLANE_TLS_CA_PATH=ABSOLUTE_CONFIG_DIR/ackplane-dev-ca.pem
 ```
 
-Pass `--tenant-name local-development --salt-path .mindleak/bridge.salt` to
-every `register-me` step below.
+Replace the placeholder with a real absolute path; `.env` uses plain values,
+without shell quotes or variable expansion. The existing `run-ackplane` launcher
+loads this file for every command below, while already-set process environment
+values take precedence. The companion owns TLS and remote signing; its
+supervisor and MCP consumers do not load the CA or key. Never disable
+certificate verification to work around a failed connection.
+
+Protect the salt as local installation state; do not commit or print it.
+Activation and serving reuse the recorded tenant instead of deriving another
+identity. No key bytes belong in `.env`.
 
 ---
 
 ## 5. Build the client binaries
 
-```bash
-cargo build --release -p ackplane-server --bin register-me -p ackplane-mcp -p ackplane-supervisor
+```text
+cargo build --release --locked -p ackplane-server --bin register-me
+cargo build --release --locked -p ackplane-mcp -p ackplane-supervisor
 ```
+
+Commands below run from the repository root. The launcher selects the native
+executable, including `.exe` on Windows, and passes arguments unchanged without
+a shell. Replace `ABSOLUTE_CONFIG_DIR` and `ABSOLUTE_STATE_DIR` with real
+absolute paths, quoted in commands when they contain spaces. The state directory
+must remain the same through request, activation, serving, and consumer setup.
 
 ---
 
@@ -99,23 +119,21 @@ cargo build --release -p ackplane-server --bin register-me -p ackplane-mcp -p ac
 Three explicit steps, mirroring the real actors (ADR-0085) — a node requests,
 an administrator approves, the node activates:
 
-```bash
-BIN=target/release
+```text
+node scripts/run-ackplane.mjs register-me request --repo my-repo --node my-node --tenant-name local-development --salt-path ABSOLUTE_CONFIG_DIR/bridge.salt --grpc-endpoint https://127.0.0.1:8443 --provider credential-facility-software --state-dir ABSOLUTE_STATE_DIR
+```
 
-$BIN/register-me request \
-  --repo my-repo --node my-node \
-  --tenant-name local-development --salt-path .mindleak/bridge.salt \
-  --grpc-endpoint https://127.0.0.1:8443
-# prints a request-id, the tenant id, and the exact `approve` command to run next
+The response prints the request id, tenant id, and fingerprint. An administrator
+reviews that exact identity before running the separate approval step:
 
-$BIN/register-me approve \
-  --request-id <request-id printed above> \
-  --tenant-name local-development --salt-path .mindleak/bridge.salt \
-  --repo my-repo --fingerprint <fingerprint printed above> \
-  --admin-database-url postgresql://ackplane:ackplane-development-only-not-for-production@127.0.0.1:5432/ackplane
+```text
+node scripts/run-ackplane.mjs register-me approve --request-id REQUEST_ID --tenant-name local-development --salt-path ABSOLUTE_CONFIG_DIR/bridge.salt --repo my-repo --fingerprint FINGERPRINT --admin-database-url postgresql://ackplane:ackplane-development-only-not-for-production@127.0.0.1:5432/ackplane
+```
 
-$BIN/register-me activate --request-id <request-id>
-# prints `activated: EnrollmentActivationResult { signing_key_id: "...", ... }` -- save that id
+After approval, activate the original request with the same provider state:
+
+```text
+node scripts/run-ackplane.mjs register-me activate --request-id REQUEST_ID --state-dir ABSOLUTE_STATE_DIR
 ```
 
 `approve` stands in for an administrative RPC/UI that doesn't exist yet — a
@@ -123,47 +141,76 @@ direct database connection, not how a real deployment approves nodes.
 `activate` also opens one real `NodeSync` stream and sends a signed heartbeat,
 so the node is immediately visible on the Bridge's Fleet page.
 
+The provider persists the assigned key id and activation receipt. Do not copy
+private keys, invent a new state directory to recover an existing identity, or
+configure a seed override. A repeated identical request or activation reuses its
+saved state; changed identity parameters are refused.
+
+## 7. Start The Companion
+
+Keep this process running while any enrolled consumer is in use:
+
+```text
+node scripts/run-ackplane.mjs register-me serve --state-dir ABSOLUTE_STATE_DIR
+```
+
+Wait for `node companion ready`. It recovers the enrolled provider, verifies
+current server authority, and exposes protected local IPC. Use the same
+`register-me` executable used for enrollment so native credential access remains
+associated with the same executable. Serving is not a new enrollment or approval.
+
 ---
 
-## 7. Run something real against the enrolled identity
+## 8. Run Consumers
 
-Every consumer below wants the same five variables:
+Every consumer below uses the same three non-secret settings. Add these to the
+ignored `.env` for commands launched here, and use the same values in MCP
+registrations:
 
 | Variable | Value |
 |---|---|
-| `MINDLEAK_ACKPLANE_TLS_CA_PATH` | from step 3 |
+| `MINDLEAK_ACKPLANE_STATE_DIR` | `ABSOLUTE_STATE_DIR`, the companion's provider directory |
 | `MINDLEAK_ACKPLANE_TENANT_ID` | the tenant id `register-me request` printed |
 | `MINDLEAK_ACKPLANE_REPOSITORY_ID` | `my-repo` |
-| `MINDLEAK_ACKPLANE_NODE_ID` | `my-node` |
-| `MINDLEAK_ACKPLANE_SIGNING_KEY_ID` | the `signing_key_id` `activate` printed |
 
-`MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED` (hex) is optional — unset, each
-consumer falls back to the OS credential facility instead.
+```dotenv
+MINDLEAK_ACKPLANE_STATE_DIR=ABSOLUTE_STATE_DIR
+MINDLEAK_ACKPLANE_TENANT_ID=TENANT_ID_FROM_REQUEST
+MINDLEAK_ACKPLANE_REPOSITORY_ID=my-repo
+```
+
+Remove obsolete node id, key id, key-path and seed environment overrides; the
+current runtime rejects them. Only the companion accesses the credential
+facility and signs remote operations. Its loss stops active workers and preserves
+unconfirmed evidence; it is not permission to restart with a replacement key.
 
 ### Option A — a supervisor daemon
 
-```bash
-export ACKPLANE_SUPERVISOR_ID=supervisor-1
-export MINDLEAK_ACKPLANE_ENDPOINT=https://127.0.0.1:8443
-$BIN/ackplane-supervisor
+Add the supervisor id and a separate absolute user-local queue directory to
+`.env`:
+
+```dotenv
+ACKPLANE_SUPERVISOR_ID=supervisor-1
+ACKPLANE_SUPERVISOR_STATE_DIR=ABSOLUTE_QUEUE_DIR
 ```
 
-Without worker definitions this is notification-only. To run multiple agents,
-provide the worker map described in
-[ackplane-supervisor's README](../crates/ackplane-supervisor/README.md) and run
-`ackplane-supervisor --workers workers.json`. Rebuild the server and supervisor
-from the same revision so the authenticated context exchange is available.
-Each configured agent needs its own executable, working directory and branch.
-Once it's
-running, it appears on the Bridge's Supervisors page (or
-`curl http://127.0.0.1:3000/api/v1/repositories/my-repo/supervisors`).
+Then run in another terminal, leaving the companion running:
+
+```text
+node scripts/run-ackplane.mjs supervisor --workers ABSOLUTE_WORKERS_FILE
+```
+
+Use the worker map in [the supervisor guide](../crates/ackplane-supervisor/README.md).
+Each configured agent needs an installed, authenticated executable, its own
+working directory and the actual branch. Without worker definitions the daemon
+is notification-only, not an agent runner. Build the server, companion, and
+supervisor from the same revision. Its registered sessions appear on the Bridge's
+Supervisors page; assignment still requires an authorized, confirmed Work command.
 
 ### Option B — `ackplane-mcp` (an MCP tool surface over the gRPC services)
 
-Register it like any other MCP server, with the same five variables plus its
-own endpoint variable — **note this is `ACKPLANE_MCP_ENDPOINT`, not
-`MINDLEAK_ACKPLANE_ENDPOINT`**; the two crates name it differently for the
-same value:
+Register it with the companion directory and scope. `ACKPLANE_MCP_ENDPOINT`
+pins the expected loopback endpoint; it must match the companion's endpoint.
 
 ```jsonc
 {
@@ -173,11 +220,9 @@ same value:
       "cwd": "/absolute/path/to/this/repo",
       "env": {
         "ACKPLANE_MCP_ENDPOINT": "https://127.0.0.1:8443",
-        "MINDLEAK_ACKPLANE_TLS_CA_PATH": "/absolute/path/to/.mindleak/ackplane-dev-ca.pem",
+        "MINDLEAK_ACKPLANE_STATE_DIR": "/absolute/user-local/provider-state",
         "MINDLEAK_ACKPLANE_TENANT_ID": "...",
-        "MINDLEAK_ACKPLANE_REPOSITORY_ID": "my-repo",
-        "MINDLEAK_ACKPLANE_NODE_ID": "my-node",
-        "MINDLEAK_ACKPLANE_SIGNING_KEY_ID": "..."
+        "MINDLEAK_ACKPLANE_REPOSITORY_ID": "my-repo"
       }
     }
   }
@@ -189,13 +234,11 @@ tools only — see [TOOLS.md](TOOLS.md#industrial-front-door-tools-ackplane-mcp)
 
 ### Option C — `lodestar-mcp`'s federation client
 
-Build with the feature, then add `MINDLEAK_COORDINATION_MODE=federated` and
-`MINDLEAK_ACKPLANE_ENDPOINT` (its own name for the endpoint, distinct from
-`ackplane-mcp`'s `ACKPLANE_MCP_ENDPOINT` above) beside the same five
-variables:
+Build with the feature, then add `MINDLEAK_COORDINATION_MODE=federated` beside
+the same three companion settings:
 
-```bash
-cargo build --release --features lodestar-mcp/federation-client -p lodestar-mcp
+```text
+cargo build --release --locked --features lodestar-mcp/federation-client -p lodestar-mcp
 ```
 
 This is what lets `task_claim` arbitrate through Ackplane's leased delegation
@@ -209,12 +252,17 @@ against the wrong (or no) repository, and tool calls fail with confusing
 
 ---
 
-## 8. Tear down
+## 9. Tear Down
 
-```bash
-node scripts/ackplane-compose.mjs down              # stop the stack, keep the Postgres volume
-node scripts/ackplane-compose.mjs reset --confirm   # stop it and delete the volume too
+Stop consumers before the companion, then stop the stack while retaining data:
+
+```text
+node scripts/ackplane-compose.mjs down
 ```
+
+Only when you intend to erase this development stack's database, use
+`node scripts/ackplane-compose.mjs reset --confirm`. Preserve provider state and
+unconfirmed supervisor evidence; deleting a run marker is not recovery.
 
 ---
 

@@ -16,7 +16,10 @@ use ackplane_server::{
 };
 use tokio::{process::Command, sync::oneshot};
 use tokio_stream::wrappers::TcpListenerStream;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{
+    transport::{Identity, Server, ServerTlsConfig},
+    Request, Response, Status,
+};
 
 struct EnrollmentWithLostResponse {
     inner: NodeEnrollmentService,
@@ -86,6 +89,33 @@ impl TestIdentity {
     }
     pub(super) fn path(&self) -> &Path {
         self.0.as_ref().unwrap().path()
+    }
+
+    pub(super) fn command(&self, args: &[&str], ca_path: Option<&Path>) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_register-me"));
+        command
+            .current_dir(self.path())
+            .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
+            .env_remove("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED")
+            .env_remove(ackplane_client::TLS_CA_PATH_ENV)
+            .kill_on_drop(true)
+            .args(args)
+            .arg("--state-dir")
+            .arg(self.path());
+        if let Some(ca_path) = ca_path {
+            command.env(ackplane_client::TLS_CA_PATH_ENV, ca_path);
+        }
+        command
+    }
+
+    pub(super) async fn run(&self, args: &[&str], ca_path: Option<&Path>) -> Output {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            self.command(args, ca_path).output(),
+        )
+        .await
+        .expect("the enrollment CLI must not hang")
+        .expect("the enrollment CLI must start")
     }
 
     pub(super) fn remove_credential(&self) -> Result<(), String> {
@@ -169,30 +199,12 @@ impl Drop for TestIdentity {
     }
 }
 
-pub(super) async fn run_cli(directory: &Path, args: &[&str]) -> Output {
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        Command::new(env!("CARGO_BIN_EXE_register-me"))
-            .current_dir(directory)
-            .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
-            .env_remove("MINDLEAK_ACKPLANE_NODE_SIGNING_KEY_SEED")
-            .env_remove("MINDLEAK_ACKPLANE_TLS_CA_PATH")
-            .kill_on_drop(true)
-            .args(args)
-            .arg("--state-dir")
-            .arg(directory)
-            .output(),
-    )
-    .await
-    .expect("the enrollment CLI must not hang")
-    .expect("the enrollment CLI must start")
-}
-
 pub(super) async fn start_server(
     pool: &PgPool,
     with_sync: bool,
     dropped: Option<Arc<Mutex<Option<v1::EnrollmentActivationResult>>>>,
     dropped_request: Option<Arc<Mutex<Option<v1::EnrollmentRequestStatus>>>>,
+    tls_identity: Option<Identity>,
 ) -> (String, oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
     let enrollment = EnrollmentStore::connect(pool).await.unwrap();
     let sync = if with_sync {
@@ -212,10 +224,21 @@ pub(super) async fn start_server(
         None
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let scheme = if tls_identity.is_some() {
+        "https"
+    } else {
+        "http"
+    };
+    let endpoint = format!("{scheme}://{}", listener.local_addr().unwrap());
+    let mut builder = Server::builder();
+    if let Some(identity) = tls_identity {
+        builder = builder
+            .tls_config(ServerTlsConfig::new().identity(identity))
+            .unwrap();
+    }
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
-        Server::builder()
+        builder
             .add_service(NodeEnrollmentServiceServer::new(
                 EnrollmentWithLostResponse {
                     inner: NodeEnrollmentService::new(enrollment),

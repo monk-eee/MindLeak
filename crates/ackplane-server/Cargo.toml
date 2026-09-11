@@ -46,6 +46,7 @@ tempfile = "3"
 
 [dev-dependencies]
 keyring = "2.3.3"
+rcgen = "0.13.2"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 security-framework = "2.11.1"

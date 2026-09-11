@@ -1,4 +1,4 @@
-// Run an Ackplane binary (bridge or server) with .env loaded into its
+// Run an Ackplane binary with .env loaded into its
 // environment, the same way `docker compose` reads .env for the containers
 // in docker-compose.yml -- so a developer types one command and nothing
 // else, instead of setting a handful of $env:/export vars by hand each time
@@ -6,20 +6,23 @@
 // undocumented, and then lost when the terminal closes).
 //
 // Platform-agnostic: node only. Usage:
-//   node scripts/run-ackplane.mjs bridge   runs target/release/ackplane-bridge
-//   node scripts/run-ackplane.mjs server   runs target/release/ackplane-server
+//   node scripts/run-ackplane.mjs <bridge|server|register-me|supervisor> [args...]
 //
-// Reads .env from the repo root (see .env.example for the documented
-// defaults); real env vars already set in the calling shell always win over
-// .env, matching standard dotenv precedence.
+// Run from the workspace root: .env and target/release resolve against the
+// calling shell's cwd, which the child retains even when this script is invoked
+// by absolute path. Real env vars already set in the shell always win over .env.
+// Arguments are passed unchanged; enrollment and serve commands remain explicit.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const BINARIES = {
   bridge: "ackplane-bridge",
   server: "ackplane-server",
+  "register-me": "register-me",
+  supervisor: "ackplane-supervisor",
 };
 
 /** Parse simple KEY=VALUE lines; blank lines and #-comments are skipped. */
@@ -43,36 +46,63 @@ export function resolveEnv(envFilePath, currentEnv) {
   return { ...fromFile, ...currentEnv };
 }
 
-function binaryPath(name) {
-  const suffix = process.platform === "win32" ? ".exe" : "";
-  return `target/release/${name}${suffix}`;
+function binaryPath(name, platform, cwd) {
+  const suffix = platform === "win32" ? ".exe" : "";
+  return resolve(cwd, "target", "release", `${name}${suffix}`);
 }
 
-function run(binaryKey) {
+export function run(
+  binaryKey,
+  args = [],
+  {
+    cwd = process.cwd(),
+    env = process.env,
+    platform = process.platform,
+    exists = existsSync,
+    spawn = spawnSync,
+  } = {},
+) {
+  if (typeof binaryKey !== "string" || !Object.hasOwn(BINARIES, binaryKey)) {
+    throw new Error(
+      "usage: node scripts/run-ackplane.mjs <bridge|server|register-me|supervisor> [args...]",
+    );
+  }
+  if (
+    !Array.isArray(args) ||
+    ![...args].every(
+      (argument) => typeof argument === "string" && !argument.includes("\0"),
+    )
+  ) {
+    throw new Error("arguments must be an array of strings without NUL bytes");
+  }
   const binaryName = BINARIES[binaryKey];
-  if (!binaryName) {
+  const workspace = resolve(cwd);
+  const path = binaryPath(binaryName, platform, workspace);
+  if (!exists(path)) {
+    const packageName =
+      binaryKey === "register-me" ? "ackplane-server" : binaryName;
     throw new Error(
-      `unknown binary '${binaryKey}': expected 'bridge' or 'server'`,
+      `${path} does not exist -- build it first: cargo build --release -p ${packageName} --bin ${binaryName}`,
     );
   }
-  const path = binaryPath(binaryName);
-  if (!existsSync(path)) {
-    throw new Error(
-      `${path} does not exist -- build it first: cargo build --release -p ackplane-server`,
-    );
+  const childEnv = resolveEnv(resolve(workspace, ".env"), env);
+  try {
+    const result = spawn(path, args, {
+      cwd: workspace,
+      env: childEnv,
+      shell: false,
+      stdio: "inherit",
+    });
+    if (result.error) throw result.error;
+    return result.signal ? 1 : (result.status ?? 1);
+  } catch {
+    throw new Error(`could not start ${binaryName}`);
   }
-  const env = resolveEnv(".env", process.env);
-  const result = spawnSync(path, [], { stdio: "inherit", env });
-  if (result.error) throw result.error;
-  process.exitCode = result.status ?? 1;
 }
 
 function main(argv) {
-  const [command] = argv;
-  if (!command) {
-    throw new Error("usage: node scripts/run-ackplane.mjs <bridge|server>");
-  }
-  run(command);
+  const [command, ...args] = argv;
+  process.exitCode = run(command, args);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

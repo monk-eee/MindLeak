@@ -1,7 +1,7 @@
 # MindLeak developer commands. On Windows, run the underlying commands directly
 # (see DEVELOPERS.md) if `make` is unavailable.
 
-.PHONY: setup worktree-setup install-servers adr-index changelog design-audit merge-audit binding-audit queue queue-watch sweep board-health control-coverage stranded-report migration-audit status reingest tool-surface build test industrial-test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
+.PHONY: setup worktree-setup install-servers install-industrial adr-index changelog design-audit merge-audit binding-audit queue queue-watch sweep board-health control-coverage stranded-report migration-audit status reingest tool-surface build test industrial-test script-test ratchet coverage bench agent-bench lint fmt fmt-check clippy run ext-install ext-compile ext-lint ext-test ci
 
 setup: ## Install pre-commit hooks and extension deps
 	pip install pre-commit
@@ -22,6 +22,10 @@ install-servers: ## Install the built MCP servers where every window can reach t
 	# the user's home directory, which the extension prefers over a worktree build.
 	cargo build --release -p mindleak-mcp -p lodestar-mcp
 	node scripts/install-servers.mjs
+
+install-industrial: ## Build and install the six Industrial host binaries; no services are started
+	cargo build --locked --release -p mindleak-mcp -p lodestar-mcp -p ackplane-mcp -p ackplane-supervisor -p ackplane-server -p ackplane-workctl --features mindleak-mcp/federation-client,lodestar-mcp/federation-client
+	node scripts/install-servers.mjs --profile industrial
 
 reclaim: ## Report reclaimable worktrees, branches and build output (add ARGS=--reclaim to act)
 	# Cleanup never happens on goodwill: the agent that created a worktree has
