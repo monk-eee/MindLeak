@@ -11,9 +11,10 @@
 //! identity recovery (`enrolment`, ADR-0100 decision 7). `CredentialProvider`
 //! explicitly selects software signing with an OS-credential-backed seed and
 //! checked restart identity. It exports no key through `NodeSigner`, but is not
-//! a hardware non-exportable key. Provider activation on Ackplane, runtime
-//! integration, persistent rotation, and hardware/workload providers remain
-//! separate requirements.
+//! a hardware non-exportable key. `CredentialCandidate` persists enrollment
+//! challenges and binds accepted authority responses to that same key. Request
+//! orchestration, runtime integration, persistent rotation, and hardware/workload
+//! providers remain separate requirements.
 
 mod enrolment;
 mod process_lock;
@@ -22,8 +23,13 @@ mod signer;
 
 pub mod ipc;
 
-pub use enrolment::{enrol, recover, EnrolmentError, EnrolmentRecord};
+pub use enrolment::{
+    EnrollmentActivation, EnrollmentChallengeRecord, EnrolmentError, EnrolmentRecord,
+};
 pub use process_lock::{LockError, NodeProcessLock};
-pub use provider::credential::{CredentialProvider, CredentialProviderError};
+pub use provider::credential::{CredentialCandidate, CredentialProvider, CredentialProviderError};
 pub use provider::software::SoftwareProvider;
-pub use signer::{KeyHandle, NodeIdentity, NodeSigner, NodeSignerError, Signature, SigningBinding};
+pub use signer::{
+    CandidateIdentity, KeyHandle, NodeIdentity, NodeSigner, NodeSignerError, Signature,
+    SigningBinding,
+};

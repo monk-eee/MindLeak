@@ -1,33 +1,17 @@
-use std::{fmt, path::Path, sync::Arc};
+use std::{fmt, path::Path};
 
-use keyring::Entry;
-use serde::{Deserialize, Serialize};
-use zeroize::{Zeroize, Zeroizing};
+use ed25519_dalek::Signer;
 
-use super::software::SoftwareProvider;
 use crate::{
-    enrol, EnrolmentError, EnrolmentRecord, KeyHandle, LockError, NodeIdentity, NodeProcessLock,
-    NodeSigner, NodeSignerError, Signature, SigningBinding,
+    EnrollmentActivation, EnrolmentError, KeyHandle, LockError, NodeIdentity, NodeSigner,
+    NodeSignerError, Signature, SigningBinding,
 };
 
-const SCHEME: &str = "credential-facility-software";
-const SERVICE: &str = "mindleak-ackplane-node-software-v1";
-const MAX_CREDENTIAL_BYTES: usize = 65_536;
+mod candidate;
+mod storage;
 
-#[derive(Deserialize, Serialize)]
-struct StoredCredential {
-    tenant_id: String,
-    repository_id: String,
-    node_id: String,
-    key_id: String,
-    seed: [u8; 32],
-}
-
-impl Drop for StoredCredential {
-    fn drop(&mut self) {
-        self.seed.zeroize();
-    }
-}
+pub use candidate::CredentialCandidate;
+use storage::CredentialStorage;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialProviderError {
@@ -43,6 +27,16 @@ pub enum CredentialProviderError {
     InvalidBinding,
     #[error("identity_unavailable: unsupported provider or missing credential handle")]
     InvalidProvider,
+    #[error("identity_unavailable: this candidate has not been activated on Ackplane")]
+    NotActivated,
+    #[error("this credential is already activated; recover the enrolled provider")]
+    AlreadyActivated,
+    #[error("the activation challenge does not match this candidate's approved enrollment")]
+    InvalidChallenge,
+    #[error("no activation challenge has been recorded for this candidate")]
+    NoChallenge,
+    #[error("activation did not return a matching accepted request, key ID and receipt")]
+    InvalidActivation,
     #[error("identity_unavailable: credential facility {0}")]
     Facility(&'static str),
     #[error("identity_unavailable: the stored credential is not a valid signing key")]
@@ -69,8 +63,7 @@ impl From<keyring::Error> for CredentialProviderError {
 pub struct CredentialProvider {
     binding: SigningBinding,
     identity: NodeIdentity,
-    entry: Arc<Entry>,
-    _owner: NodeProcessLock,
+    storage: CredentialStorage,
 }
 
 impl fmt::Debug for CredentialProvider {
@@ -84,138 +77,82 @@ impl fmt::Debug for CredentialProvider {
 }
 
 impl CredentialProvider {
-    /// Create a new local provider identity. This does not enroll it on Ackplane.
-    /// Existing enrollment or credentials are never replaced.
-    pub fn provision(
-        binding: SigningBinding,
-        repository_state_dir: &Path,
-    ) -> Result<Self, CredentialProviderError> {
-        Self::provision_with(binding, repository_state_dir, Self::entry)
-    }
-
     /// Recover only the credential and binding already recorded by this provider.
     pub fn recover(
         tenant_id: &str,
         repository_id: &str,
         repository_state_dir: &Path,
     ) -> Result<Self, CredentialProviderError> {
-        Self::recover_with(tenant_id, repository_id, repository_state_dir, Self::entry)
+        Self::from_storage(CredentialStorage::recover(
+            tenant_id,
+            repository_id,
+            repository_state_dir,
+            CredentialStorage::entry,
+        )?)
     }
 
-    fn entry(handle: &str) -> Result<Arc<Entry>, CredentialProviderError> {
-        Ok(Arc::new(Entry::new(SERVICE, handle)?))
-    }
-
-    fn validate_binding(binding: &SigningBinding) -> Result<(), CredentialProviderError> {
-        if [
-            &binding.tenant_id,
-            &binding.repository_id,
-            &binding.node_id,
-            &binding.key_id,
-        ]
-        .iter()
-        .any(|value| value.trim().is_empty())
-        {
-            return Err(CredentialProviderError::InvalidBinding);
-        }
-        Ok(())
-    }
-
+    #[cfg(test)]
     fn provision_with(
         binding: SigningBinding,
         repository_state_dir: &Path,
-        credential: impl FnOnce(&str) -> Result<Arc<Entry>, CredentialProviderError>,
+        credential: impl FnOnce(&str) -> Result<std::sync::Arc<keyring::Entry>, CredentialProviderError>,
     ) -> Result<Self, CredentialProviderError> {
-        Self::validate_binding(&binding)?;
-        let owner = NodeProcessLock::acquire(repository_state_dir)?;
-        match EnrolmentRecord::load(repository_state_dir) {
-            Ok(_) => return Err(CredentialProviderError::AlreadyProvisioned),
-            Err(EnrolmentError::NoRecord(_)) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let mut identifier = [0_u8; 16];
-        getrandom::getrandom(&mut identifier).map_err(|_| CredentialProviderError::Random)?;
-        let handle = identifier
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let entry = credential(&handle)?;
-        match entry.get_password().map(Zeroizing::new) {
-            Ok(_) => return Err(CredentialProviderError::AlreadyProvisioned),
-            Err(keyring::Error::NoEntry) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let mut stored = StoredCredential {
-            tenant_id: binding.tenant_id.clone(),
-            repository_id: binding.repository_id.clone(),
-            node_id: binding.node_id.clone(),
-            key_id: binding.key_id.clone(),
-            seed: [0_u8; 32],
-        };
-        getrandom::getrandom(&mut stored.seed).map_err(|_| CredentialProviderError::Random)?;
-        let identity = SoftwareProvider::from_seed(&binding, &stored.seed).identity();
-        let encoded = Zeroizing::new(
-            serde_json::to_string(&stored)
-                .map_err(|_| CredentialProviderError::MalformedCredential)?,
-        );
-        if encoded.len() > MAX_CREDENTIAL_BYTES {
-            return Err(CredentialProviderError::InvalidBinding);
-        }
-        entry.set_password(&encoded)?;
-        if let Err(error) = enrol(
-            SCHEME,
-            Some(&handle),
+        let mut candidate = CredentialCandidate::provision_with(
             &binding.tenant_id,
             &binding.repository_id,
-            &identity,
+            &binding.node_id,
             repository_state_dir,
-        ) {
-            entry.delete_password()?;
-            return Err(error.into());
-        }
-        let provider = Self {
-            binding,
-            identity,
-            entry,
-            _owner: owner,
-        };
-        provider.read_signer()?;
-        Ok(provider)
+            credential,
+        )?;
+        candidate.activation_proof(&ackplane_protocol::v1::EnrollmentChallenge {
+            request_id: "request-test".to_string(),
+            tenant_id: binding.tenant_id,
+            repository_id: binding.repository_id,
+            proposed_node_id: binding.node_id,
+            public_key_fingerprint: candidate.identity().fingerprint,
+            nonce: vec![7; 32],
+            state: ackplane_protocol::v1::EnrollmentState::Approved as i32,
+            ..Default::default()
+        })?;
+        candidate.accept_activation(&ackplane_protocol::v1::EnrollmentActivationResult {
+            request_id: "request-test".to_string(),
+            signing_key_id: binding.key_id,
+            enrolment_receipt_id: "receipt-test".to_string(),
+            state: ackplane_protocol::v1::EnrollmentState::Activating as i32,
+            ..Default::default()
+        })
     }
 
+    #[cfg(test)]
     fn recover_with(
         tenant_id: &str,
         repository_id: &str,
         repository_state_dir: &Path,
-        credential: impl FnOnce(&str) -> Result<Arc<Entry>, CredentialProviderError>,
+        credential: impl FnOnce(&str) -> Result<std::sync::Arc<keyring::Entry>, CredentialProviderError>,
     ) -> Result<Self, CredentialProviderError> {
-        let owner = NodeProcessLock::acquire(repository_state_dir)?;
-        let record = EnrolmentRecord::load(repository_state_dir)?;
-        if record.tenant_id != tenant_id || record.repository_id != repository_id {
-            return Err(CredentialProviderError::InvalidBinding);
-        }
-        let handle = record
-            .provider_handle
-            .as_deref()
-            .ok_or(CredentialProviderError::InvalidProvider)?;
-        if record.provider_scheme != SCHEME
-            || handle.len() != 32
-            || !handle
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(CredentialProviderError::InvalidProvider);
-        }
+        Self::from_storage(CredentialStorage::recover(
+            tenant_id,
+            repository_id,
+            repository_state_dir,
+            credential,
+        )?)
+    }
+
+    fn from_storage(storage: CredentialStorage) -> Result<Self, CredentialProviderError> {
+        let record = &storage.record;
+        let activation = record
+            .activation
+            .as_ref()
+            .ok_or(CredentialProviderError::NotActivated)?;
         let binding = SigningBinding {
             tenant_id: record.tenant_id.clone(),
             repository_id: record.repository_id.clone(),
             node_id: record.node_id.clone(),
-            key_id: record.signing_key_id.clone(),
+            key_id: activation.signing_key_id.clone(),
         };
-        Self::validate_binding(&binding)?;
         let identity = NodeIdentity {
             node_id: record.node_id.clone(),
-            signing_key_id: record.signing_key_id.clone(),
+            signing_key_id: activation.signing_key_id.clone(),
             public_key: record
                 .public_key
                 .as_slice()
@@ -223,35 +160,19 @@ impl CredentialProvider {
                 .map_err(|_| CredentialProviderError::IdentityMismatch)?,
             fingerprint: record.fingerprint.clone(),
         };
-        let provider = Self {
+        Ok(Self {
             binding,
             identity,
-            entry: credential(handle)?,
-            _owner: owner,
-        };
-        provider.read_signer()?;
-        Ok(provider)
+            storage,
+        })
     }
 
-    fn read_signer(&self) -> Result<SoftwareProvider, CredentialProviderError> {
-        let encoded = Zeroizing::new(self.entry.get_password()?);
-        if encoded.len() > MAX_CREDENTIAL_BYTES {
-            return Err(CredentialProviderError::MalformedCredential);
-        }
-        let stored: StoredCredential = serde_json::from_str(&encoded)
-            .map_err(|_| CredentialProviderError::MalformedCredential)?;
-        if stored.tenant_id != self.binding.tenant_id
-            || stored.repository_id != self.binding.repository_id
-            || stored.node_id != self.binding.node_id
-            || stored.key_id != self.binding.key_id
-        {
-            return Err(CredentialProviderError::IdentityMismatch);
-        }
-        let signer = SoftwareProvider::from_seed(&self.binding, &stored.seed);
-        if signer.identity() != self.identity {
-            return Err(CredentialProviderError::IdentityMismatch);
-        }
-        Ok(signer)
+    pub fn activation(&self) -> &EnrollmentActivation {
+        self.storage
+            .record
+            .activation
+            .as_ref()
+            .expect("activated provider")
     }
 }
 
@@ -262,7 +183,7 @@ impl NodeSigner for CredentialProvider {
 
     fn sign(
         &self,
-        domain: &str,
+        _domain: &str,
         binding: &SigningBinding,
         message_digest: &[u8],
     ) -> Result<Signature, NodeSignerError> {
@@ -271,9 +192,11 @@ impl NodeSigner for CredentialProvider {
                 requested: binding.clone(),
             });
         }
-        self.read_signer()
-            .map_err(|error| NodeSignerError::ProviderRefused(error.to_string()))?
-            .sign(domain, binding, message_digest)
+        let key = self
+            .storage
+            .read_key()
+            .map_err(|error| NodeSignerError::ProviderRefused(error.to_string()))?;
+        Ok(Signature::from_bytes(key.sign(message_digest).to_bytes()))
     }
 
     fn provision_successor(&self) -> Result<NodeIdentity, NodeSignerError> {
@@ -298,6 +221,15 @@ impl NodeSigner for CredentialProvider {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod enrollment_tests;
+
+#[cfg(test)]
+mod recovery_tests;
+
+#[cfg(test)]
+mod server_tests;
 
 #[cfg(test)]
 mod platform_tests;

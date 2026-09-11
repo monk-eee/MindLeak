@@ -80,6 +80,8 @@ dependencies = [
 name = "ackplane-node"
 version = "0.1.7-alpha"
 dependencies = [
+ "ackplane-protocol",
+ "ackplane-server",
  "ed25519-dalek",
  "fs2",
  "getrandom 0.2.17",
@@ -90,6 +92,9 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tonic",
  "zeroize",
 ]
 

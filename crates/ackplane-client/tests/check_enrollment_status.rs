@@ -10,12 +10,12 @@
 //! ephemeral loopback port, mirroring `tests/enrollment_and_sync.rs`.
 
 use ackplane_client::{EnrollmentClient, EnrollmentState, EnrollmentStatusAuthentication};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_protocol::v1::{
     self, node_enrollment_service_client::NodeEnrollmentServiceClient,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
 };
 use ackplane_server::{
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_service::NodeEnrollmentService,
     enrollment_store::{EnrollmentApproval, EnrollmentStore},
 };

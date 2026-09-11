@@ -36,8 +36,8 @@ use sha2::{Digest, Sha256};
 use tonic::Request;
 
 use ackplane_client::{auth::SeedSigner, node_sync::NodeSyncConnection};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_protocol::v1::{self, node_enrollment_service_client::NodeEnrollmentServiceClient};
-use ackplane_server::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::enrollment_store::{EnrollmentApproval, EnrollmentStore};
 use ackplane_server::envelope_signature::envelope_signing_bytes;
 use ackplane_server::projection::{StructuralFact, STRUCTURAL_FACT_PAYLOAD_TYPE};

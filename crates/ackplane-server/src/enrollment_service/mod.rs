@@ -7,7 +7,7 @@ use ed25519_dalek::VerifyingKey;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    enrollment::{public_key_fingerprint, EnrollmentState},
+    enrollment::EnrollmentState,
     enrollment_status_signature,
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentStatus, EnrollmentStore,
@@ -15,6 +15,7 @@ use crate::{
         KeyRotationRejection,
     },
 };
+use ackplane_protocol::enrollment::public_key_fingerprint;
 
 /// The gRPC enrollment authority. The store's own bounded pool (ADR-0143)
 /// serializes database access, not this service -- every authority operation

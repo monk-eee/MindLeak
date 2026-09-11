@@ -5,12 +5,12 @@ use std::{sync::Arc, time::SystemTime};
 
 use ackplane_bridge::delegation_api::{delegation_routes, DelegationApiState};
 use ackplane_protocol::delegation::DelegatedAction;
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
     delegation_store::{
         DelegationGrantRequest, DelegationProjection, DelegationRevocationRequest, DelegationStore,
         DelegationUseRequest,
     },
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

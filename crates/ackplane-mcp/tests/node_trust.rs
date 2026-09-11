@@ -7,13 +7,13 @@
 //! `ackplane-client/tests/enrollment_and_sync.rs`'s existing pattern.
 
 use ackplane_client::{NodeSyncConnection, SeedSigner};
+use ackplane_protocol::enrollment::public_key_fingerprint;
 use ackplane_protocol::v1::{
     self, node_enrollment_service_client::NodeEnrollmentServiceClient,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
 };
 use ackplane_server::{
-    enrollment::public_key_fingerprint,
     enrollment_service::NodeEnrollmentService,
     enrollment_store::{EnrollmentApproval, EnrollmentStore},
     ledger::LedgerStore,
@@ -131,7 +131,7 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
         .await
         .expect("approval should succeed for a pending request");
 
-    use ackplane_server::enrollment::activation_challenge_bytes;
+    use ackplane_protocol::enrollment::activation_challenge_bytes;
     let challenge = enrollment_client
         .get_activation_challenge(Request::new(v1::EnrollmentChallengeRequest {
             request_id: request_id.clone(),

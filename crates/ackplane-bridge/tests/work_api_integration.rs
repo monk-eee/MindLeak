@@ -8,9 +8,9 @@ use std::{
 };
 
 use ackplane_bridge::work_api::{work_routes, WorkApiState};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
     claim_store::{ClaimLeaseRequest, ClaimStore},
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

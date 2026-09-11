@@ -8,6 +8,7 @@ rust-version.workspace = true
 description = "Repository-side identity owner: a non-exporting signer companion (ADR-0100)."
 
 [dependencies]
+ackplane-protocol = { path = "../ackplane-protocol" }
 ed25519-dalek = { version = "2.1", features = ["zeroize"] }
 fs2 = "0.4.3"
 getrandom = "0.2"
@@ -19,3 +20,9 @@ sha2 = { workspace = true }
 tempfile = "3"
 thiserror = { workspace = true }
 zeroize = "1"
+
+[dev-dependencies]
+ackplane-server = { path = "../ackplane-server" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { workspace = true }

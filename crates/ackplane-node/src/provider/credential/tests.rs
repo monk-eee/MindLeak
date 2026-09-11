@@ -3,8 +3,39 @@ use std::sync::Arc;
 use ed25519_dalek::{Signature as EdSignature, VerifyingKey};
 use keyring::{mock::MockCredential, Entry};
 
+use super::storage::MAX_CREDENTIAL_BYTES;
 use super::*;
 use crate::{NodeSigner, SigningBinding};
+
+#[test]
+fn candidate_provisioning_survives_restart_without_an_assigned_signing_key_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let entry = credential();
+    let candidate = CredentialCandidate::provision_with(
+        "tenant-test",
+        "repo-test",
+        "node-test",
+        directory.path(),
+        |_| Ok(entry.clone()),
+    )
+    .unwrap();
+    let identity = candidate.identity();
+    drop(candidate);
+
+    let recovered =
+        CredentialCandidate::recover_with("tenant-test", "repo-test", directory.path(), |_| {
+            Ok(entry.clone())
+        })
+        .unwrap();
+
+    assert_eq!(recovered.identity(), identity);
+    assert_eq!(identity.node_id, "node-test");
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("enrolment.json")).unwrap())
+            .unwrap();
+    assert!(metadata.get("signing_key_id").is_none());
+    assert!(metadata.get("activation").is_none());
+}
 
 #[test]
 fn oversized_binding_does_not_publish_an_unrecoverable_credential() {
@@ -31,10 +62,31 @@ fn binding() -> SigningBinding {
     }
 }
 
-fn credential() -> Arc<Entry> {
+pub(super) fn credential() -> Arc<Entry> {
     Arc::new(Entry::new_with_credential(Box::new(
         MockCredential::default(),
     )))
+}
+
+// The short provider fingerprint was rejected by enrollment; use the wire contract's full fingerprint.
+#[test]
+fn candidate_fingerprint_matches_the_enrollment_protocol() {
+    let directory = tempfile::tempdir().unwrap();
+    let entry = credential();
+    let candidate = CredentialCandidate::provision_with(
+        "tenant-test",
+        "repo-test",
+        "node-test",
+        directory.path(),
+        |_| Ok(entry.clone()),
+    )
+    .unwrap();
+    let identity = candidate.identity();
+
+    assert_eq!(
+        identity.fingerprint,
+        ackplane_protocol::enrollment::public_key_fingerprint(&identity.public_key),
+    );
 }
 
 #[test]
@@ -270,7 +322,9 @@ fn public_metadata_cannot_rebind_an_existing_credential_to_another_node_or_key()
         let mut changed = original.clone();
         match field {
             "node" => changed.node_id = "another-node".to_string(),
-            "key" => changed.signing_key_id = "another-key".to_string(),
+            "key" => {
+                changed.activation.as_mut().unwrap().signing_key_id = "another-key".to_string()
+            }
             _ => unreachable!(),
         }
         std::fs::write(

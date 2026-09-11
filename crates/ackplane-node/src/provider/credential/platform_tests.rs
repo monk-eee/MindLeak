@@ -3,6 +3,7 @@ use std::{io::Write, path::PathBuf, process::Command};
 use ed25519_dalek::{Signature as EdSignature, VerifyingKey};
 
 use super::*;
+use crate::EnrolmentRecord;
 
 const CHILD_STATE: &str = "MINDLEAK_NODE_CREDENTIAL_RESTART_TEST";
 const EXIT_WITHOUT_DROP: &str = "MINDLEAK_NODE_CREDENTIAL_EXIT_WITHOUT_DROP";
@@ -46,8 +47,12 @@ fn a_persistent_provider_survives_a_real_process_restart() {
     }
 
     let directory = tempfile::tempdir().unwrap();
-    let provider = CredentialProvider::provision(binding.clone(), directory.path())
-        .expect("the explicitly required OS credential store must accept provisioning");
+    let provider = CredentialProvider::provision_with(
+        binding.clone(),
+        directory.path(),
+        CredentialStorage::entry,
+    )
+    .expect("the explicitly required OS credential store must accept provisioning");
     let original = provider.identity();
     drop(provider);
     let record = EnrolmentRecord::load(directory.path()).unwrap();
@@ -62,7 +67,7 @@ fn a_persistent_provider_survives_a_real_process_restart() {
         (abrupt, result)
     });
     let cleanup =
-        CredentialProvider::entry(record.provider_handle.as_deref().unwrap()).and_then(|entry| {
+        CredentialStorage::entry(record.provider_handle.as_deref().unwrap()).and_then(|entry| {
             entry
                 .delete_password()
                 .map_err(CredentialProviderError::from)
