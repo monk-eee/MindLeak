@@ -9,9 +9,9 @@ use std::{
 };
 
 use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
     administration_store::AdministrationStore,
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

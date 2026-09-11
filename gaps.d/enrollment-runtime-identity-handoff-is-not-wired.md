@@ -5,13 +5,21 @@
   expects. That resolver still needs explicit identity environment variables
   and an already populated OS credential entry (or the explicitly non-hardened
   seed override). The accepted owner in ADR-0100 is `ackplane-node`. It now has
-  an explicitly selected `CredentialProvider` alongside the memory-only
-  `SoftwareProvider`, with tested OS-credential-backed restart, binding checks
-  and no key-export API. That local provider is not yet connected to remote
-  enrollment, assigned key IDs or the supervisor's runtime client.
+  explicitly selected `CredentialCandidate` and `CredentialProvider` types
+  alongside the memory-only `SoftwareProvider`, with tested OS-credential-backed
+  restart, binding checks and no key-export API. Candidate proofs, accepted
+  authority key-ID/receipt binding, interrupted-write recovery and exact replay
+  are now implemented. A real PostgreSQL/gRPC test replays activation and
+  authenticates two recovered NodeSync connections with one key and receipt.
+  The incompatible short provider fingerprint was fixed this run with a
+  failing-then-passing regression and one shared canonical protocol encoder.
+  The CLI and supervisor do not yet call these capabilities. The client's
+  `ClaimSigner::sign` is also infallible, so it cannot yet propagate the
+  persistent provider's failure without a panic or a misleading signature.
   An operator can therefore finish enrollment yet still fail to start the
   supervisor with the same identity. Wire the persistent provider and
   non-secret binding handoff through the existing signer/IPC contracts; verify
   enrollment-to-runtime across process restart without exporting a seed or
   silently replacing an existing credential. Left open under
-  `task:f60a0347a46d`; provider persistence alone does not claim this is done.
+  `task:f60a0347a46d`; tested provider enrollment does not claim runtime wiring
+  is done.

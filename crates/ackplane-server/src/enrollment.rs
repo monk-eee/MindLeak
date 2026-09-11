@@ -5,50 +5,8 @@
 
 use std::time::SystemTime;
 
+use ackplane_protocol::enrollment::activation_challenge_bytes;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
-
-const ACTIVATION_DOMAIN: &[u8] = b"mindleak.ackplane.v1.enrollment.activation\0";
-
-/// Return the canonical, human-comparable fingerprint of an Ed25519 public key.
-pub fn public_key_fingerprint(public_key: &[u8]) -> String {
-    let digest = Sha256::digest(public_key);
-    let encoded = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("ed25519:{encoded}")
-}
-
-/// Encode the exact domain-separated bytes a node signs to prove possession of
-/// its approved key. Every binding is length-delimited so adjacent fields can
-/// never be reinterpreted as a different tuple.
-pub fn activation_challenge_bytes(
-    nonce: &[u8],
-    request_id: &str,
-    tenant_id: &str,
-    repository_id: &str,
-    node_id: &str,
-    public_key_fingerprint: &str,
-) -> Vec<u8> {
-    let fields = [
-        nonce,
-        request_id.as_bytes(),
-        tenant_id.as_bytes(),
-        repository_id.as_bytes(),
-        node_id.as_bytes(),
-        public_key_fingerprint.as_bytes(),
-    ];
-    let mut bytes = Vec::with_capacity(
-        ACTIVATION_DOMAIN.len() + fields.iter().map(|field| 4 + field.len()).sum::<usize>(),
-    );
-    bytes.extend_from_slice(ACTIVATION_DOMAIN);
-    for field in fields {
-        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(field);
-    }
-    bytes
-}
 
 /// The immutable values the activation proof binds together.
 pub struct ActivationProofBinding<'a> {
@@ -262,14 +220,14 @@ impl Enrollment {
 mod tests {
     use std::time::{Duration, SystemTime};
 
+    use ackplane_protocol::enrollment::public_key_fingerprint;
     use ed25519_dalek::{Signer, SigningKey};
 
     use super::{
         activation_challenge_bytes, connection_challenge_bytes, key_rotation_bytes,
-        public_key_fingerprint, verify_activation_proof, verify_connection_challenge,
-        verify_key_rotation_signature, ActivationChallenge, ActivationFailure,
-        ActivationProofBinding, ConnectionChallengeBinding, Enrollment, EnrollmentState,
-        KeyRotationStatement,
+        verify_activation_proof, verify_connection_challenge, verify_key_rotation_signature,
+        ActivationChallenge, ActivationFailure, ActivationProofBinding, ConnectionChallengeBinding,
+        Enrollment, EnrollmentState, KeyRotationStatement,
     };
 
     fn approved_enrollment() -> Enrollment {

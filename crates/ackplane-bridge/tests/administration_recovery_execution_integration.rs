@@ -8,6 +8,7 @@ use std::{
 
 use ackplane_bridge::administration::{administration_routes, AdministrationApiState};
 use ackplane_client::auth::{authenticate_recovery_execution, ClaimSigner, SeedSigner};
+use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_protocol::purge_confirmation_auth::RecoveryExecutionOperation;
 use ackplane_server::{
     administration_store::{
@@ -15,7 +16,6 @@ use ackplane_server::{
         PolicyAdoptionRequest,
     },
     claim_store::ClaimStore,
-    enrollment::{activation_challenge_bytes, public_key_fingerprint},
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,

@@ -10,6 +10,13 @@
 
 use std::fmt;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CandidateIdentity {
+    pub node_id: String,
+    pub public_key: [u8; 32],
+    pub fingerprint: String,
+}
+
 /// The public half of a node's identity — safe to log, transmit, and persist.
 #[derive(Clone, PartialEq, Eq)]
 pub struct NodeIdentity {
@@ -17,7 +24,7 @@ pub struct NodeIdentity {
     pub signing_key_id: String,
     /// Ed25519 public key bytes.
     pub public_key: [u8; 32],
-    /// A short, human-comparable fingerprint derived from `public_key`.
+    /// The canonical enrollment fingerprint derived from `public_key`.
     pub fingerprint: String,
 }
 

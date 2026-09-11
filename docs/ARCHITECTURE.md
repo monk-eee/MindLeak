@@ -314,13 +314,24 @@ The repository-side identity owner's building blocks (ADR-0100), not yet a
 runnable companion integrated with the local planes or supervisor. `NodeSigner`
 exposes public identity and scoped signatures without a private-key export API.
 `SoftwareProvider` is memory-only. The explicitly selected `CredentialProvider`
-stores its software seed and tenant/repository/node/key binding in the operating
-system credential facility through `keyring`, addressed by a random opaque
-handle. Its atomic local enrollment record contains only the public identity,
-provider scheme and handle. Provisioning refuses an existing credential or
-record; recovery and every signature re-read the credential and refuse missing,
-malformed or mismatched state without generating a replacement. Secret buffers
-are zeroized after use and diagnostics omit credential-store payloads.
+is recovered only after activation. First creation uses `CredentialCandidate`,
+which stores its software seed and binding in the operating system credential
+facility through `keyring`, addressed by a random opaque handle. Candidates have
+no invented signing-key ID and cannot sign runtime operations. They persist a
+matching approved challenge before producing a proof, can replay that proof
+after restart, and bind an accepted authority response to the same key and
+handle. `ackplane-protocol::enrollment` owns the canonical fingerprint and
+activation bytes shared with the server; the fingerprint is the full
+`ed25519:`-prefixed SHA-256 value, not a shortened display hash.
+
+The credential protects its complete binding, challenge or activation receipt,
+while the atomic local record contains only those public fields. Protected state
+is written first; recovery can finish interrupted public-metadata publication
+without reversing activation. Provisioning refuses existing state; recovery and
+every signature refuse missing, malformed or mismatched credentials without
+generating a replacement. Secret buffers are zeroized after use and diagnostics
+omit credential-store payloads. The real-service test proves exact activation
+replay and two authenticated NodeSync reconnects with the assigned key ID.
 
 The provider holds a kernel-backed repository file lock for its lifetime and
 refuses persistent rotation, retirement and destruction until those operations
@@ -332,10 +343,11 @@ across different files. Native CI proves recovery in a separate process after
 both normal and destructor-skipping exit on macOS Keychain and Windows
 Credential Manager. Linux Secret Service
 uses the same adapter but requires an available service for the opt-in native
-test. This is software key custody, not hardware non-exportability or remote
-enrollment: key-ID assignment, the approval ceremony and runtime clients still
-need to be connected. The lock coordinates cooperating processes on a local
-filesystem, not distributed hosts. Stop older marker-only node processes before
+test. This is software key custody, not hardware non-exportability. Enrollment
+proof and key-ID binding are implemented as library capabilities; the CLI,
+request orchestration and runtime clients still need to adopt them. The lock
+coordinates cooperating processes on a local filesystem, not distributed hosts.
+Stop older marker-only node processes before
 upgrading; a live older process does not hold the new kernel lock.
 
 ### `ackplane-client` (library)
