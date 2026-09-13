@@ -4,7 +4,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use super::{ClaimLeaseOutcome, ClaimLeaseResult, ClaimStore, ClaimStoreError};
+use super::{ClaimLeaseOutcome, ClaimLeaseResult, ClaimOwner, ClaimStore, ClaimStoreError};
 
 impl ClaimStore {
     /// Park a claimed task: owner-guarded transition that keeps the owner
@@ -21,25 +21,37 @@ impl ClaimStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
-        owner_id: &str,
+        owner: ClaimOwner<'_>,
         now: SystemTime,
     ) -> Result<bool, ClaimStoreError> {
+        owner.validate()?;
+        let owner_id = owner.owner_id;
         let mut connection = self.connection().await?;
         let transaction = connection.transaction().await?;
+        owner
+            .lock_and_verify(&transaction, tenant_id, repository_id, task_id)
+            .await?;
         let changed = transaction
             .execute(
                 "UPDATE delegated_claims SET lease_expires_at = $5, parked = true \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
-                   AND owner_id = $4 AND NOT parked",
-                &[&tenant_id, &repository_id, &task_id, &owner_id, &now],
+                   AND owner_id = $4 AND NOT parked AND owner_node_id = $6",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &task_id,
+                    &owner_id,
+                    &now,
+                    &owner.node_id,
+                ],
             )
             .await?;
         let parked = changed == 1;
         transaction
             .execute(
                 "INSERT INTO delegated_claim_history (tenant_id, repository_id, task_id, requested_owner_id, \
-                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
-                 VALUES ($1,$2,$3,$4,$4,$5,$6,$6,0,ARRAY[]::text[],ARRAY[]::text[])",
+                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, requested_node_id) \
+                 VALUES ($1,$2,$3,$4,$4,$5,$6,$6,0,ARRAY[]::text[],ARRAY[]::text[],$7)",
                 &[
                     &tenant_id,
                     &repository_id,
@@ -47,6 +59,7 @@ impl ClaimStore {
                     &owner_id,
                     &park_outcome_tag(parked),
                     &now,
+                    &owner.node_id,
                 ],
             )
             .await?;
@@ -65,10 +78,12 @@ impl ClaimStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
-        owner_id: &str,
+        owner: ClaimOwner<'_>,
         lease: Duration,
         now: SystemTime,
     ) -> Result<ClaimLeaseResult, ClaimStoreError> {
+        owner.validate()?;
+        let owner_id = owner.owner_id;
         if lease.is_zero() {
             return Err(ClaimStoreError::InvalidLease);
         }
@@ -77,7 +92,7 @@ impl ClaimStore {
         let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
-                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, parked \
+                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, parked, owner_node_id \
                  FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
                 &[&tenant_id, &repository_id, &task_id],
             )
@@ -86,6 +101,7 @@ impl ClaimStore {
         let result = match existing {
             Some(row) => {
                 let existing_owner: String = row.get(0);
+                owner.verify_node(&existing_owner, row.get("owner_node_id"))?;
                 let branch: String = row.get(1);
                 let claim_started_at: SystemTime = row.get(2);
                 let previous_expiry: SystemTime = row.get(3);
@@ -141,8 +157,8 @@ impl ClaimStore {
         transaction
             .execute(
                 "INSERT INTO delegated_claim_history (tenant_id, repository_id, task_id, requested_owner_id, \
-                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, requested_node_id) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
                 &[
                     &tenant_id,
                     &repository_id,
@@ -155,6 +171,7 @@ impl ClaimStore {
                     &(result.claim_lapses as i64),
                     &result.paths,
                     &result.symbols,
+                    &owner.node_id,
                 ],
             )
             .await?;

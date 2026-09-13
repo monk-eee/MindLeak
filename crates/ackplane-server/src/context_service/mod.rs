@@ -138,6 +138,7 @@ impl ContextService {
         repository_id: &str,
         task_id: &str,
         session_id: &str,
+        node_id: &str,
     ) -> Result<ActiveClaim, ContextServiceError> {
         let now = SystemTime::now();
         self.claims
@@ -147,6 +148,7 @@ impl ContextService {
             .find(|claim| {
                 claim.task_id == task_id
                     && claim.owner_id == session_id
+                    && claim.node_id.as_deref() == Some(node_id)
                     && claim.lease_expires_at > now
             })
             .ok_or(ContextServiceError::Refused(
@@ -216,6 +218,7 @@ impl ContextService {
                 repository_id,
                 &task.task_id,
                 &request.agent_session_id,
+                node_id,
             )
             .await?;
         if claim.paths != task.declared_paths || claim.symbols != task.declared_symbols {
@@ -273,6 +276,7 @@ impl ContextService {
             repository_id,
             &task.task_id,
             &request.agent_session_id,
+            node_id,
         )
         .await?;
         self.packets.store_packet(&packet).await?;

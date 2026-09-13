@@ -254,6 +254,7 @@ mod tests {
             claims
                 .delegate(
                     &ClaimLeaseRequest {
+                        node_id: "fleet-test-node".into(),
                         tenant_id: tenant_id.clone(),
                         repository_id: repository_id.clone(),
                         task_id: task_id.to_string(),
@@ -333,6 +334,7 @@ mod tests {
             claims
                 .delegate(
                     &ClaimLeaseRequest {
+                        node_id: "fleet-test-node".into(),
                         tenant_id: tenant_id.clone(),
                         repository_id: repository_id.clone(),
                         task_id: task_id.to_string(),
@@ -411,6 +413,7 @@ mod tests {
         claims
             .delegate(
                 &ClaimLeaseRequest {
+                    node_id: "fleet-test-node".into(),
                     tenant_id: tenant_id.clone(),
                     repository_id: repository_id.clone(),
                     task_id: "task:boundary".to_string(),
@@ -492,6 +495,7 @@ mod tests {
         claims
             .delegate(
                 &ClaimLeaseRequest {
+                    node_id: "fleet-test-node".into(),
                     tenant_id: tenant_id.clone(),
                     repository_id: repository_id.clone(),
                     task_id: "task:lapsed".to_string(),
@@ -510,6 +514,7 @@ mod tests {
         let recovery = claims
             .recover(
                 &ClaimRecoverRequest {
+                    node_id: "fleet-test-node".into(),
                     tenant_id: tenant_id.clone(),
                     repository_id: repository_id.clone(),
                     task_id: "task:lapsed".to_string(),
@@ -591,6 +596,7 @@ mod tests {
             claims
                 .delegate(
                     &ClaimLeaseRequest {
+                        node_id: "fleet-test-node".into(),
                         tenant_id: tenant_id.clone(),
                         repository_id: repository_id.clone(),
                         task_id: task_id.to_string(),
@@ -722,6 +728,7 @@ mod tests {
             claims
                 .delegate(
                     &ClaimLeaseRequest {
+                        node_id: "fleet-test-node".into(),
                         tenant_id: tenant_id.clone(),
                         repository_id: repository_id.clone(),
                         task_id: task_id.to_string(),
@@ -833,6 +840,7 @@ mod tests {
             claims
                 .delegate(
                     &ClaimLeaseRequest {
+                        node_id: "fleet-test-node".into(),
                         tenant_id: tenant_id.clone(),
                         repository_id: repository_id.clone(),
                         task_id: task_id.to_string(),
@@ -915,6 +923,7 @@ mod tests {
             claims
                 .delegate(
                     &ClaimLeaseRequest {
+                        node_id: "fleet-test-node".into(),
                         tenant_id: tenant_id.clone(),
                         repository_id: repository_id.clone(),
                         task_id: task_id.to_string(),

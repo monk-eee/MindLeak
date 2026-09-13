@@ -90,6 +90,13 @@ the existing evidence/conformance or human-review workflow.
 
 ## Configuration
 
+Claims are bound to the enrolled node as well as the session owner. A peer
+cannot renew, release, park or answer that lease by copying its owner ID, and
+context compilation requires the same node-bound authority. Before upgrading
+an existing deployment to node-bound claims, resolve parked claims and drain
+active workers; migration 67 does not guess node custody for historical rows.
+See the [custody decision and upgrade contract](../../docs/adr/0150-delegated-claim-owners-are-bound-to-the-authenticated-node.md#migration-and-upgrade).
+
 The companion owns identity, credential access, TLS and outbound connections.
 The supervisor receives only its local directory and expected repository scope.
 

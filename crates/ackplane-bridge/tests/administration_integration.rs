@@ -80,6 +80,23 @@ fn administration_page_follows_every_stranded_claims_cursor() {
     }
 }
 
+#[test]
+fn administration_claim_recovery_requires_an_explicit_destination_node() {
+    let page = include_str!("../static/administration.html");
+    for required in [
+        "id=\"recovery-node-id\" name=\"node_id\" autocomplete=\"off\" required",
+        "nodeId=recoveryNode.value.trim()",
+        "!ownerId||!nodeId",
+        "node_id:nodeId",
+        "${result.node_id}",
+    ] {
+        assert!(
+            page.contains(required),
+            "node-bound recovery is missing {required}"
+        );
+    }
+}
+
 async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &str, suffix: &str) {
     let signing_key = SigningKey::from_bytes(&[13; 32]);
     let public_key = signing_key.verifying_key().to_bytes();

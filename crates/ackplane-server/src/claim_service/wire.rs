@@ -10,6 +10,7 @@ use crate::claim_store::{ClaimLeaseOutcome, ClaimLeaseRequest, ClaimStoreError};
 
 pub(super) fn request_from_wire(
     request: v1::ClaimLeaseRequest,
+    node_id: String,
 ) -> Result<ClaimLeaseRequest, String> {
     let lease = std::time::Duration::from_secs(request.lease_seconds);
     if lease.is_zero() {
@@ -20,6 +21,7 @@ pub(super) fn request_from_wire(
         repository_id: required(request.repository_id, "repository_id")?,
         task_id: required(request.task_id, "task_id")?,
         owner_id: required(request.owner_id, "owner_id")?,
+        node_id,
         branch: required(request.branch, "branch")?,
         lease,
         paths: request.paths,
@@ -74,13 +76,14 @@ fn rfc3339(timestamp: std::time::SystemTime) -> Result<String, String> {
 
 pub(super) fn map_store_error(error: ClaimStoreError) -> Status {
     match error {
-        ClaimStoreError::InvalidLease | ClaimStoreError::MissingReason => {
-            Status::invalid_argument(error.to_string())
-        }
+        ClaimStoreError::InvalidLease
+        | ClaimStoreError::MissingReason
+        | ClaimStoreError::MissingNode => Status::invalid_argument(error.to_string()),
         // Exhaustion is the caller's to retry, not a bad request and not a
         // permanent fault: `unavailable` is the one gRPC code that says so
         // (ADR-0143 decision 5).
         ClaimStoreError::PoolExhausted(_) => Status::unavailable(error.to_string()),
+        ClaimStoreError::OwnerNodeMismatch => Status::permission_denied(error.to_string()),
         ClaimStoreError::Database(_)
         | ClaimStoreError::SigningKey(_)
         | ClaimStoreError::InvalidLapseCount => Status::internal(error.to_string()),

@@ -155,6 +155,7 @@ Format: [MADR](https://adr.github.io/madr/)-lite. Keep them short.
 | [0147](0147-a-claim-reports-the-branchs-existing-governed-files.md) | A claim reports the branch's existing governed files, not only its own declared scope | Accepted |
 | [0148](0148-an-enrolled-node-computes-projection-embeddings.md) | An enrolled node computes projection embeddings; Ackplane stores and ranks them | Accepted |
 | [0149](0149-commit-attribution-repair-is-verified-and-audited.md) | Commit attribution repair is verified and audited | Proposed |
+| [0150](0150-delegated-claim-owners-are-bound-to-the-authenticated-node.md) | Delegated claim owners are bound to the authenticated node | Proposed |
 
 ## Writing a new ADR
 

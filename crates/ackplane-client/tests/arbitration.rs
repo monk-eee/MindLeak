@@ -39,6 +39,9 @@ const NODE_ID: &str = "ackplane-client-test-node";
 const TENANT_ID: &str = "ackplane-client-test-tenant";
 const REPOSITORY_ID: &str = "ackplane-client-test-repository";
 
+#[path = "arbitration/node_ownership.rs"]
+mod node_ownership;
+
 fn signing_key() -> SigningKey {
     SigningKey::from_bytes(&[19; 32])
 }
@@ -146,6 +149,17 @@ async fn register_test_key(database_url: &str) {
 
 #[tokio::test]
 async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
+    exercise_claim_arbitration(false).await;
+}
+
+// A valid peer key could name the current owner and release its live lease.
+// Authentication must bind owner mutations to the node that obtained the claim.
+#[tokio::test]
+async fn an_enrolled_peer_cannot_mutate_another_nodes_live_claim_owner() {
+    exercise_claim_arbitration(true).await;
+}
+
+async fn exercise_claim_arbitration(check_peer_custody: bool) {
     let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
         println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
         return;
@@ -211,6 +225,10 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
         .expect("delegate_claim should round-trip over the wire");
     assert_eq!(granted.outcome(), ClaimLeaseOutcome::Granted);
     assert_eq!(granted.owner_id, "owner-a");
+
+    if check_peer_custody {
+        node_ownership::assert_peer_refusals(&pool, &endpoint, &task_id, "owner-a").await;
+    }
 
     // The real arbitration: a second, different owner racing for the same
     // task while owner-a's lease is still active must be refused by the
