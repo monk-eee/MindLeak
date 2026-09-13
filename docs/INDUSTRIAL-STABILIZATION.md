@@ -50,7 +50,7 @@ repository. They are provisional, not deadlines; reassess after STAB-03.
 | Task | Ledger ID | Status | Estimate | Acceptance Summary |
 | --- | --- | --- | --- | --- |
 | STAB-01: Reproducible build and database gate | `task:52eb3f6d82bd` | Merged, CI passed, required check enabled | 1-3 days | Fail closed without database/recovery prerequisites; migrate explicitly; compile every target; run all-feature workspace tests against disposable Postgres in CI and locally. |
-| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: companion runtime handoff tested; installation and review open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
+| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: installed TLS workflow exercised; qualification and review open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
 | STAB-03: Real worker execution and isolation | `task:df1e790eefca` | Queued after STAB-02 | 5-10 days | Addressed, authenticated work drives a real configured worker with bounded current context in its own worktree; two-node isolation and peer-impersonation refusals pass. |
 | STAB-04: Completion and restart recovery | `task:a200ebd9ec16` | Queued after STAB-03 | 5-8 days | Attributed evidence and conformance govern completion; crashes, reconnects, duplicate messages, expired claims and lost outbox state cannot silently lose or repeat work. |
 | STAB-05: Shared context and honest freshness | `task:8edce4b7d4a9` | Queued after STAB-04 | 4-7 days | Enrolled-node embedding production feeds shared recall; invalidation, cross-tenant refusal and explicit unembedded/stale/unavailable states are tested. Resolve the Work freshness design mismatch explicitly. |
@@ -460,3 +460,43 @@ This removes the missing stable host-binary install path. Clean-machine TLS,
 independent administrator approval, packaged distribution and the existing
 conformance review remain separate requirements. The demo-setup workstream owns
 the running-stack orchestration; no live deployment is changed by this installer.
+
+## Installed Source Rehearsal
+
+The September 2026 rehearsal built the shared stack and six host binaries from
+`87a5d6f592782ede355db112a4826ec858ab04a1`, after the installer and companion
+quickstart changes. It used a new Compose project, empty dedicated volumes,
+random loopback ports and a temporary installation home. The original running
+deployment was not used as a test database or restarted.
+
+The documented trust preparation was repeatable without changing CA/salt bytes,
+timestamps or permissions. Installed `register-me` completed TLS request,
+explicit development approval and activation. Request and activation retries
+preserved the original key and receipt. Missing configuration, missing/wrong CA,
+premature activation and wrong-tenant approval refused. Native credential tests
+used the normal macOS credential profile with isolated application state;
+changing `HOME` to an empty directory made that prerequisite unavailable.
+
+The installed Ackplane MCP verified active enrollment and refused wrong scope,
+endpoint mismatch and obsolete identity overrides. The Bridge API reported the
+installed supervisor as current. No worker was configured in this rehearsal, so
+registration is not evidence of real-worker execution.
+
+Two installed-path failures produced regression-tested fixes: Unix socket paths
+were validated only after enrollment ([PR #944](https://github.com/monk-eee/MindLeak/pull/944)),
+and local-plane startup still required a direct gRPC probe despite companion-only
+configuration ([PR #946](https://github.com/monk-eee/MindLeak/pull/946)). After
+preserving the same public provider state at a shorter path and installing the
+corrected local planes, all three MCP clients recovered through the same
+companion. Companion loss refused federation while Local mode stayed usable.
+Credential removal also refused restart without replacing identity. The exact
+test credential, containers, volumes and temporary files were removed; original
+live container identities and start times were unchanged.
+
+This is process-level qualification, not a single-revision release certificate:
+the corrected local-plane binaries differed from the shared-stack baseline.
+An empty-machine, one-revision artifact rehearsal, independently authenticated
+administrator approval, packaged distribution and the recorded conformance
+review remain open. The current claim history records four lapses totaling
+249,052 unleased seconds; no merge or successful test waives that history.
+Execution evidence: `execution:7dcd26c2d9aa`.
