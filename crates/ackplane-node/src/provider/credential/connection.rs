@@ -53,6 +53,7 @@ impl ClaimSigner for ConnectionSigner<'_> {
                 | CredentialProviderError::IdentityMismatch => SigningError::IdentityMismatch,
                 CredentialProviderError::Lock(_)
                 | CredentialProviderError::Enrollment(_)
+                | CredentialProviderError::Endpoint(_)
                 | CredentialProviderError::AlreadyProvisioned
                 | CredentialProviderError::NotActivated
                 | CredentialProviderError::AlreadyActivated
