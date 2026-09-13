@@ -18,6 +18,8 @@ pub enum CredentialProviderError {
     Lock(#[from] LockError),
     #[error("{0}")]
     Enrollment(#[from] EnrolmentError),
+    #[error("node state cannot host the companion endpoint: {0}")]
+    Endpoint(#[from] std::io::Error),
     #[error(
         "a node identity or credential already exists; recover it instead of provisioning again"
     )]

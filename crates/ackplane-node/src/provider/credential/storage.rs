@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use ackplane_client::companion::endpoint_name;
 use ackplane_protocol::enrollment::public_key_fingerprint;
 use ed25519_dalek::{Signer, SigningKey};
 use keyring::Entry;
@@ -58,6 +59,7 @@ impl CredentialStorage {
             return Err(CredentialProviderError::InvalidBinding);
         }
         let owner = NodeProcessLock::acquire(directory)?;
+        endpoint_name(directory)?;
         match EnrolmentRecord::load(directory) {
             Ok(_) => return Err(CredentialProviderError::AlreadyProvisioned),
             Err(EnrolmentError::NoRecord(_)) => {}
@@ -115,6 +117,7 @@ impl CredentialStorage {
         credential: impl FnOnce(&str) -> Result<Arc<Entry>, CredentialProviderError>,
     ) -> Result<Self, CredentialProviderError> {
         let owner = NodeProcessLock::acquire(directory)?;
+        endpoint_name(directory)?;
         let record = EnrolmentRecord::load(directory)?;
         if record.tenant_id != tenant_id
             || record.repository_id != repository_id

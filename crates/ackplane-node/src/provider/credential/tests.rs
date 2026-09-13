@@ -68,6 +68,88 @@ pub(super) fn credential() -> Arc<Entry> {
     )))
 }
 
+// Enrollment accepted long paths and created keys that the Unix companion could not serve.
+#[cfg(unix)]
+#[test]
+fn long_state_paths_are_refused_before_accessing_or_creating_credentials() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("long-state-".repeat(16));
+    std::fs::create_dir(&directory).unwrap();
+    let alias = root.path().join("alias");
+    std::os::unix::fs::symlink(&directory, &alias).unwrap();
+    let entry = credential();
+
+    for path in [&directory, &alias] {
+        let accessed = std::cell::Cell::new(false);
+        let result = CredentialCandidate::provision_with(
+            "tenant-test",
+            "repo-test",
+            "node-test",
+            path,
+            |_| {
+                accessed.set(true);
+                Ok(entry.clone())
+            },
+        );
+        let error = result.expect_err("an unusable companion path must refuse enrollment");
+        assert!(error.to_string().contains("shorter node state directory"));
+        assert!(
+            !accessed.get(),
+            "path validation must precede credential access"
+        );
+        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+        assert!(!directory.join("enrolment.json").exists());
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    }
+}
+
+// A relocated identity must refuse an unusable endpoint without changing the key or receipt.
+#[cfg(unix)]
+#[test]
+fn long_state_paths_preserve_existing_identity_for_recovery_at_a_usable_path() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("node");
+    let too_long = root.path().join("long-state-".repeat(16));
+    let entry = credential();
+    let provider =
+        CredentialProvider::provision_with(binding(), &directory, |_| Ok(entry.clone())).unwrap();
+    let identity = provider.identity();
+    drop(provider);
+    let metadata = std::fs::read(directory.join("enrolment.json")).unwrap();
+    let stored = entry.get_password().unwrap();
+    std::fs::rename(&directory, &too_long).unwrap();
+    let accessed = std::cell::Cell::new(false);
+
+    let result = CredentialProvider::recover_with("tenant-test", "repo-test", &too_long, |_| {
+        accessed.set(true);
+        Ok(entry.clone())
+    });
+    let error = result.expect_err("an unusable companion path must refuse recovery");
+    assert!(error.to_string().contains("shorter node state directory"));
+    assert!(
+        !accessed.get(),
+        "path validation must precede credential access"
+    );
+    assert_eq!(
+        std::fs::read(too_long.join("enrolment.json")).unwrap(),
+        metadata
+    );
+    assert!(entry.get_password().unwrap() == stored);
+
+    std::fs::rename(&too_long, &directory).unwrap();
+    let recovered =
+        CredentialProvider::recover_with("tenant-test", "repo-test", &directory, |_| {
+            Ok(entry.clone())
+        })
+        .unwrap();
+    assert_eq!(recovered.identity(), identity);
+    assert_eq!(
+        std::fs::read(directory.join("enrolment.json")).unwrap(),
+        metadata
+    );
+    assert!(entry.get_password().unwrap() == stored);
+}
+
 // The short provider fingerprint was rejected by enrollment; use the wire contract's full fingerprint.
 #[test]
 fn candidate_fingerprint_matches_the_enrollment_protocol() {
