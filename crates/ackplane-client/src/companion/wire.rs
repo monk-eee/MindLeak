@@ -95,6 +95,15 @@ pub enum Operation {
     ConstitutionPublish {
         snapshot: Vec<u8>,
     },
+    ProjectionEmbeddingsMissing {
+        model: String,
+        limit: u32,
+    },
+    ProjectionEmbeddingPublish {
+        source: Vec<u8>,
+        model: String,
+        embedding: Vec<f32>,
+    },
     OpenSync {
         last_accepted_position: u64,
         supervisor: Option<SupervisorScope>,
@@ -163,6 +172,56 @@ mod tests {
             serde_json::json!({"Destroy":{"key_id":"key"}}),
         ] {
             assert!(serde_json::from_value::<Operation>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn projection_embedding_operations_round_trip_only_their_typed_payloads() {
+        for value in [
+            serde_json::json!({"ProjectionEmbeddingsMissing":{"model":"model", "limit":0}}),
+            serde_json::json!({"ProjectionEmbeddingPublish":{
+                "source":[10,1,110], "model":"model", "embedding":vec![0.25; 768]
+            }}),
+        ] {
+            let operation = serde_json::from_value::<Operation>(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(operation).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn projection_embedding_operations_reject_identity_authentication_and_unknown_fields() {
+        for (variant, payload) in [
+            (
+                "ProjectionEmbeddingsMissing",
+                serde_json::json!({"model":"model", "limit":20}),
+            ),
+            (
+                "ProjectionEmbeddingPublish",
+                serde_json::json!({
+                    "source":[10,1,110], "model":"model", "embedding":vec![0.25; 768]
+                }),
+            ),
+        ] {
+            for field in [
+                "tenant_id",
+                "repository_id",
+                "node_id",
+                "signing_key_id",
+                "key_id",
+                "authentication",
+                "signed_at",
+                "nonce",
+                "signature",
+                "extra",
+            ] {
+                let mut injected = payload.clone();
+                injected[field] = serde_json::json!("caller supplied");
+                let value = serde_json::json!({(variant):injected});
+                assert!(
+                    serde_json::from_value::<Operation>(value).is_err(),
+                    "{variant}: {field}"
+                );
+            }
         }
     }
 
