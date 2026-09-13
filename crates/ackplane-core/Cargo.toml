@@ -9,12 +9,18 @@ description = "The repository side of the Ackplane federation boundary: which ar
 
 [dependencies]
 ackplane-client = { path = "../ackplane-client", optional = true }
+ackplane-protocol = { path = "../ackplane-protocol", optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+interprocess = { version = "2", features = ["tokio"] }
+prost = { workspace = true }
+tempfile = "3"
 
 [features]
 # Off by default: a repository-local build (the standalone VSIX, and the
 # CI "Local planes" job) stays free of any async runtime or network stack
 # unless it explicitly asks to be able to federate (ADR-0094 decision 1's
 # two product modes). See docs/ARCHITECTURE.md's Ackplane section.
-federation-client = ["dep:ackplane-client", "dep:tokio"]
+federation-client = ["dep:ackplane-client", "dep:ackplane-protocol", "dep:tokio"]
