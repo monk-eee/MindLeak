@@ -63,3 +63,25 @@
   not reproduced by the controlled interleaving. Preserve the earlier evidence;
   do not claim that passing this regression certifies the intermittent CI issue
   or the separately running endurance candidate.
+
+  **Schema-fixture failure reproduced and fixed 2026-09-14:**
+  `projection::embedding_concurrency_tests::embedding_writers_handle_an_atomic_node_replacement_without_foreign_key_errors`
+  holds an atomic projected-node delete/reinsert open until PostgreSQL reports
+  that the existing schema fixture's INSERT is blocked behind it. Committing
+  the replacement produced SQLSTATE `23503` in that unchanged raw INSERT,
+  although the same node key exists again after commit. The regression failed
+  before and passed after the schema fixture acquired the existing
+  tenant/repository rebuild lock in a ReadCommitted transaction spanning its
+  INSERT and readback. No production SQL, constraints, or global test
+  concurrency changed.
+
+  The same controlled interleaving proves the public `upsert_embedding` already
+  handles replacement: its conditional source-row lock returns `false`, not a
+  foreign-key error; reading the current source and publishing it succeeds.
+  The raw schema fixture now shares one tested implementation with its
+  concurrency regression. This reproduces and removes a concrete cause of the
+  2026-09-14 fixture failure class, not a trace of the original CI interleaving.
+  Preserve the 2026-09-02 failure and historical CI evidence: that older
+  `upsert_embedding` call's exact failure was never captured. The active
+  `dcc3f289` endurance candidate is unchanged and does not include this fixture
+  correction.
