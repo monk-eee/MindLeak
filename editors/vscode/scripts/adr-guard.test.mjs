@@ -118,6 +118,29 @@ describe(
       expect(result.stderr).toContain("UNCOMMITTED docs/adr/0003-staged-decision.md");
     });
 
+    // Trimming the leading status column hid the first unstaged ADR change from the guard.
+    it.each(["modified", "deleted"])(
+      "fails on a published ADR %s only in the worktree",
+      (change) => {
+        const repo = repositoryWithPublishedAdr();
+        const name = "0001-first-decision.md";
+        if (change === "deleted") {
+          rmSync(join(repo, "docs", "adr", name));
+        } else {
+          writeAdr(repo, name, "# ADR\n\n- Status: Proposed\n\nChanged rationale.\n");
+        }
+
+        const result = runGuard(repo, ["--uncommitted", "--format", "json"]);
+        expect(result.status).toBe(1);
+        const report = JSON.parse(result.stdout);
+        expect(report.ok).toBe(false);
+        expect(report.uncommitted.map((finding) => finding.adrPath)).toEqual([`docs/adr/${name}`]);
+        expect(report.uncommitted[0].reason).toBe(
+          `uncommitted changes (${change === "deleted" ? "D" : "M"})`
+        );
+      }
+    );
+
     /**
      * Bug this guards: ADR-0040 was committed only on `fleet/work-surface`, a
      * branch that had never been pushed. It survived a crash but not a deleted
