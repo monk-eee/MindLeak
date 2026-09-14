@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
@@ -6,6 +6,43 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const script = fileURLToPath(import.meta.url);
 const sessionVariable = "MINDLEAK_CREDENTIAL_TEST_SESSION";
+
+function launch(command, args, options, run, completionEvent = "exit") {
+  try {
+    const child = run(command, args, options);
+    const process = { child, finished: false };
+    process.done = new Promise((resolve) => {
+      const finish = (result) => {
+        process.finished = true;
+        resolve(result);
+      };
+      child.once("error", (error) => finish({ error }));
+      child.once(completionEvent, (status, signal) =>
+        finish({ status, signal }),
+      );
+    });
+    return process;
+  } catch (error) {
+    return { finished: true, done: Promise.resolve({ error }) };
+  }
+}
+
+async function bounded(promise, timeoutMs) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(
+          () => resolve({ error: { code: "ETIMEDOUT" } }),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function outcome(result, label, error) {
   if (!result.error && !result.signal && result.status === 0) return 0;
@@ -17,13 +54,19 @@ function outcome(result, label, error) {
     : 1;
 }
 
-export function runCredentialTest({
+export async function runCredentialTest({
   command,
   args = [],
   env = process.env,
   platform = process.platform,
   insideSession = false,
-  run = spawnSync,
+  run = spawn,
+  terminate = (child, signal) => {
+    if (child.pid !== undefined) process.kill(-child.pid, signal);
+  },
+  signals = process,
+  startupTimeoutMs = 10_000,
+  shutdownTimeoutMs = 1_000,
   error = console.error,
 } = {}) {
   if (!command) {
@@ -33,11 +76,37 @@ export function runCredentialTest({
   const environment = { ...env, MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1" };
   if (platform !== "linux") {
     return outcome(
-      run(command, args, { env: environment, stdio: "inherit" }),
+      await launch(command, args, { env: environment, stdio: "inherit" }, run)
+        .done,
       "test command",
       error,
     );
   }
+  const stop = async (owned, label, timeoutMs = shutdownTimeoutMs) => {
+    if (!owned?.child) return true;
+    try {
+      terminate(owned.child, "SIGTERM");
+      if (!owned.finished) {
+        await bounded(owned.done, timeoutMs);
+      }
+      terminate(owned.child, "SIGKILL");
+      if (!owned.finished) {
+        const killed = await bounded(owned.done, timeoutMs);
+        if (killed.error?.code === "ETIMEDOUT") {
+          error(`credential-test: ${label} did not exit after SIGKILL`);
+          return false;
+        }
+      }
+    } catch (failure) {
+      if (failure.code !== "ESRCH") {
+        error(
+          `credential-test: ${label} cleanup failed (${failure.code ?? "unknown"})`,
+        );
+        return false;
+      }
+    }
+    return true;
+  };
   if (!insideSession) {
     const directory = mkdtempSync(join(tmpdir(), "mindleak-credential-test-"));
     try {
@@ -51,26 +120,51 @@ export function runCredentialTest({
       delete environment.DBUS_SESSION_BUS_ADDRESS;
       delete environment.GNOME_KEYRING_CONTROL;
       delete environment.GNOME_KEYRING_PID;
-      return outcome(
-        run(
-          "dbus-run-session",
-          [
-            "--",
-            process.execPath,
-            script,
-            "--inside-session",
-            "--",
-            command,
-            ...args,
-          ],
-          {
-            env: environment,
-            stdio: "inherit",
-          },
-        ),
-        "isolated credential session",
-        error,
+      const session = launch(
+        "dbus-run-session",
+        [
+          "--",
+          process.execPath,
+          script,
+          "--inside-session",
+          "--",
+          command,
+          ...args,
+        ],
+        {
+          env: environment,
+          stdio: ["inherit", "pipe", "pipe"],
+          detached: true,
+        },
+        run,
+        "close",
       );
+      session.child?.stdout.pipe(process.stdout, { end: false });
+      session.child?.stderr.pipe(process.stderr, { end: false });
+      let interrupted;
+      const interruption = new Promise((resolve) => {
+        interrupted = resolve;
+      });
+      const interrupt = () => interrupted({ interrupted: 130 });
+      const terminateSession = () => interrupted({ interrupted: 143 });
+      signals.on("SIGINT", interrupt);
+      signals.on("SIGTERM", terminateSession);
+      try {
+        const result = await Promise.race([session.done, interruption]);
+        const stopped = await stop(
+          session,
+          "isolated credential session",
+          shutdownTimeoutMs * 5,
+        );
+        return (
+          result.interrupted ??
+          (outcome(result, "isolated credential session", error) ||
+            (stopped ? 0 : 1))
+        );
+      } finally {
+        signals.off("SIGINT", interrupt);
+        signals.off("SIGTERM", terminateSession);
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -84,30 +178,93 @@ export function runCredentialTest({
     error("credential-test: an isolated D-Bus session is required");
     return 2;
   }
-  const keyring = run(
+  environment.GNOME_KEYRING_CONTROL = join(directory, "control");
+  const keyring = launch(
     "gnome-keyring-daemon",
     [
       "--unlock",
       "--components=secrets",
-      "--daemonize",
+      "--foreground",
       "--control-directory",
       join(directory, "control"),
     ],
     {
       env: environment,
-      input: "\n",
-      encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
-      timeout: 10000,
+      detached: true,
     },
+    run,
   );
-  const started = outcome(keyring, "test keyring startup", error);
-  if (started !== 0) return started;
-  return outcome(
-    run(command, args, { env: environment, stdio: "inherit" }),
-    "test command",
-    error,
-  );
+  let interrupted;
+  const interruption = new Promise((resolve) => {
+    interrupted = resolve;
+  });
+  const interrupt = () => interrupted({ interrupted: 130 });
+  const terminateSession = () => interrupted({ interrupted: 143 });
+  signals.on("SIGINT", interrupt);
+  signals.on("SIGTERM", terminateSession);
+  let tests;
+  let code = 1;
+  try {
+    const ready = new Promise((resolve) => {
+      keyring.child?.stdout.once("end", () => resolve({ ready: true }));
+    });
+    const inputFailed = new Promise((resolve) => {
+      keyring.child?.stdin.once("error", (error) => resolve({ error }));
+    });
+    keyring.child?.stdout.resume();
+    keyring.child?.stderr.resume();
+    keyring.child?.stdin.end("\n");
+    const started = await bounded(
+      Promise.race([ready, keyring.done, inputFailed, interruption]),
+      startupTimeoutMs,
+    );
+    if (started.interrupted) {
+      code = started.interrupted;
+    } else if (!started.ready || keyring.finished) {
+      code = outcome(
+        started.ready ? await keyring.done : started,
+        "test keyring startup",
+        error,
+      );
+      if (code === 0) {
+        error("credential-test: test keyring exited before readiness (exit 0)");
+        code = 1;
+      }
+    } else {
+      tests = launch(
+        command,
+        args,
+        { env: environment, stdio: "inherit", detached: true },
+        run,
+      );
+      const result = await Promise.race([
+        tests.done.then((result) => ({ ...result, origin: "tests" })),
+        keyring.done.then((result) => ({ ...result, origin: "keyring" })),
+        interruption,
+      ]);
+      code =
+        result.interrupted ??
+        outcome(
+          result,
+          result.origin === "keyring"
+            ? "test keyring exited during tests"
+            : "test command",
+          error,
+        );
+      if (result.origin === "keyring" && code === 0) {
+        error("credential-test: test keyring exited during tests (exit 0)");
+        code = 1;
+      }
+    }
+  } finally {
+    const testsStopped = await stop(tests, "test process group");
+    const keyringStopped = await stop(keyring, "test keyring");
+    if (!testsStopped || !keyringStopped) code ||= 1;
+    signals.off("SIGINT", interrupt);
+    signals.off("SIGTERM", terminateSession);
+  }
+  return code;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
@@ -120,7 +277,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     );
     process.exitCode = 2;
   } else {
-    process.exitCode = runCredentialTest({
+    process.exitCode = await runCredentialTest({
       command: args.shift(),
       args,
       insideSession,
