@@ -210,6 +210,8 @@ impl Projector {
 }
 
 mod authentication;
+#[cfg(test)]
+mod embedding_concurrency_tests;
 mod embeddings;
 mod neighborhood;
 mod ranking;
@@ -383,12 +385,31 @@ pub(crate) mod tests {
             .await
             .expect("rebuild projects the node");
 
-        let embedding = pgvector::Vector::from(vec![0.1_f32; 768]);
-        let connection = projector
-            .connection()
+        let stored = round_trip_embedding(&projector, &tenant, &repo)
             .await
-            .expect("checkout connection for sabotage insert");
-        connection
+            .expect("embedding for an existing projected node is accepted");
+        assert_eq!(stored.as_slice(), vec![0.1_f32; 768].as_slice());
+    }
+
+    pub(super) async fn round_trip_embedding(
+        projector: &Projector,
+        tenant: &str,
+        repo: &str,
+    ) -> Result<pgvector::Vector, ProjectionError> {
+        let embedding = pgvector::Vector::from(vec![0.1_f32; 768]);
+        let mut connection = projector.connection().await?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+            .start()
+            .await?;
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+                &[&format!("mindleak.projection:{tenant}"), &repo],
+            )
+            .await?;
+        transaction
             .execute(
                 "INSERT INTO projected_node_embeddings \
                  (tenant_id, repository_id, node_id, model, embedding) \
@@ -401,19 +422,17 @@ pub(crate) mod tests {
                     &embedding,
                 ],
             )
-            .await
-            .expect("embedding for an existing projected node is accepted");
+            .await?;
 
-        let row = connection
+        let row = transaction
             .query_one(
                 "SELECT embedding FROM projected_node_embeddings \
                  WHERE tenant_id = $1 AND repository_id = $2 AND node_id = $3 AND model = $4",
                 &[&tenant, &repo, &"artifact:src/lib.rs", &"nomic-embed-text"],
             )
-            .await
-            .expect("the embedding is readable back");
-        let stored: pgvector::Vector = row.get(0);
-        assert_eq!(stored.as_slice(), vec![0.1_f32; 768].as_slice());
+            .await?;
+        transaction.commit().await?;
+        Ok(row.get(0))
     }
 
     /// A vector describes exactly one node, so it must not outlive it (the
