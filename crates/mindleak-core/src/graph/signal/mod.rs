@@ -79,7 +79,9 @@ impl GraphStore {
     fn signal_evidence_for(&self, raw: &RawEdge, now: i64) -> Result<SignalEvidence> {
         let mut evidence = SignalEvidence {
             reinforcement_count: raw.reinforcement_count,
-            reinforcement_span_hours: ((raw.updated_at - raw.first_seen) as f64 / 3600.0).max(0.0),
+            reinforcement_span_hours: (raw.updated_at.saturating_sub(raw.first_seen) as f64
+                / 3600.0)
+                .max(0.0),
             ..SignalEvidence::default()
         };
         if !matches!(

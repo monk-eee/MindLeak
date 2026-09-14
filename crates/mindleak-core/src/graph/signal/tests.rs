@@ -5,6 +5,51 @@ use crate::graph::test_support::*;
 use crate::graph::{ArtifactStub, Direction, GraphStore, SignalCandidate};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
+// Extreme persisted timestamps panicked before decay evaluation in debug builds
+// and wrapped the reinforcement span in release builds, changing signal lifetime.
+#[test]
+fn reinforcement_spans_do_not_overflow_or_turn_reversed_time_into_signal() {
+    for (first_seen, updated_at, expected_span) in [
+        (i64::MIN, i64::MAX, i64::MAX as f64 / 3600.0),
+        (i64::MAX, i64::MIN, 0.0),
+        (NOW - 72 * HOUR, NOW, 72.0),
+        (NOW, NOW - HOUR, 0.0),
+    ] {
+        let graph = store();
+        add_node(&graph, "artifact:source", NodeType::Artifact, "source", NOW);
+        add_node(&graph, "artifact:target", NodeType::Artifact, "target", NOW);
+        let mut edge = Edge::new(
+            "artifact:source",
+            "artifact:target",
+            RelationType::Modified,
+            first_seen,
+        );
+        graph.upsert_edge(&edge).unwrap();
+        edge.updated_at = updated_at;
+        graph.upsert_edge(&edge).unwrap();
+        graph.upsert_edge(&edge).unwrap();
+
+        let evidence = graph.signal_evidence(&edge, updated_at).unwrap();
+        assert_eq!(evidence.reinforcement_count, 3);
+        assert_eq!(evidence.reinforcement_span_hours, expected_span);
+        let weighted = graph
+            .traverse(
+                &[edge.source_id.clone()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                updated_at,
+            )
+            .unwrap();
+        assert_eq!(weighted.edges.len(), 1);
+        assert!(weighted.edges[0].effective.is_finite());
+        assert_eq!(
+            weighted.edges[0].signal_multiplier > 1.0,
+            expected_span >= 48.0
+        );
+    }
+}
+
 #[test]
 fn decay_policy_retroactively_overrides_the_stored_half_life() {
     let graph = store();
