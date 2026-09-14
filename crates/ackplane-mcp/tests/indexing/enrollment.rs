@@ -18,12 +18,13 @@ pub async fn activate(
     endpoint: &str,
     tenant_id: &str,
     repository_id: &str,
+    seed: &[u8; 32],
 ) -> SigningBinding {
-    let request_id = format!("{repository_id}-request");
-    let node_id = format!("{repository_id}-node");
-    let key = SigningKey::from_bytes(&SEED);
+    let key = SigningKey::from_bytes(seed);
     let public_key = key.verifying_key().to_bytes().to_vec();
     let fingerprint = public_key_fingerprint(&public_key);
+    let request_id = format!("{repository_id}-{fingerprint}-request");
+    let node_id = format!("{repository_id}-{fingerprint}-node");
     let capabilities = vec!["synchronize".to_string(), "mcp-front-door".to_string()];
     let now = OffsetDateTime::now_utc();
     let mut client = NodeEnrollmentServiceClient::connect(endpoint.to_string())

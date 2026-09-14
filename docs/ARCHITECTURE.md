@@ -677,8 +677,8 @@ mirrored, not shared with claims', so the two domains' replay protection and
 signed-byte encodings can never collide or drift into each other.
 
 `ProjectionEmbeddingService` (`projection_embedding_service/`, ADR-0148)
-exposes `ListMissingProjectionEmbeddings` and `PublishProjectionEmbedding` over
-the existing projection store. Both calls require the enrolled node's own
+exposes `ListMissingProjectionEmbeddings`, `PublishProjectionEmbedding` and
+`RecallProjectedNodes` over the existing projection store. All calls require the enrolled node's own
 tenant/repository binding, a fresh timestamp and a single-use 16-byte nonce.
 `projection_embedding_auth` signs the operation, model, exact source label and
 every vector component in a separate domain; migration `0068` supplies its
@@ -697,7 +697,7 @@ retried through the companion with fresh authentication and the same source
 snapshot. An exact authentication replay is always refused.
 
 `ackplane-node::companion::embeddings` owns signing and dispatch for the closed
-`ProjectionEmbeddingsMissing` and `ProjectionEmbeddingPublish` IPC operations.
+`ProjectionEmbeddingsMissing`, `ProjectionEmbeddingPublish` and `ProjectionRecall` IPC operations.
 Callers use `NodeClient::protobuf`; they supply no private key, authentication
 envelope or alternate scope. Ackplane performs no inference. These calls make
 the optional producer path usable. `ackplane-mcp::tools::embeddings` now runs
@@ -707,9 +707,28 @@ the whole batch, and publish via the companion. Confirmed writes, attempted
 writes and stale-source refusals are counted separately. Work and time budgets
 plus repeated-source detection bound retries; incomplete results preserve
 progress without claiming an unknown write succeeded. No local graph is opened
-and no model client is added to Ackplane. Background scheduling and the end-user
-recall surface remain unfinished; an empty missing-source page is not a recall
-verdict or a statement of projection freshness.
+and no model client is added to Ackplane. Background scheduling remains absent;
+an empty missing-source page is not a recall verdict or a statement of freshness.
+
+`projection/recall.rs` reads the scoped structural ledger position, projection
+checkpoint, per-model vector coverage and candidates inside one read-only
+repeatable-read transaction. `embeddings::read_candidates` is the existing
+pgvector query shared by this path and `similar_nodes`; `ranking::rank` retains
+the kind prior, distinctive-field cut and raw-score contract. A stale or absent
+projection never returns hits. Empty, not-yet-projected, stale, unembedded,
+partially embedded and current are explicit states, with optional checkpoints
+preserving absent versus zero. No extra stored freshness flag is introduced.
+
+`projection_embedding_service/recall.rs` authenticates the closed operation and
+renders bounded, whole-hit responses with snapshot metadata. Its signing bytes
+bind query vector, model, floor and limit; an empty vector is a status probe.
+`ackplane-mcp::tools::embeddings::recall` probes before optionally embedding a
+query, reuses the indexer's node-side HTTP client, then asks the server to rank
+at most 200 candidates. It reports empty/unindexed/stale states without model
+calls and represents a model or RPC failure as unavailable rather than no match.
+Two independently enrolled consumers can recall the same indexed repository.
+The snapshot barrier test proves a concurrent rebuild cannot combine old
+coverage with new hits; changing isolation to read-committed fails that test.
 
 A recorded statement's `lifecycle_state` (`KnowledgeLifecycleState`,
 `knowledge_store/activation.rs`) starts as `Candidate` and is never implicit
