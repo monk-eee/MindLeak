@@ -222,14 +222,32 @@ impl MaterializationStore {
         validate_request(&request)?;
         request.work_task_ids.sort_unstable();
 
-        if let Some(existing) = self
-            .find_by_idempotency_key(
-                &request.tenant_id,
-                &request.repository_id,
-                &request.design_id,
-                &request.idempotency_key,
+        let mut connection = self.connection().await?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+            .start()
+            .await?;
+        transaction
+            .query_opt(
+                "SELECT design_id FROM industrial_designs \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
+                 FOR NO KEY UPDATE",
+                &[
+                    &request.tenant_id,
+                    &request.repository_id,
+                    &request.design_id,
+                ],
             )
-            .await?
+            .await?;
+        if let Some(existing) = Self::find_by_idempotency_key(
+            &transaction,
+            &request.tenant_id,
+            &request.repository_id,
+            &request.design_id,
+            &request.idempotency_key,
+        )
+        .await?
         {
             let matches = existing.actor == request.actor
                 && existing.rationale == request.rationale
@@ -243,6 +261,7 @@ impl MaterializationStore {
                     idempotency_key: request.idempotency_key,
                 });
             }
+            transaction.commit().await?;
             return Ok(existing);
         }
 
@@ -258,8 +277,6 @@ impl MaterializationStore {
             serde_json::to_vec(&payload).expect("MaterializationPayload always serializes");
         let payload_digest = Sha256::digest(&payload_bytes).to_vec();
 
-        let mut connection = self.connection().await?;
-        let transaction = connection.transaction().await?;
         let next_revision: i64 = transaction
             .query_one(
                 "SELECT COALESCE(MAX(revision_number), 0) + 1 \
@@ -336,6 +353,7 @@ mod query;
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod concurrency;
     mod work_references;
 
     use crate::constitution_store::{
@@ -359,65 +377,76 @@ mod tests {
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repository");
         let design_id = unique_id("design");
-        let version_id = unique_id("version");
+        Fixture::create(database_url, tenant_id, repository_id, design_id).await
+    }
 
-        let constitution_store =
-            ConstitutionStore::connect(&crate::test_support::gated_test_pool())
-                .await
-                .unwrap();
-        constitution_store
-            .record_publication(RecordConstitutionPublicationRequest {
-                tenant_id: tenant_id.clone(),
-                repository_id: repository_id.clone(),
-                version_id: version_id.clone(),
-                schema_version: "v1".to_string(),
-                status: "active".to_string(),
-                clauses: vec![ClauseSnapshot {
-                    id: "clause-a".to_string(),
-                    slug: "clause-a-slug".to_string(),
-                    kind: "constraint".to_string(),
-                    title: "a clause".to_string(),
-                    statement: "a statement".to_string(),
+    impl Fixture {
+        async fn create(
+            database_url: &str,
+            tenant_id: String,
+            repository_id: String,
+            design_id: String,
+        ) -> Self {
+            let version_id = unique_id("version");
+
+            let constitution_store =
+                ConstitutionStore::connect(&crate::test_support::gated_test_pool())
+                    .await
+                    .unwrap();
+            constitution_store
+                .record_publication(RecordConstitutionPublicationRequest {
+                    tenant_id: tenant_id.clone(),
+                    repository_id: repository_id.clone(),
+                    version_id: version_id.clone(),
+                    schema_version: "v1".to_string(),
                     status: "active".to_string(),
-                    consequence: None,
-                    scope: None,
-                    rationale: None,
-                }],
-                source_reference: None,
-                source_digest: None,
-                published_at: SystemTime::now(),
-            })
-            .await
-            .expect("recording the fixture publication should succeed");
+                    clauses: vec![ClauseSnapshot {
+                        id: "clause-a".to_string(),
+                        slug: "clause-a-slug".to_string(),
+                        kind: "constraint".to_string(),
+                        title: "a clause".to_string(),
+                        statement: "a statement".to_string(),
+                        status: "active".to_string(),
+                        consequence: None,
+                        scope: None,
+                        rationale: None,
+                    }],
+                    source_reference: None,
+                    source_digest: None,
+                    published_at: SystemTime::now(),
+                })
+                .await
+                .expect("recording the fixture publication should succeed");
 
-        let design_store = DesignStore::connect(
-            &crate::db_pool::build_pool(database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
-                .expect("the test database url should build a pool"),
-        )
-        .await
-        .unwrap();
-        design_store
-            .create_design(CreateDesignRequest {
-                tenant_id: tenant_id.clone(),
-                repository_id: repository_id.clone(),
-                design_id: design_id.clone(),
-                title: "a design".to_string(),
-                summary: "a summary".to_string(),
-                source_version: "v1".to_string(),
-                constitution_version_id: None,
-                work_task_id: None,
-                evidence_id: None,
-                proposed_by: "agent:test".to_string(),
-                display_label: None,
-            })
+            let design_store = DesignStore::connect(
+                &crate::db_pool::build_pool(database_url, crate::db_pool::TEST_POOL_MAX_SIZE)
+                    .expect("the test database url should build a pool"),
+            )
             .await
-            .expect("creating the fixture design should succeed");
+            .unwrap();
+            design_store
+                .create_design(CreateDesignRequest {
+                    tenant_id: tenant_id.clone(),
+                    repository_id: repository_id.clone(),
+                    design_id: design_id.clone(),
+                    title: "a design".to_string(),
+                    summary: "a summary".to_string(),
+                    source_version: "v1".to_string(),
+                    constitution_version_id: None,
+                    work_task_id: None,
+                    evidence_id: None,
+                    proposed_by: "agent:test".to_string(),
+                    display_label: None,
+                })
+                .await
+                .expect("creating the fixture design should succeed");
 
-        Fixture {
-            tenant_id,
-            repository_id,
-            design_id,
-            constitution_version_id: version_id,
+            Fixture {
+                tenant_id,
+                repository_id,
+                design_id,
+                constitution_version_id: version_id,
+            }
         }
     }
 
