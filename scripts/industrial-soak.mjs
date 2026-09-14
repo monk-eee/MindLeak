@@ -1,8 +1,16 @@
 import { performance } from "node:perf_hooks";
 import { execFileSync, spawnSync } from "node:child_process";
-import { closeSync, fsyncSync, mkdirSync, openSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { setImmediate as yieldToSignals } from "node:timers/promises";
 
@@ -294,7 +302,11 @@ async function main() {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+if (
+  process.argv[1] &&
+  existsSync(process.argv[1]) &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
   main().catch((error) => {
     console.error(
       error instanceof SetupError
