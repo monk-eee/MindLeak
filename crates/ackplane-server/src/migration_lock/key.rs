@@ -202,6 +202,7 @@ pub(crate) const WORK_EVENT_POSITIONS: i64 = 65;
 /// completion). `migration-audit --next` selected 66 from committed
 /// source; no live discrepancy above 65.
 pub(crate) const DELEGATED_CLAIM_PARKED: i64 = 66;
+pub(crate) const DELEGATED_CLAIM_NODE_CUSTODY: i64 = 67;
 /// Not a real schema migration -- reserved so it can never collide with
 /// one (every real key above is non-negative, allocated by
 /// `migration-audit.mjs --next`). Its presence as a row in
