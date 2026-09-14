@@ -2,15 +2,13 @@ use super::*;
 
 impl MaterializationStore {
     pub(super) async fn find_by_idempotency_key(
-        &self,
+        connection: &impl deadpool_postgres::GenericClient,
         tenant_id: &str,
         repository_id: &str,
         design_id: &str,
         idempotency_key: &str,
     ) -> Result<Option<MaterializationRevision>, MaterializationStoreError> {
-        let Some(row) = self
-            .connection()
-            .await?
+        let Some(row) = connection
             .query_opt(
                 "SELECT revision_number, actor, rationale, constitution_version_id, goal_ids, \
                         payload_digest, recorded_at, display_label \
@@ -24,9 +22,14 @@ impl MaterializationStore {
             return Ok(None);
         };
         let revision_number: i64 = row.get(0);
-        let work_task_ids = self
-            .work_task_ids_for(tenant_id, repository_id, design_id, revision_number)
-            .await?;
+        let work_task_ids = Self::work_task_ids_for(
+            connection,
+            tenant_id,
+            repository_id,
+            design_id,
+            revision_number,
+        )
+        .await?;
         Ok(Some(MaterializationRevision {
             design_id: design_id.to_string(),
             revision_number,
@@ -43,15 +46,13 @@ impl MaterializationStore {
     }
 
     pub(super) async fn work_task_ids_for(
-        &self,
+        connection: &impl deadpool_postgres::GenericClient,
         tenant_id: &str,
         repository_id: &str,
         design_id: &str,
         revision_number: i64,
     ) -> Result<Vec<String>, MaterializationStoreError> {
-        let rows = self
-            .connection()
-            .await?
+        let rows = connection
             .query(
                 "SELECT work_task_id FROM industrial_design_materialization_work_tasks \
                  WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \

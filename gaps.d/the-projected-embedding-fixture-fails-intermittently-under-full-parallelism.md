@@ -43,3 +43,23 @@
   PR #948 merged on 2026-09-14; no assertion, constraint or database gate was
   weakened. Root cause remains
   unresolved and must not be treated as a clean readiness qualification.
+
+  **Related production defect reproduced and fixed 2026-09-14:**
+  `projection::rebuild::concurrency::a_delayed_stale_scan_does_not_discard_newly_indexed_vectors`
+  pauses `Projector::rebuild_stale` inside its initial scan using a private
+  connection-local PostgreSQL view and advisory barrier. Another projector then
+  catches up the same repository and stores its vector. Resuming the original
+  scan previously repeated the full rebuild and deleted that newly stored vector.
+  The assertion failed before the fix and passed afterward. Rebuilds now
+  serialize by tenant/repository; background work rechecks the checkpoint inside
+  that transaction before deleting anything. A redundant pass preserves vectors
+  and the original projection timestamp and reports zero actual rebuilds.
+  Separate tests prove unrelated repositories can progress and explicit rebuilds
+  still invalidate derived vectors. The 40-test projection slice passed with
+  normal parallel execution against a disposable database.
+
+  **OPEN residual:** this proves stale-scan vector loss, not the exact cause of
+  the earlier SQLSTATE `23503` failure. That fixture's foreign-key failure was
+  not reproduced by the controlled interleaving. Preserve the earlier evidence;
+  do not claim that passing this regression certifies the intermittent CI issue
+  or the separately running endurance candidate.
