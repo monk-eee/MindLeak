@@ -105,6 +105,23 @@ jobs:
         env:
           MINDLEAK_REQUIRE_CREDENTIAL_FACILITY: "1"
         run: cargo test --locked -p ackplane-server --test register_me_enrollment native_cli_request_recovers_the_same_credential_without_a_seed_file -- --nocapture
+      - name: Setup Node for host archive verification
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Install host archive dependencies
+        run: node ../../scripts/npm-ci-retry.mjs
+        working-directory: editors/vscode
+      - name: Test host archive contracts
+        run: node --test scripts/install-servers.test.mjs scripts/industrial-bundle.test.mjs scripts/release-federation.test.mjs
+      - name: Verify ZIP executable modes
+        run: npm --prefix editors/vscode test -- scripts/package-bundle.test.mjs
+      - name: Build and smoke Industrial host archive
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: node scripts/industrial-bundle.mjs
       # gaps.d/the-credential-facility-signer-is-unverified-outside-windows.md:
       # this test already prints which branch it took, but a passing test's
       # stdout is otherwise discarded, so the distinction was invisible here.
