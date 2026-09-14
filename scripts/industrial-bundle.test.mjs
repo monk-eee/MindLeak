@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { isolatedGit } from "./adr-files.mjs";
 import { packageIndustrialBundle } from "./industrial-bundle.mjs";
 import {
   INDUSTRIAL_BINARIES,
@@ -57,7 +58,15 @@ function fixture(context, target = "x86_64-unknown-linux-gnu") {
       return binary.endsWith("-mcp")
         ? JSON.stringify({
             id: 1,
-            result: { serverInfo: { name: binary, version: "0.1.7-alpha" } },
+            result: {
+              serverInfo: {
+                name: binary,
+                version:
+                  binary === "ackplane-mcp"
+                    ? "0.1.7-alpha"
+                    : "0.1.7-alpha+aaaaaaaaaaaa",
+              },
+            },
           })
         : "usage: fixture";
     }
@@ -169,6 +178,103 @@ test("dirty source refuses before building or creating an archive", (context) =>
   );
   assert.equal(setup.calls.length, 0);
   assert.ok(!fs.existsSync(path.join(setup.root, "dist")));
+});
+
+test("archive source checks ignore inherited Git pointers and refuse dirty or unreadable input", (context) => {
+  const candidate = fixture(context).root;
+  const foreign = fixture(context).root;
+  for (const directory of [candidate, foreign]) {
+    assert.notEqual(isolatedGit(["init", "--quiet"], directory), null);
+    fs.writeFileSync(path.join(directory, "source.txt"), `${directory}\n`);
+    assert.notEqual(isolatedGit(["add", "."], directory), null);
+    assert.notEqual(
+      isolatedGit(
+        [
+          "-c",
+          "user.name=Bundle Test",
+          "-c",
+          "user.email=bundle@example.invalid",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "--quiet",
+          "-m",
+          "fixture",
+        ],
+        directory,
+      ),
+      null,
+    );
+  }
+  const revision = isolatedGit(["rev-parse", "HEAD"], candidate);
+  const metadata = isolatedGit(["rev-parse", "--absolute-git-dir"], foreign);
+  const program = `
+    import { execFileSync } from "node:child_process";
+    import { packageIndustrialBundle } from ${JSON.stringify(new URL("./industrial-bundle.mjs", import.meta.url).href)};
+    let revision;
+    try {
+      packageIndustrialBundle({ workspace: process.argv[1] }, (command, args, options) => {
+        if (command === "git") {
+          const output = execFileSync(command, args, options);
+          if (args[0] === "rev-parse") revision = output.trim();
+          return output;
+        }
+        const childRevision = execFileSync("git", ["rev-parse", "HEAD"], options).trim();
+        console.log(JSON.stringify({ revision, childRevision }));
+        throw new Error("probe stopped before Cargo");
+      });
+    } catch (error) {
+      if (error.message !== "probe stopped before Cargo") {
+        console.error(error.message);
+        process.exitCode = 1;
+      }
+    }
+  `;
+  const inspect = () =>
+    spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", program, candidate],
+      {
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          GIT_DIR: metadata,
+          GIT_COMMON_DIR: metadata,
+          GIT_WORK_TREE: foreign,
+          GIT_INDEX_FILE: path.join(metadata, "index"),
+          GIT_OBJECT_DIRECTORY: path.join(metadata, "objects"),
+          GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(metadata, "objects"),
+        },
+      },
+    );
+
+  // Foreign Git pointers mislabeled archives and hid dirty source from the build guard.
+  const clean = inspect();
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.deepEqual(JSON.parse(clean.stdout), {
+    revision,
+    childRevision: revision,
+  });
+  for (const file of ["source.txt", "untracked.txt"]) {
+    fs.writeFileSync(path.join(candidate, file), "changed\n");
+    const dirty = inspect();
+    assert.equal(dirty.status, 1, dirty.stderr);
+    assert.equal(dirty.stdout, "");
+    assert.match(dirty.stderr, /clean committed checkout/);
+    if (file === "source.txt") {
+      fs.writeFileSync(path.join(candidate, file), `${candidate}\n`);
+    } else {
+      fs.rmSync(path.join(candidate, file));
+    }
+  }
+  fs.rmSync(path.join(candidate, ".git"), { recursive: true, force: true });
+  const unreadable = inspect();
+  assert.equal(unreadable.status, 1, unreadable.stderr);
+  assert.equal(unreadable.stdout, "");
+  assert.match(unreadable.stderr, /cannot read Industrial source checkout/);
+  assert.ok(!fs.existsSync(path.join(candidate, "dist")));
+  assert.equal(isolatedGit(["status", "--porcelain"], foreign), "");
 });
 
 test("source changes during a build cannot be labeled with the original revision", (context) => {
@@ -327,4 +433,27 @@ test("an MCP binary identifying another version cannot enter the bundle", (conte
     /unexpected installed MCP identity/,
   );
   assert.deepEqual(fs.readdirSync(path.join(setup.root, "dist")), []);
+});
+
+test("an MCP binary with a missing or foreign build revision cannot enter the bundle", (context) => {
+  for (const binary of ["mindleak-mcp", "lodestar-mcp"]) {
+    for (const version of ["0.1.7-alpha", "0.1.7-alpha+bbbbbbbbbbbb"]) {
+      const setup = fixture(context);
+      // Version-only smoke checks accepted executables built with a foreign source identity.
+      assert.throws(
+        () =>
+          packageIndustrialBundle(setup.options, (command, args, options) => {
+            if (path.basename(command) === binary) {
+              return JSON.stringify({
+                id: 1,
+                result: { serverInfo: { name: binary, version } },
+              });
+            }
+            return setup.execute(command, args, options);
+          }),
+        /unexpected installed MCP source revision/,
+      );
+      assert.deepEqual(fs.readdirSync(path.join(setup.root, "dist")), []);
+    }
+  }
 });

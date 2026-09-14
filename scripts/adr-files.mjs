@@ -37,17 +37,25 @@ const GIT_REPOSITORY_VARIABLES = [
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
 ];
 
+export const gitEnvironment = (environment = process.env) => {
+  const isolated = { ...environment };
+  for (const variable of GIT_REPOSITORY_VARIABLES) delete isolated[variable];
+  return isolated;
+};
+
 /** git, run against `cwd` only, deaf to inherited repository pointers. */
-export const isolatedGit = (gitArgs, cwd = process.cwd()) => {
+export const isolatedGit = (
+  gitArgs,
+  cwd = process.cwd(),
+  execute = execFileSync,
+) => {
   try {
-    const isolated = { ...process.env };
-    for (const variable of GIT_REPOSITORY_VARIABLES) delete isolated[variable];
-    return execFileSync("git", gitArgs, {
+    return execute("git", gitArgs, {
       cwd,
       encoding: "utf8",
       stdio: "pipe",
       maxBuffer: 1 << 26,
-      env: isolated,
+      env: gitEnvironment(),
     }).trim();
   } catch {
     return null;
@@ -127,14 +135,12 @@ export const readAdrFiles = (dir = ADR_DIR) =>
  */
 const readBlobs = (shas, cwd) => {
   if (shas.length === 0) return new Map();
-  const isolated = { ...process.env };
-  for (const variable of GIT_REPOSITORY_VARIABLES) delete isolated[variable];
   const out = execFileSync("git", ["cat-file", "--batch"], {
     cwd,
     input: `${shas.join("\n")}\n`,
     stdio: "pipe",
     maxBuffer: 1 << 28,
-    env: isolated,
+    env: gitEnvironment(),
   });
 
   const blobs = new Map();

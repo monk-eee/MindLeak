@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { gitEnvironment, isolatedGit } from "./adr-files.mjs";
 import {
   INDUSTRIAL_BINARIES,
   executableName,
@@ -31,11 +32,20 @@ export function packageIndustrialBundle(
   }
   const { platform, arch } = TARGETS[target];
   workspace = path.resolve(workspace);
-  const capture = (command, args) =>
-    execute(command, args, {
-      cwd: workspace,
-      encoding: "utf8",
-    }).trim();
+  const capture = (command, args) => {
+    const output =
+      command === "git"
+        ? isolatedGit(args, workspace, execute)
+        : execute(command, args, {
+            cwd: workspace,
+            encoding: "utf8",
+            env: gitEnvironment(),
+          }).trim();
+    if (output === null) {
+      throw new Error("cannot read Industrial source checkout with Git");
+    }
+    return output;
+  };
   const clean = (excludedDirectory) => {
     const relative =
       excludedDirectory && path.relative(workspace, excludedDirectory);
@@ -100,7 +110,7 @@ export function packageIndustrialBundle(
       "--features",
       "mindleak-mcp/federation-client,lodestar-mcp/federation-client",
     ],
-    { cwd: workspace, stdio: "inherit" },
+    { cwd: workspace, stdio: "inherit", env: gitEnvironment() },
   );
   clean();
   if (capture("git", ["rev-parse", "HEAD"]) !== revision) {
@@ -181,6 +191,14 @@ export function packageIndustrialBundle(
             identity.version?.split("+")[0] !== version
           ) {
             throw new Error(`unexpected installed MCP identity for ${binary}`);
+          }
+          if (
+            (binary === "mindleak-mcp" || binary === "lodestar-mcp") &&
+            identity.version !== `${version}+${revision.slice(0, 12)}`
+          ) {
+            throw new Error(
+              `unexpected installed MCP source revision for ${binary}`,
+            );
           }
         } else {
           let output;
@@ -265,7 +283,7 @@ export function packageIndustrialBundle(
         "LICENSE",
         "README.txt",
       ],
-      { cwd: workspace, stdio: "inherit" },
+      { cwd: workspace, stdio: "inherit", env: gitEnvironment() },
     );
     clean(staging);
     if (capture("git", ["rev-parse", "HEAD"]) !== revision) {
