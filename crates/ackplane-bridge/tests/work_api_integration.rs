@@ -202,6 +202,7 @@ async fn work_list_and_board_doctor_report_a_real_task_and_an_orphan_claim() {
                 repository_id: repository_id.clone(),
                 task_id: orphan_task_id.clone(),
                 owner_id: "owner-1".to_owned(),
+                node_id: "work-claims-test-node".into(),
                 branch: "claims-only".to_owned(),
                 lease: std::time::Duration::from_secs(3600),
                 paths: vec!["crates/ackplane-bridge/src/work_api.rs".to_owned()],

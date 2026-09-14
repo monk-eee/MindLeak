@@ -7,7 +7,7 @@ use ackplane_protocol::v1;
 use tonic::{Request, Response, Status};
 
 use crate::claim_signature::{self, ClaimAuthRefusal};
-use crate::claim_store::{ClaimRecoverRequest, ClaimStore};
+use crate::claim_store::{ClaimOwner, ClaimRecoverRequest, ClaimStore};
 
 pub struct ClaimDelegationService {
     /// No `Mutex`: every `ClaimStore` method takes `&self` since ADR-0143, and
@@ -36,7 +36,7 @@ impl ClaimDelegationService {
         owner_id: &str,
         operation: &ClaimOperation<'_>,
         authentication: Option<&v1::ClaimAuthentication>,
-    ) -> Result<(), Status> {
+    ) -> Result<String, Status> {
         let Some(authentication) = authentication else {
             return Err(Status::unauthenticated(
                 ClaimAuthRefusal::Unsigned.diagnostic(),
@@ -89,7 +89,7 @@ impl ClaimDelegationService {
                 ClaimAuthRefusal::Replayed.diagnostic(),
             ));
         }
-        Ok(())
+        Ok(authentication.node_id.clone())
     }
 }
 
@@ -106,16 +106,17 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             paths: &wire.paths,
             symbols: &wire.symbols,
         };
-        self.authenticate(
-            &wire.tenant_id,
-            &wire.repository_id,
-            &wire.task_id,
-            &wire.owner_id,
-            &operation,
-            wire.authentication.as_ref(),
-        )
-        .await?;
-        let request = request_from_wire(wire).map_err(Status::invalid_argument)?;
+        let node_id = self
+            .authenticate(
+                &wire.tenant_id,
+                &wire.repository_id,
+                &wire.task_id,
+                &wire.owner_id,
+                &operation,
+                wire.authentication.as_ref(),
+            )
+            .await?;
+        let request = request_from_wire(wire, node_id).map_err(Status::invalid_argument)?;
         let result = self
             .store
             .delegate(&request, std::time::SystemTime::now())
@@ -137,22 +138,26 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
         let task_id = required(request.task_id, "task_id").map_err(Status::invalid_argument)?;
         let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
-        self.authenticate(
-            &tenant_id,
-            &repository_id,
-            &task_id,
-            &owner_id,
-            &ClaimOperation::Release,
-            request.authentication.as_ref(),
-        )
-        .await?;
+        let node_id = self
+            .authenticate(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                &owner_id,
+                &ClaimOperation::Release,
+                request.authentication.as_ref(),
+            )
+            .await?;
         let released = self
             .store
             .release(
                 &tenant_id,
                 &repository_id,
                 &task_id,
-                &owner_id,
+                ClaimOwner {
+                    owner_id: &owner_id,
+                    node_id: &node_id,
+                },
                 std::time::SystemTime::now(),
             )
             .await
@@ -174,17 +179,18 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
         let task_id = required(request.task_id, "task_id").map_err(Status::invalid_argument)?;
         let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
-        self.authenticate(
-            &tenant_id,
-            &repository_id,
-            &task_id,
-            &owner_id,
-            &ClaimOperation::Renew {
-                lease_seconds: request.lease_seconds,
-            },
-            request.authentication.as_ref(),
-        )
-        .await?;
+        let node_id = self
+            .authenticate(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                &owner_id,
+                &ClaimOperation::Renew {
+                    lease_seconds: request.lease_seconds,
+                },
+                request.authentication.as_ref(),
+            )
+            .await?;
         let lease = Duration::from_secs(request.lease_seconds);
         if lease.is_zero() {
             return Err(Status::invalid_argument(
@@ -197,7 +203,10 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
                 &tenant_id,
                 &repository_id,
                 &task_id,
-                &owner_id,
+                ClaimOwner {
+                    owner_id: &owner_id,
+                    node_id: &node_id,
+                },
                 lease,
                 std::time::SystemTime::now(),
             )
@@ -222,22 +231,23 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.expected_owner, "expected_owner").map_err(Status::invalid_argument)?;
         let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
         let branch = required(request.branch, "branch").map_err(Status::invalid_argument)?;
-        self.authenticate(
-            &tenant_id,
-            &repository_id,
-            &task_id,
-            &owner_id,
-            &ClaimOperation::Recover {
-                expected_owner: &expected_owner,
-                branch: &branch,
-                lease_seconds: request.lease_seconds,
-                paths: &request.paths,
-                symbols: &request.symbols,
-                reason: &request.reason,
-            },
-            request.authentication.as_ref(),
-        )
-        .await?;
+        let node_id = self
+            .authenticate(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                &owner_id,
+                &ClaimOperation::Recover {
+                    expected_owner: &expected_owner,
+                    branch: &branch,
+                    lease_seconds: request.lease_seconds,
+                    paths: &request.paths,
+                    symbols: &request.symbols,
+                    reason: &request.reason,
+                },
+                request.authentication.as_ref(),
+            )
+            .await?;
         let lease = Duration::from_secs(request.lease_seconds);
         if lease.is_zero() {
             return Err(Status::invalid_argument(
@@ -253,6 +263,7 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
                     task_id,
                     expected_owner,
                     owner_id,
+                    node_id,
                     reason: request.reason,
                     branch,
                     lease,
@@ -301,22 +312,26 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
         let task_id = required(request.task_id, "task_id").map_err(Status::invalid_argument)?;
         let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
-        self.authenticate(
-            &tenant_id,
-            &repository_id,
-            &task_id,
-            &owner_id,
-            &ClaimOperation::Park,
-            request.authentication.as_ref(),
-        )
-        .await?;
+        let node_id = self
+            .authenticate(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                &owner_id,
+                &ClaimOperation::Park,
+                request.authentication.as_ref(),
+            )
+            .await?;
         let parked = self
             .store
             .park(
                 &tenant_id,
                 &repository_id,
                 &task_id,
-                &owner_id,
+                ClaimOwner {
+                    owner_id: &owner_id,
+                    node_id: &node_id,
+                },
                 std::time::SystemTime::now(),
             )
             .await
@@ -338,17 +353,18 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
             required(request.repository_id, "repository_id").map_err(Status::invalid_argument)?;
         let task_id = required(request.task_id, "task_id").map_err(Status::invalid_argument)?;
         let owner_id = required(request.owner_id, "owner_id").map_err(Status::invalid_argument)?;
-        self.authenticate(
-            &tenant_id,
-            &repository_id,
-            &task_id,
-            &owner_id,
-            &ClaimOperation::Answer {
-                lease_seconds: request.lease_seconds,
-            },
-            request.authentication.as_ref(),
-        )
-        .await?;
+        let node_id = self
+            .authenticate(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                &owner_id,
+                &ClaimOperation::Answer {
+                    lease_seconds: request.lease_seconds,
+                },
+                request.authentication.as_ref(),
+            )
+            .await?;
         let lease = Duration::from_secs(request.lease_seconds);
         if lease.is_zero() {
             return Err(Status::invalid_argument(
@@ -361,7 +377,10 @@ impl v1::claim_delegation_service_server::ClaimDelegationService for ClaimDelega
                 &tenant_id,
                 &repository_id,
                 &task_id,
-                &owner_id,
+                ClaimOwner {
+                    owner_id: &owner_id,
+                    node_id: &node_id,
+                },
                 lease,
                 std::time::SystemTime::now(),
             )

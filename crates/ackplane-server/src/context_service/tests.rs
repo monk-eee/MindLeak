@@ -135,6 +135,7 @@ impl Fixture {
                         repository_id: self.repository.clone(),
                         task_id: task_id.into(),
                         owner_id: session_id.into(),
+                        node_id: self.node.clone(),
                         branch: "test".into(),
                         lease: Duration::from_secs(300),
                         paths,
@@ -232,6 +233,42 @@ async fn missing_live_lease_refuses_a_real_assignment() {
         return;
     };
     let request = fixture.assign("first", "task-first", false).await;
+    assert!(matches!(
+        fixture.request(&request).await,
+        Err(ContextServiceError::Refused(
+            "this session has no live task lease"
+        ))
+    ));
+}
+
+// Session labels alone allowed context under a lease held by another node.
+// Require the authenticated node as well as the task and session owner.
+#[tokio::test]
+async fn a_same_named_session_lease_on_another_node_does_not_authorize_context() {
+    let Some(fixture) = Fixture::new().await else {
+        eprintln!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+        return;
+    };
+    let request = fixture.assign("first", "task-first", false).await;
+    fixture
+        .service
+        .claims
+        .delegate(
+            &ClaimLeaseRequest {
+                tenant_id: fixture.tenant.clone(),
+                repository_id: fixture.repository.clone(),
+                task_id: "task-first".into(),
+                owner_id: "first".into(),
+                node_id: "another-node".into(),
+                branch: "peer-branch".into(),
+                lease: Duration::from_secs(300),
+                paths: vec!["src/task-first.rs".into()],
+                symbols: vec![],
+            },
+            SystemTime::now(),
+        )
+        .await
+        .unwrap();
     assert!(matches!(
         fixture.request(&request).await,
         Err(ContextServiceError::Refused(
@@ -345,7 +382,10 @@ async fn a_prior_worker_failure_informs_the_next_session_without_becoming_policy
             &fixture.tenant,
             &fixture.repository,
             "task-retry",
-            "first",
+            crate::claim_store::ClaimOwner {
+                owner_id: "first",
+                node_id: &fixture.node,
+            },
             SystemTime::now(),
         )
         .await

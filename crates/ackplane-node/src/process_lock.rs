@@ -17,11 +17,18 @@ pub enum LockError {
     },
 }
 
-/// The kernel holds ownership for this file handle's lifetime, including
-/// releasing it after a process is killed. The file itself is never removed:
+/// The guard releases kernel ownership before closing its file handle; an
+/// inherited descriptor cannot prolong graceful ownership. Process death also
+/// releases ownership when the kernel closes the descriptors. The file is never removed:
 /// unlinking it could let contenders lock different files at the same path.
 pub struct NodeProcessLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for NodeProcessLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
 }
 
 impl NodeProcessLock {
@@ -58,7 +65,7 @@ impl NodeProcessLock {
         file.set_len(0)
             .and_then(|()| write!(file, "{}", std::process::id()))
             .map_err(|source| LockError::Io { path, source })?;
-        Ok(Self { _file: file })
+        Ok(Self { file })
     }
 }
 
@@ -86,6 +93,32 @@ mod tests {
 
         let second = NodeProcessLock::acquire(dir.path());
         assert!(second.is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_duplicated_descriptor_cannot_outlive_the_lock_owner() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = NodeProcessLock::acquire(directory.path()).unwrap();
+        let inherited = first.file.try_clone().unwrap();
+        assert!(matches!(
+            NodeProcessLock::acquire(directory.path()),
+            Err(LockError::AlreadyLocked(_))
+        ));
+
+        // A child can retain a duplicated descriptor until exec. Closing only
+        // the parent's descriptor kept flock alive and rejected provider restart.
+        drop(first);
+        let second = NodeProcessLock::acquire(directory.path())
+            .expect("ownership ends with its guard, not an inherited descriptor");
+        assert!(directory.path().join("ackplane-node.lock").exists());
+        drop(inherited);
+        assert!(matches!(
+            NodeProcessLock::acquire(directory.path()),
+            Err(LockError::AlreadyLocked(_))
+        ));
+        drop(second);
+        let _third = NodeProcessLock::acquire(directory.path()).unwrap();
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! ADR-0096 clauses 2-3 and 6: the CAS lease-mutation operations —
-//! delegate, release, renew, recover.
+//! delegate, release, renew.
 
 use std::time::{Duration, SystemTime};
 
 use super::{
-    ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult, ClaimRecoverRequest, ClaimStore,
+    outcome_tag, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimLeaseResult, ClaimOwner, ClaimStore,
     ClaimStoreError,
 };
 
@@ -14,6 +14,11 @@ impl ClaimStore {
         request: &ClaimLeaseRequest,
         now: SystemTime,
     ) -> Result<ClaimLeaseResult, ClaimStoreError> {
+        let owner = ClaimOwner {
+            owner_id: &request.owner_id,
+            node_id: &request.node_id,
+        };
+        owner.validate()?;
         if request.lease.is_zero() {
             return Err(ClaimStoreError::InvalidLease);
         }
@@ -36,7 +41,7 @@ impl ClaimStore {
         let result = loop {
             let existing = transaction
                 .query_opt(
-                    "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, parked \
+                    "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, parked, owner_node_id \
                      FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
                     &[&request.tenant_id, &request.repository_id, &request.task_id],
                 )
@@ -52,6 +57,12 @@ impl ClaimStore {
                     let paths: Vec<String> = row.get(5);
                     let symbols: Vec<String> = row.get(6);
                     let parked: bool = row.get(7);
+                    let owner_node_id: Option<String> = row.get(8);
+                    let same_owner = owner_id == request.owner_id
+                        && owner_node_id.as_deref() == Some(&request.node_id);
+                    if parked || previous_expiry >= now {
+                        owner.verify_node(&owner_id, owner_node_id.as_deref())?;
+                    }
                     let claim_lapses = u64::try_from(previous_lapses)
                         .map_err(|_| ClaimStoreError::InvalidLapseCount)?;
                     // A parked claim keeps its owner's exclusive hold on this
@@ -74,7 +85,7 @@ impl ClaimStore {
                             symbols,
                         };
                     }
-                    if owner_id != request.owner_id && previous_expiry >= now {
+                    if !same_owner && previous_expiry >= now {
                         break ClaimLeaseResult {
                             outcome: ClaimLeaseOutcome::Rejected,
                             owner_id,
@@ -86,7 +97,6 @@ impl ClaimStore {
                             symbols,
                         };
                     }
-                    let same_owner = owner_id == request.owner_id;
                     let lapsed = previous_expiry < now;
                     let next_lapses = claim_lapses + u64::from(lapsed);
                     let granted_branch = if same_owner {
@@ -97,11 +107,11 @@ impl ClaimStore {
                     let granted_started_at = if same_owner { claim_started_at } else { now };
                     transaction.execute(
                         "UPDATE delegated_claims SET owner_id = $4, branch = $5, claim_started_at = $6, \
-                         lease_expires_at = $7, claim_lapses = $8, paths = $9, symbols = $10 \
+                         lease_expires_at = $7, claim_lapses = $8, paths = $9, symbols = $10, owner_node_id = $11 \
                          WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
                         &[&request.tenant_id, &request.repository_id, &request.task_id, &request.owner_id,
                           &granted_branch, &granted_started_at, &expires_at, &(next_lapses as i64),
-                          &request.paths, &request.symbols],
+                          &request.paths, &request.symbols, &request.node_id],
                     ).await?;
                     break ClaimLeaseResult {
                         outcome: ClaimLeaseOutcome::Granted,
@@ -117,11 +127,11 @@ impl ClaimStore {
                 None => {
                     let inserted = transaction.execute(
                         "INSERT INTO delegated_claims (tenant_id, repository_id, task_id, owner_id, branch, \
-                         claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
-                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) \
+                         claim_started_at, lease_expires_at, claim_lapses, paths, symbols, owner_node_id) \
+                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) \
                          ON CONFLICT (tenant_id, repository_id, task_id) DO NOTHING",
                         &[&request.tenant_id, &request.repository_id, &request.task_id, &request.owner_id,
-                          &request.branch, &now, &expires_at, &0_i64, &request.paths, &request.symbols],
+                          &request.branch, &now, &expires_at, &0_i64, &request.paths, &request.symbols, &request.node_id],
                     ).await?;
                     if inserted == 1 {
                         break ClaimLeaseResult {
@@ -143,11 +153,11 @@ impl ClaimStore {
 
         transaction.execute(
             "INSERT INTO delegated_claim_history (tenant_id, repository_id, task_id, requested_owner_id, \
-             granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+             granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, requested_node_id) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
             &[&request.tenant_id, &request.repository_id, &request.task_id, &request.owner_id,
               &result.owner_id, &outcome_tag(result.outcome), &result.claim_started_at,
-              &result.lease_expires_at, &(result.claim_lapses as i64), &result.paths, &result.symbols],
+              &result.lease_expires_at, &(result.claim_lapses as i64), &result.paths, &result.symbols, &request.node_id],
         ).await?;
         transaction.commit().await?;
         Ok(result)
@@ -165,25 +175,37 @@ impl ClaimStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
-        owner_id: &str,
+        owner: ClaimOwner<'_>,
         now: SystemTime,
     ) -> Result<bool, ClaimStoreError> {
+        owner.validate()?;
+        let owner_id = owner.owner_id;
         let mut connection = self.connection().await?;
         let transaction = connection.transaction().await?;
+        owner
+            .lock_and_verify(&transaction, tenant_id, repository_id, task_id)
+            .await?;
         let changed = transaction
             .execute(
                 "UPDATE delegated_claims SET lease_expires_at = $5 \
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 \
-                   AND owner_id = $4 AND lease_expires_at >= $5",
-                &[&tenant_id, &repository_id, &task_id, &owner_id, &now],
+                   AND owner_id = $4 AND lease_expires_at >= $5 AND owner_node_id = $6",
+                &[
+                    &tenant_id,
+                    &repository_id,
+                    &task_id,
+                    &owner_id,
+                    &now,
+                    &owner.node_id,
+                ],
             )
             .await?;
         let released = changed == 1;
         transaction
             .execute(
                 "INSERT INTO delegated_claim_history (tenant_id, repository_id, task_id, requested_owner_id, \
-                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
-                 VALUES ($1,$2,$3,$4,$4,$5,$6,$6,0,ARRAY[]::text[],ARRAY[]::text[])",
+                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, requested_node_id) \
+                 VALUES ($1,$2,$3,$4,$4,$5,$6,$6,0,ARRAY[]::text[],ARRAY[]::text[],$7)",
                 &[
                     &tenant_id,
                     &repository_id,
@@ -191,6 +213,7 @@ impl ClaimStore {
                     &owner_id,
                     &release_outcome_tag(released),
                     &now,
+                    &owner.node_id,
                 ],
             )
             .await?;
@@ -209,10 +232,12 @@ impl ClaimStore {
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
-        owner_id: &str,
+        owner: ClaimOwner<'_>,
         lease: Duration,
         now: SystemTime,
     ) -> Result<ClaimLeaseResult, ClaimStoreError> {
+        owner.validate()?;
+        let owner_id = owner.owner_id;
         if lease.is_zero() {
             return Err(ClaimStoreError::InvalidLease);
         }
@@ -221,7 +246,7 @@ impl ClaimStore {
         let transaction = connection.transaction().await?;
         let existing = transaction
             .query_opt(
-                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols \
+                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, owner_node_id \
                  FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
                 &[&tenant_id, &repository_id, &task_id],
             )
@@ -230,6 +255,7 @@ impl ClaimStore {
         let result = match existing {
             Some(row) => {
                 let existing_owner: String = row.get(0);
+                owner.verify_node(&existing_owner, row.get("owner_node_id"))?;
                 let branch: String = row.get(1);
                 let claim_started_at: SystemTime = row.get(2);
                 let previous_expiry: SystemTime = row.get(3);
@@ -284,8 +310,8 @@ impl ClaimStore {
         transaction
             .execute(
                 "INSERT INTO delegated_claim_history (tenant_id, repository_id, task_id, requested_owner_id, \
-                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, requested_node_id) \
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
                 &[
                     &tenant_id,
                     &repository_id,
@@ -298,146 +324,12 @@ impl ClaimStore {
                     &(result.claim_lapses as i64),
                     &result.paths,
                     &result.symbols,
+                    &owner.node_id,
                 ],
             )
             .await?;
         transaction.commit().await?;
         Ok(result)
-    }
-
-    /// Take over a claim the caller believes is stranded (ADR-0096 clauses 3
-    /// and 6, matching `lodestar-core`'s `recover_claim`). `expected_owner`
-    /// must match the row's actual current owner -- a mismatch means the
-    /// owner changed concurrently and is rejected rather than blindly
-    /// overwritten, which `delegate` does not check. `reason` is required and
-    /// travels into the history for audit. Recovery only succeeds once the
-    /// lease has genuinely expired: a live lease is never recoverable out
-    /// from under its holder (ADR-0096 clause 6, "holed, not extended"). A
-    /// same-owner recovery preserves `claim_started_at` and `branch`, exactly
-    /// as `delegate`'s same-owner reclaim does (ADR-0048); a different owner
-    /// resets both and records the lapse.
-    pub async fn recover(
-        &self,
-        request: &ClaimRecoverRequest,
-        now: SystemTime,
-    ) -> Result<ClaimLeaseResult, ClaimStoreError> {
-        if request.reason.trim().is_empty() {
-            return Err(ClaimStoreError::MissingReason);
-        }
-        if request.lease.is_zero() {
-            return Err(ClaimStoreError::InvalidLease);
-        }
-        let expires_at = now + request.lease;
-        let mut connection = self.connection().await?;
-        let transaction = connection.transaction().await?;
-        let existing = transaction
-            .query_opt(
-                "SELECT owner_id, branch, claim_started_at, lease_expires_at, claim_lapses, paths, symbols, parked \
-                 FROM delegated_claims WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
-                &[&request.tenant_id, &request.repository_id, &request.task_id],
-            )
-            .await?;
-
-        let result = match existing {
-            Some(row) => {
-                let existing_owner: String = row.get(0);
-                let existing_branch: String = row.get(1);
-                let claim_started_at: SystemTime = row.get(2);
-                let previous_expiry: SystemTime = row.get(3);
-                let previous_lapses: i64 = row.get(4);
-                let existing_paths: Vec<String> = row.get(5);
-                let existing_symbols: Vec<String> = row.get(6);
-                let parked: bool = row.get(7);
-                let claim_lapses = u64::try_from(previous_lapses)
-                    .map_err(|_| ClaimStoreError::InvalidLapseCount)?;
-                // A parked claim is not a recoverable one (same reasoning as
-                // `delegate`): its owner deliberately cleared the lease
-                // pending an answer, which `answer` alone may resolve.
-                // Recovering it would let a different agent take over a
-                // task its rightful owner is mid-question on.
-                if parked || existing_owner != request.expected_owner || previous_expiry >= now {
-                    ClaimLeaseResult {
-                        outcome: ClaimLeaseOutcome::Rejected,
-                        owner_id: existing_owner,
-                        branch: existing_branch,
-                        claim_started_at,
-                        lease_expires_at: previous_expiry,
-                        claim_lapses,
-                        paths: existing_paths,
-                        symbols: existing_symbols,
-                    }
-                } else {
-                    let same_owner = existing_owner == request.owner_id;
-                    let granted_branch = if same_owner {
-                        existing_branch
-                    } else {
-                        request.branch.clone()
-                    };
-                    let granted_started_at = if same_owner { claim_started_at } else { now };
-                    let next_lapses = claim_lapses + 1;
-                    transaction
-                        .execute(
-                            "UPDATE delegated_claims SET owner_id = $4, branch = $5, claim_started_at = $6, \
-                             lease_expires_at = $7, claim_lapses = $8, paths = $9, symbols = $10 \
-                             WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
-                            &[&request.tenant_id, &request.repository_id, &request.task_id, &request.owner_id,
-                              &granted_branch, &granted_started_at, &expires_at, &(next_lapses as i64),
-                              &request.paths, &request.symbols],
-                        )
-                        .await?;
-                    ClaimLeaseResult {
-                        outcome: ClaimLeaseOutcome::Granted,
-                        owner_id: request.owner_id.clone(),
-                        branch: granted_branch,
-                        claim_started_at: granted_started_at,
-                        lease_expires_at: expires_at,
-                        claim_lapses: next_lapses,
-                        paths: request.paths.clone(),
-                        symbols: request.symbols.clone(),
-                    }
-                }
-            }
-            None => ClaimLeaseResult {
-                outcome: ClaimLeaseOutcome::Rejected,
-                owner_id: request.expected_owner.clone(),
-                branch: String::new(),
-                claim_started_at: now,
-                lease_expires_at: now,
-                claim_lapses: 0,
-                paths: Vec::new(),
-                symbols: Vec::new(),
-            },
-        };
-
-        transaction
-            .execute(
-                "INSERT INTO delegated_claim_history (tenant_id, repository_id, task_id, requested_owner_id, \
-                 granted_owner_id, outcome, claim_started_at, lease_expires_at, claim_lapses, paths, symbols) \
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
-                &[
-                    &request.tenant_id,
-                    &request.repository_id,
-                    &request.task_id,
-                    &request.owner_id,
-                    &result.owner_id,
-                    &outcome_tag(result.outcome),
-                    &result.claim_started_at,
-                    &result.lease_expires_at,
-                    &(result.claim_lapses as i64),
-                    &result.paths,
-                    &result.symbols,
-                ],
-            )
-            .await?;
-        transaction.commit().await?;
-        Ok(result)
-    }
-}
-
-fn outcome_tag(outcome: ClaimLeaseOutcome) -> i16 {
-    match outcome {
-        ClaimLeaseOutcome::Granted => 1,
-        ClaimLeaseOutcome::Rejected => 2,
     }
 }
 

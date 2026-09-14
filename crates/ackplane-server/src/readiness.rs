@@ -518,6 +518,7 @@ mod tests {
                         repository_id: repository_id.clone(),
                         task_id: task_id.to_string(),
                         owner_id: "agent:readiness".to_string(),
+                        node_id: "readiness-test-node".into(),
                         branch: format!("work/{task_id}"),
                         lease: Duration::from_secs(lease_secs),
                         paths: Vec::new(),
