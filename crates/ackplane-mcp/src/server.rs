@@ -7,7 +7,7 @@ use std::io::{self, BufRead, Write};
 use mindleak_session::SessionRegistry;
 use serde_json::{json, Value};
 
-use crate::tools;
+use crate::{prompts, tools};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -86,6 +86,11 @@ where
             id?,
             json!({ "tools": tools::advertised() }),
         )),
+        "prompts/list" => Some(result_response(id?, prompts::advertised())),
+        "prompts/get" => Some(match prompts::get(&params, refusal) {
+            Ok(prompt) => result_response(id?, prompt),
+            Err(message) => error_response(id?, -32602, &message),
+        }),
         "tools/call" => {
             let id = id?;
             // Returned per call, not once at startup: a client shows the agent
@@ -139,7 +144,7 @@ where
 fn initialize_result(refusal: Option<&str>) -> Value {
     let mut result = json!({
         "protocolVersion": PROTOCOL_VERSION,
-        "capabilities": { "tools": { "listChanged": false } },
+        "capabilities": { "tools": { "listChanged": false }, "prompts": { "listChanged": false } },
         "serverInfo": { "name": "ackplane-mcp", "version": env!("CARGO_PKG_VERSION") }
     });
     if let Some(reason) = refusal {

@@ -113,6 +113,8 @@ from source — a real gRPC service, Postgres ledger, and web UI — but not yet
 part of that packaged release; see
 [ADR-0082](docs/adr/0082-ackplane-is-a-standalone-federation-service.md) onward
 and the [Industrial quickstart](docs/INDUSTRIAL-QUICKSTART.md).
+For a Copilot-first workflow from a request to a reviewed server-backed design
+and confirmed Work, see [Conversational Design](docs/CONVERSATIONAL-DESIGN.md).
 Inside Core each capability has a name and the question it answers: MindLeak
 remembers, *Lodestar* holds intent, *Beacon* coordinates claims, *Gatekeeper*
 governs, *Librarian* keeps evidence, and *Verifier* decides whether that
