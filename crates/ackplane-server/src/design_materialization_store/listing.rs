@@ -8,9 +8,8 @@ impl MaterializationStore {
         design_id: &str,
         revision_number: i64,
     ) -> Result<Option<MaterializationRevision>, MaterializationStoreError> {
-        let Some(row) = self
-            .connection()
-            .await?
+        let connection = self.connection().await?;
+        let Some(row) = connection
             .query_opt(
                 "SELECT actor, idempotency_key, rationale, constitution_version_id, goal_ids, \
                         payload_digest, recorded_at, display_label \
@@ -23,9 +22,14 @@ impl MaterializationStore {
         else {
             return Ok(None);
         };
-        let work_task_ids = self
-            .work_task_ids_for(tenant_id, repository_id, design_id, revision_number)
-            .await?;
+        let work_task_ids = Self::work_task_ids_for(
+            &connection,
+            tenant_id,
+            repository_id,
+            design_id,
+            revision_number,
+        )
+        .await?;
         Ok(Some(MaterializationRevision {
             design_id: design_id.to_string(),
             revision_number,
@@ -47,9 +51,8 @@ impl MaterializationStore {
         repository_id: &str,
         design_id: &str,
     ) -> Result<Vec<MaterializationRevision>, MaterializationStoreError> {
-        let rows = self
-            .connection()
-            .await?
+        let connection = self.connection().await?;
+        let rows = connection
             .query(
                 "SELECT revision_number, actor, idempotency_key, rationale, \
                         constitution_version_id, goal_ids, payload_digest, recorded_at, \
@@ -63,9 +66,14 @@ impl MaterializationStore {
         let mut revisions = Vec::with_capacity(rows.len());
         for row in rows {
             let revision_number: i64 = row.get(0);
-            let work_task_ids = self
-                .work_task_ids_for(tenant_id, repository_id, design_id, revision_number)
-                .await?;
+            let work_task_ids = Self::work_task_ids_for(
+                &connection,
+                tenant_id,
+                repository_id,
+                design_id,
+                revision_number,
+            )
+            .await?;
             revisions.push(MaterializationRevision {
                 design_id: design_id.to_string(),
                 revision_number,

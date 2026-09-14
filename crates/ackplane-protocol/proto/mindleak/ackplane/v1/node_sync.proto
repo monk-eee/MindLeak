@@ -54,6 +54,7 @@ service KnowledgeService {
 service ProjectionEmbeddingService {
   rpc ListMissingProjectionEmbeddings(ListMissingProjectionEmbeddingsRequest) returns (ListMissingProjectionEmbeddingsResult);
   rpc PublishProjectionEmbedding(PublishProjectionEmbeddingRequest) returns (PublishProjectionEmbeddingResult);
+  rpc RecallProjectedNodes(RecallProjectedNodesRequest) returns (RecallProjectedNodesResult);
 }
 
 message ProjectionEmbeddingAuthentication {
@@ -93,6 +94,46 @@ message PublishProjectionEmbeddingRequest {
 
 message PublishProjectionEmbeddingResult {
   bool stored = 1;
+}
+
+enum ProjectionRecallState {
+  PROJECTION_RECALL_STATE_UNSPECIFIED = 0;
+  PROJECTION_RECALL_STATE_EMPTY = 1;
+  PROJECTION_RECALL_STATE_NOT_YET_PROJECTED = 2;
+  PROJECTION_RECALL_STATE_STALE = 3;
+  PROJECTION_RECALL_STATE_NOT_YET_EMBEDDED = 4;
+  PROJECTION_RECALL_STATE_PARTIALLY_EMBEDDED = 5;
+  PROJECTION_RECALL_STATE_CURRENT = 6;
+}
+
+message RecallProjectedNodesRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string model = 3;
+  repeated float query_embedding = 4;
+  float floor = 5;
+  uint32 limit = 6;
+  ProjectionEmbeddingAuthentication authentication = 7;
+}
+
+message ProjectionRecallHit {
+  string node_id = 1;
+  string label = 2;
+  string node_type = 3;
+  float similarity = 4;
+}
+
+message RecallProjectedNodesResult {
+  repeated ProjectionRecallHit hits = 1;
+  ProjectionRecallState state = 2;
+  uint64 projected_nodes = 3;
+  uint64 embedded_nodes = 4;
+  int64 ledger_position = 5;
+  optional int64 projected_position = 6;
+  optional string projected_at = 7;
+  bool searched = 8;
+  bool truncated = 9;
+  string model = 10;
 }
 
 // ADR-0106 decision 3: Evidence is a PostgreSQL-backed Industrial domain.

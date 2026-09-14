@@ -132,11 +132,23 @@ impl Projector {
         query: &[f32],
         limit: i64,
     ) -> Result<Vec<SimilarNode>, ProjectionError> {
-        let query = Vector::from(query.to_vec());
         let connection = self.connection().await?;
-        let rows = connection
-            .query(
-                "SELECT n.node_id, n.label, n.node_type, e.embedding <=> $4 AS cosine_distance \
+        read_candidates(&**connection, tenant_id, repository_id, model, query, limit).await
+    }
+}
+
+pub(super) async fn read_candidates(
+    connection: &impl tokio_postgres::GenericClient,
+    tenant_id: &str,
+    repository_id: &str,
+    model: &str,
+    query: &[f32],
+    limit: i64,
+) -> Result<Vec<SimilarNode>, ProjectionError> {
+    let query = Vector::from(query.to_vec());
+    let rows = connection
+        .query(
+            "SELECT n.node_id, n.label, n.node_type, e.embedding <=> $4 AS cosine_distance \
                  FROM projected_node_embeddings e \
                  JOIN projected_nodes n \
                    ON n.tenant_id = e.tenant_id AND n.repository_id = e.repository_id \
@@ -144,19 +156,18 @@ impl Projector {
                  WHERE e.tenant_id = $1 AND e.repository_id = $2 AND e.model = $3 \
                  ORDER BY e.embedding <=> $4 \
                  LIMIT $5",
-                &[&tenant_id, &repository_id, &model, &query, &limit],
-            )
-            .await?;
-        Ok(rows
-            .into_iter()
-            .map(|row| SimilarNode {
-                node_id: row.get(0),
-                label: row.get(1),
-                node_type: row.get(2),
-                cosine_distance: row.get(3),
-            })
-            .collect())
-    }
+            &[&tenant_id, &repository_id, &model, &query, &limit],
+        )
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| SimilarNode {
+            node_id: row.get(0),
+            label: row.get(1),
+            node_type: row.get(2),
+            cosine_distance: row.get(3),
+        })
+        .collect())
 }
 
 #[cfg(test)]

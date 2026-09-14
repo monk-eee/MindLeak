@@ -15,6 +15,8 @@ use crate::{
 
 const MAX_SOURCE_PAGE_BYTES: usize = 192 * 1024;
 
+mod recall;
+
 pub struct ProjectionEmbeddingService {
     projector: Projector,
 }
@@ -105,6 +107,13 @@ fn store_error(error: ProjectionError) -> Status {
 impl v1::projection_embedding_service_server::ProjectionEmbeddingService
     for ProjectionEmbeddingService
 {
+    async fn recall_projected_nodes(
+        &self,
+        request: Request<v1::RecallProjectedNodesRequest>,
+    ) -> Result<Response<v1::RecallProjectedNodesResult>, Status> {
+        self.recall(request.into_inner()).await.map(Response::new)
+    }
+
     async fn list_missing_projection_embeddings(
         &self,
         request: Request<v1::ListMissingProjectionEmbeddingsRequest>,

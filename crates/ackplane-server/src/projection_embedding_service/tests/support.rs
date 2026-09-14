@@ -37,13 +37,21 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) async fn new() -> Self {
+        Self::new_in(
+            unique_id("embedding-tenant"),
+            unique_id("embedding-repository"),
+        )
+        .await
+    }
+
+    pub(super) async fn new_in(tenant_id: String, repository_id: String) -> Self {
         let pool = test_pool().expect("projection embedding RPC tests require PostgreSQL");
         let server = TestServer::start(&pool).await;
         let projector = Projector::connect(&pool).await.unwrap();
         let seed = unique_id("embedding-node");
         let binding = SigningBinding {
-            tenant_id: unique_id("embedding-tenant"),
-            repository_id: unique_id("embedding-repository"),
+            tenant_id,
+            repository_id,
             node_id: format!("fleet-node-{seed}"),
             key_id: format!("fleet-signing-key-{seed}"),
         };
@@ -132,16 +140,32 @@ impl Fixture {
         repository_id: &str,
         sources: &[ProjectionEmbeddingSource],
     ) {
-        let ledger = LedgerStore::connect(&self.pool).await.unwrap();
-        let producer_id = unique_id("embedding-facts");
-        for (index, source) in sources.iter().enumerate() {
-            let fact = StructuralFact {
+        let facts: Vec<_> = sources
+            .iter()
+            .map(|source| StructuralFact {
                 node_id: source.node_id.clone(),
                 node_type: "artifact".into(),
                 label: source.label.clone(),
                 edges: vec![],
-            };
-            let digest = Sha256::digest(serde_json::to_vec(&fact).unwrap());
+            })
+            .collect();
+        self.append_facts_in(tenant_id, repository_id, &facts).await;
+        self.projector
+            .rebuild(tenant_id, repository_id)
+            .await
+            .unwrap();
+    }
+
+    pub(super) async fn append_facts_in(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        facts: &[StructuralFact],
+    ) {
+        let ledger = LedgerStore::connect(&self.pool).await.unwrap();
+        let producer_id = unique_id("embedding-facts");
+        for (index, fact) in facts.iter().enumerate() {
+            let digest = Sha256::digest(serde_json::to_vec(fact).unwrap());
             let outcome = ledger
                 .append(&structural_fact_envelope(
                     DedupKey {
@@ -151,16 +175,12 @@ impl Fixture {
                         producer_sequence: i64::try_from(index + 1).unwrap(),
                     },
                     &digest,
-                    &fact,
+                    fact,
                 ))
                 .await
                 .unwrap();
             assert!(matches!(outcome, AppendOutcome::Accepted { .. }));
         }
-        self.projector
-            .rebuild(tenant_id, repository_id)
-            .await
-            .unwrap();
     }
 
     pub(super) async fn embeddings(&self) -> Vec<(String, String, Vec<f32>)> {

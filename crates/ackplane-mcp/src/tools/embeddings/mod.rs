@@ -12,6 +12,8 @@ use prost::Message;
 use serde_json::{json, Value};
 
 mod http;
+mod recall;
+pub(super) use recall::{call as recall, definition as recall_definition};
 
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 1000;
@@ -34,17 +36,8 @@ pub(super) fn index(
     environment: &impl Fn(&str) -> Option<String>,
 ) -> Result<Value, String> {
     let limit = parse_limit(arguments)?;
-    let embedder = http::Embedder::from_environment(environment)?;
-    let mut node = resolve_node_client(environment)
-        .map_err(|_| "index requires a configured enrolled node companion".to_string())?;
-    node.expected_endpoint = Some(endpoint.to_string());
-    let runtime = super::runtime()?;
-    let model = embedder.model.clone();
-    let mut backend = NodeBackend {
-        node,
-        runtime,
-        embedder,
-    };
+    let mut backend = NodeBackend::new(endpoint, environment)?;
+    let model = backend.embedder.model.clone();
     run(&mut backend, &model, limit)
 }
 
@@ -87,6 +80,21 @@ struct NodeBackend {
     node: NodeClient,
     runtime: tokio::runtime::Runtime,
     embedder: http::Embedder,
+}
+
+impl NodeBackend {
+    fn new(endpoint: &str, environment: &impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let embedder = http::Embedder::from_environment(environment)?;
+        let mut node = resolve_node_client(environment).map_err(|_| {
+            "embedding tools require a configured enrolled node companion".to_string()
+        })?;
+        node.expected_endpoint = Some(endpoint.to_string());
+        Ok(Self {
+            node,
+            runtime: super::runtime()?,
+            embedder,
+        })
+    }
 }
 
 impl Backend for NodeBackend {

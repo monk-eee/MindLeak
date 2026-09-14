@@ -29,6 +29,15 @@ impl NodeService {
                 self.publish_projection_embedding(&source, model, embedding)
                     .await
             }
+            Operation::ProjectionRecall {
+                model,
+                query_embedding,
+                floor,
+                limit,
+            } => {
+                self.recall_projected_nodes(model, query_embedding, floor, limit)
+                    .await
+            }
             Operation::Claim(claim) => self.claim(claim).await,
             Operation::ActiveClaims => {
                 let mut client = ackplane_client::ClaimClient::connect(&self.endpoint).await?;
