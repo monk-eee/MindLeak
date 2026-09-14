@@ -121,10 +121,12 @@ form. [Bridge Work](BRIDGE-WORK.md) documents the subsequent operator actions.
   policy, scope, acceptance, evidence requirements, and bounded memory. Prior
   observed outcomes can inform later prompts; this is not model-weight training
   and memory never overrides authority.
-- Concurrent new materializations of the same design can race the existing
-  revision allocator. The [tracked backend risk](../gaps.d/materialization-concurrent-revision-allocation.md)
-  remains separate from the fixed task-order retry defect. Do not report a
-  refused or uncertain write as recorded provenance.
+- Concurrent materializations of the same design serialize within one
+  transaction. Identical requests replay one receipt, distinct requests receive
+  unique revisions, and changed content under the same key is a typed conflict.
+  Locks are scoped to tenant, repository, and design. Failed references and
+  cancelled writers roll back; unrelated designs remain writable. A refused or
+  uncertain write is still not evidence of recorded provenance.
 
 ## Verification
 
@@ -133,7 +135,9 @@ offline preview, input and target validation, confirmation binding, redirects,
 HTTP failures, and uncertain read-back. The PostgreSQL integration drives the
 built CLI against real Bridge handlers: proposal, retry, explicit adoption,
 two separately confirmed tasks, and an idempotent design/Work/constitution
-link. It also checks tenant isolation and forged-principal refusal.
+link. It also checks tenant isolation and forged-principal refusal. Controlled
+PostgreSQL lock tests exercise eight concurrent writers, typed conflicts,
+cancellation, rollback, one-connection pools, and independent scopes.
 
 ```text
 cargo test -p ackplane-mcp -p ackplane-workctl --locked

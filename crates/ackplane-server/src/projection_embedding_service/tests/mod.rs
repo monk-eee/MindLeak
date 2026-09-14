@@ -22,6 +22,7 @@ mod authentication;
 mod companion;
 mod paging;
 mod publication;
+mod recall;
 mod replay;
 mod response_bounds;
 mod support;

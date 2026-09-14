@@ -257,6 +257,7 @@ serves concurrent callers distinguished by registered `session_id` values.
 | `active_claims`            | List the claims Ackplane currently arbitrates for this repository, translating `ClaimDelegationService.ListActiveClaims` (ADR-0096, ADR-0139 clause 1). Read-only and unsigned: the request carries no `ClaimAuthentication` because it asks only what the arbiter already states about its own arbitration, and grants no authority. Scope comes from `MINDLEAK_ACKPLANE_TENANT_ID` and `MINDLEAK_ACKPLANE_REPOSITORY_ID`; either being unset is refused by name rather than asked with a blank scope, which would return an empty list indistinguishable from "no claims". This reports the arbiter's view, not Lodestar's board — the two answer different questions. |
 | `task_query`               | Read Ackplane's read-only Industrial Work projection, translating `WorkQueryService` (ADR-0139 clause 2) exactly as Bridge's first Work read surface already does. `view` selects the question: `list` (a paged/filterable task list, optionally by `state`, following ADR-0112's pagination discipline), `detail` (requires `task_id`; task, acceptance, event history, and waits), or `doctor` (Board Doctor findings — missing publication, impossible state/lease combinations, unresolved waits, and declared scope overlap). Every `list` answer names ADR-0120 decision 6's publication state (`current`/`claims_only`/`not_published` today — `lagging`/`unavailable` are not yet computed by any read surface). Same scope discipline as `active_claims`: an unset `MINDLEAK_ACKPLANE_TENANT_ID`/`MINDLEAK_ACKPLANE_REPOSITORY_ID` is refused rather than asked with a blank scope. This is materially narrower than Lodestar's own `task_query` (ADR-0139 clause 6): no create, mutation, conformance, or goal/constitution body. |
 | `index`                    | Explicitly populate this repository's server projection embeddings (ADR-0148). `limit` defaults to 200, bounded 1-1000; all other arguments are refused. The node-side MCP process sends only projected labels to the configured embedding endpoint, validates each entire vector batch, and publishes through the enrolled companion. It does not index local SQLite or perform inference inside Ackplane. |
+| `recall`                   | Search shared projected nodes using Ackplane's existing cosine, kind-prior and distinctive-field ranking (ADR-0140). Requires `query` (1-4096 UTF-8 bytes); `limit` defaults to 10, bounded 1-100. Returns raw-similarity `score`, coverage and a coherent projection snapshot. A signed state probe precedes optional node-side query embedding. No local SQLite search or Ackplane-side model call occurs. |
 
 Industrial `index` uses `MINDLEAK_EMBED_URL` (default
 `http://localhost:11434/v1`), `MINDLEAK_EMBED_MODEL` (default `nomic-embed-text`)
@@ -275,7 +276,41 @@ of an in-flight call. A tool error retains confirmed progress with `incomplete`,
 the failing stage and `remaining: null` when the remaining state is unknown.
 An empty queue makes no model call. Rerun to continue; the server's conditional
 write refuses stale labels. Completion describes this pass only, not projection
-freshness or the still-unfinished Industrial `recall` tool.
+freshness; `recall` reports that separately.
+
+Industrial `recall` uses the same model configuration and bounded HTTP client
+as `index`. It first asks the enrolled companion for a signed status probe
+without a query vector. Empty, unprojected, stale or unembedded data returns
+without contacting a model. Searchable data causes one query-embedding request
+from the node-side MCP process, then a second signed RPC reads and ranks a fresh
+snapshot. A remote embedding endpoint receives the query text as well as the
+labels sent by `index`; query text is not sent to Ackplane.
+
+| Recall State | Meaning |
+| --- | --- |
+| `empty` | No projected nodes or pending structural facts exist in this snapshot. |
+| `not_yet_projected` | Structural facts or nodes exist without a recorded projection checkpoint. |
+| `stale` | The projection checkpoint differs from the latest structural-fact ledger position; no hits are searched or returned. |
+| `not_yet_embedded` | The projection is current but has no vectors for the configured model. Run `index`. |
+| `partially_embedded` | Some projected nodes have vectors for the model. Hits cover only that subset. |
+| `current` | The projection matches the structural ledger and every projected node has a model vector. |
+
+Every successful response includes `coverage`, `projection`, `model`, `searched`
+and `results`. `projection` carries the structural `ledger_position`, nullable
+`projected_position` and nullable `projected_at`; an absent checkpoint is not
+zero. Metadata and hits come from one read-only repeatable database snapshot,
+not separate observations that can disagree during a rebuild. This is a
+point-in-time statement, not a guarantee that no newer event has arrived.
+
+`searched: true` with no results means the query was ranked and no candidate
+cleared both the 0.5 cosine floor and the distinctive-field cut. A partial index
+keeps `partially_embedded` even when no match is found. Candidate retrieval is
+bounded at 200; the caller's result limit is applied after ranking. Responses
+retain whole hits within 192 KiB; `truncated` identifies additional hits omitted
+by this byte cap, not the caller's chosen limit. Model or companion/RPC failure
+returns an MCP tool error with `state: unavailable`, not a successful no-match.
+`last_observed` may retain a prior probe, explicitly separate from the failed
+search. There is no hidden automatic indexing or fallback to another store.
 
 Per ADR-0139 clause 3, this surface deliberately has no `task_create`, and no
 `task_transition` accepting a terminal state. Ackplane does not accept those

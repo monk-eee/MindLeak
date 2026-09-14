@@ -104,6 +104,12 @@ pub enum Operation {
         model: String,
         embedding: Vec<f32>,
     },
+    ProjectionRecall {
+        model: String,
+        query_embedding: Vec<f32>,
+        floor: f32,
+        limit: u32,
+    },
     OpenSync {
         last_accepted_position: u64,
         supervisor: Option<SupervisorScope>,
@@ -182,6 +188,12 @@ mod tests {
             serde_json::json!({"ProjectionEmbeddingPublish":{
                 "source":[10,1,110], "model":"model", "embedding":vec![0.25; 768]
             }}),
+            serde_json::json!({"ProjectionRecall":{
+                "model":"model", "query_embedding":vec![0.25; 768], "floor":0.5, "limit":10
+            }}),
+            serde_json::json!({"ProjectionRecall":{
+                "model":"model", "query_embedding":[], "floor":0.0, "limit":0
+            }}),
         ] {
             let operation = serde_json::from_value::<Operation>(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(operation).unwrap(), value);
@@ -201,6 +213,12 @@ mod tests {
                     "source":[10,1,110], "model":"model", "embedding":vec![0.25; 768]
                 }),
             ),
+            (
+                "ProjectionRecall",
+                serde_json::json!({
+                    "model":"model", "query_embedding":vec![0.25; 768], "floor":0.5, "limit":10
+                }),
+            ),
         ] {
             for field in [
                 "tenant_id",
@@ -212,6 +230,10 @@ mod tests {
                 "signed_at",
                 "nonce",
                 "signature",
+                "request",
+                "request_bytes",
+                "query",
+                "query_text",
                 "extra",
             ] {
                 let mut injected = payload.clone();
