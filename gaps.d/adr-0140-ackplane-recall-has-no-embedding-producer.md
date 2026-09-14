@@ -1,4 +1,4 @@
-- **ADR-0140's automatic node-side embedding producer and recall surface remain
+- **ADR-0140's shared recall surface and freshness reporting remain
   unfinished -- updated 2026-09-14, OPEN.** The server now has
   authenticated `ListMissingProjectionEmbeddings` and
   `PublishProjectionEmbedding` RPCs plus closed node-companion operations.
@@ -6,8 +6,11 @@
   `Projector::nodes_missing_embedding` and `Projector::upsert_embedding`, with
   tests through an enrolled companion, gRPC and PostgreSQL. Source snapshots,
   vector bits, scope, model and nonce are signed; stale sources and replays are
-  refused. The optional node-side embed-and-publish loop and a recall response
-  that distinguishes unembedded/stale data from no match are still required.
+  refused. An explicit `ackplane-mcp` `index` pass now runs the optional
+  node-side embed-and-publish loop with bounded batches, progress reporting and
+  no model calls in Ackplane. Seven real MCP/HTTP/companion/PostgreSQL tests
+  exercise it. A recall response that distinguishes unembedded/stale data from
+  no match remains required; background scheduling is not provided by this pass.
 
   **Original observation (2026-09-02 on `81461328`):** nothing outside tests
   wrote `projected_node_embeddings`, so wiring the read half alone would ship a
@@ -49,7 +52,8 @@
   key in its own domain, with Ackplane storing and ranking but computing
   nothing.** That followed the path knowledge embeddings already take rather
   than giving the federation service an HTTP client and a model. The authenticated
-  request pair is now implemented; the node-side loop remains open.
+  request pair and explicit node-side loop are now implemented; the shared recall
+  response and freshness distinctions remain open.
 
   **Not fully fixed, and deliberately not worked around.** Found while
   starting `task:ddb8b1a4705b` (slice 3's proto/service/MCP plumbing); that task

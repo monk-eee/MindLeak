@@ -31,7 +31,15 @@
   this one names a test whose title ("bounded by the limit") points away from
   where it actually failed.
 
-  **Still open:** the underlying intermittent failure itself has not recurred,
-  so whether it was pool exhaustion, a lock wait, or a foreign-key race remains
-  unconfirmed. Re-open with the captured `ProjectionError` if this test (or any
-  other `upsert_embedding` caller) fails again under `cargo test --all`.
+  **Recurrence 2026-09-14, still OPEN:** PR #948 queue candidate
+  `d789753ad9518b86f49beaa344361554ca3367d8`, Industrial CI run `34791453133`,
+  failed `projection::tests::an_embedding_can_reference_an_existing_projected_node`
+  in `crates/ackplane-server/src/projection/mod.rs` before its round-trip
+  assertion. PostgreSQL reported SQLSTATE `23503`: the tenant/repository/node
+  was not present when the embedding INSERT checked its foreign key. The fixture
+  appends a real ledger fact and calls `Projector::rebuild`; it does not fabricate
+  a projected node directly. This identifies the failure class, not the exact
+  concurrent cause. The unchanged candidate passed one failed-job rerun and
+  PR #948 merged on 2026-09-14; no assertion, constraint or database gate was
+  weakened. Root cause remains
+  unresolved and must not be treated as a clean readiness qualification.

@@ -229,8 +229,22 @@ pins the expected loopback endpoint; it must match the companion's endpoint.
 }
 ```
 
-It refuses any non-loopback endpoint (ADR-0136 clause 4) and serves four
-tools only — see [TOOLS.md](TOOLS.md#industrial-front-door-tools-ackplane-mcp).
+It refuses any non-loopback Ackplane endpoint (ADR-0136 clause 4). The tool
+surface, including explicit `index`, is described in
+[TOOLS.md](TOOLS.md#industrial-front-door-tools-ackplane-mcp).
+
+To populate shared projection embeddings, configure `MINDLEAK_EMBED_URL` and
+`MINDLEAK_EMBED_MODEL` in this MCP process's launch environment, then call
+`index` with `{"limit": 200}`. Defaults use a local OpenAI-compatible endpoint
+at `http://localhost:11434/v1` and `nomic-embed-text`; for Ollama, start it and
+run `ollama pull nomic-embed-text`. Optional `MINDLEAK_EMBED_API_KEY` belongs in
+the launch environment, not committed configuration. A remote embedding endpoint
+receives the projected labels. Inference runs in the node-side MCP process,
+never in Ackplane; the running companion still owns publication signatures.
+Inspect the returned progress and rerun when `remaining` is true. A model or
+publication failure reports partial progress rather than claiming completion.
+This explicit pass does not enable a background scheduler or the unfinished
+Industrial recall tool.
 
 ### Option C — `lodestar-mcp`'s federation client
 
