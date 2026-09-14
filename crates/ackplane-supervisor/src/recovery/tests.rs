@@ -166,6 +166,40 @@ fn inspection_reads_original_stop_proof_without_acknowledging_pending_frames() {
     );
 }
 
+// Matching IDs alone did not bind a queue's original start time to the run marker.
+// Refuse disagreement without changing the marker or any retained receipt.
+#[test]
+fn inspection_requires_the_original_session_in_both_queues() {
+    for change_outbox in [true, false] {
+        let fixture = Fixture::new(true);
+        let before = fixture.outbox.pending(10).unwrap();
+        let mut changed = fixture.record.session.clone();
+        changed.started_at -= 100;
+        let path = if change_outbox {
+            &fixture.record.outbox
+        } else {
+            &fixture.record.inbox
+        };
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(
+                "UPDATE supervisor_session SET declaration = ?1 WHERE singleton = 1",
+                [serde_json::to_string(&changed).unwrap()],
+            )
+            .unwrap();
+        let error = inspect(&fixture.config, "slot").unwrap_err();
+        assert!(
+            error.to_string().contains("session does not match the run"),
+            "{error}"
+        );
+        assert_eq!(fixture.outbox.pending(10).unwrap(), before);
+        assert_eq!(
+            fs::read(fixture.config.worker_run_path("slot")).unwrap(),
+            fixture.bytes
+        );
+    }
+}
+
 // Terminal labels once outlived their process handles; only the adapter's bound stop record can authorize cleanup.
 #[tokio::test]
 async fn a_terminal_receipt_without_positive_stop_provenance_never_authorizes_cleanup() {

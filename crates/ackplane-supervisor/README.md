@@ -124,6 +124,21 @@ stopped: existing worker-run markers still require recovery. This local guard
 does not compare workspaces configured under different state directories;
 continue to give every slot a separate checkout or worktree.
 
+The inbox and outbox persist the full original session declaration atomically
+with their identity binding. A notification-only daemon reopening its outbox
+restores that session, including its original start time; it does not announce
+the current process start under the old session ID. Its inbox must agree with
+the restored declaration. Configured worker slots still receive new identities
+for new assignments and still refuse unaccounted previous runs.
+
+Queues created before full session persistence lack the original declaration.
+They are refused rather than assigned a guessed timestamp. Preserve those queues
+and any run markers for investigation; do not delete evidence to force startup.
+After reconciling their recorded work, explicitly configure a new supervisor ID
+and a separate state directory for new work. This does not require a new node
+credential. Missing metadata from a newer queue may instead be restored from a
+verified backup containing its original declaration.
+
 ## When it stops
 
 - **Node companion unavailable or authority refused** - stops owned workers,
@@ -161,6 +176,10 @@ continue to give every slot a separate checkout or worktree.
   does not repair invalid evidence. Retryable refusals retain the same bytes
   and follow the existing reconnect path. Fatal cleanup queues its terminal
   receipt locally without attempting delivery past the rejection.
+- **Registration, session or heartbeat permanently refused** - stops with the
+  server's reason and diagnostic instead of endlessly retrying an immutable
+  conflict. Queues and run markers are retained. A retryable frame refusal
+  still follows the bounded exchange and reconnect path.
 - **Stored frame cannot be replayed identically** - pending, archived and
   recovery reads refuse valid protobuf encodings whose decode/re-encode cycle
   changes the original bytes, including unknown fields from a newer version.
@@ -236,9 +255,11 @@ creating directories, initializing identity, changing journal mode or migrating
 schema. SQLite read-only access also refuses enqueue and acknowledgement through
 that handle. Normal WAL reads remain enabled so inspection includes committed
 records still in the log; it does not use immutable-file mode. Missing or corrupt
-databases are refused. An older outbox can expose its existing pending frames and
-positions, but reading an absent lifecycle archive reports a schema error rather
-than creating an empty history. No process control or lease operation is performed.
+databases and missing original session declarations are refused. Reading an
+absent lifecycle archive reports a schema error rather than creating an empty
+history. The returned session is the stored original, not a caller's later
+start time. Recovery inspection additionally requires both queue declarations
+to exactly match the run marker. No process control or lease operation is performed.
 
 ## Recover A Stopped Run
 

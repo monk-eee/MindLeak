@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::storage::{
     acknowledge_outbound_frames, configure, ensure_supervisor_identity, load_outbound_frame,
     next_outbound_sequence, pending_outbound_frames, record_outbound_sequence,
-    store_outbound_frame,
+    store_outbound_frame, SupervisorIdentityBinding,
 };
 
 mod recovery;
@@ -71,14 +71,16 @@ impl SupervisorOutbox {
         if !conn.is_readonly(rusqlite::DatabaseName::Main)? {
             configure(&conn)?;
         }
-        if !ensure_supervisor_identity(
+        let session = match ensure_supervisor_identity(
             &conn,
             &registration.identity,
             &registration.supervisor_id,
             &session,
         )? {
-            return Err(OutboxError::OutboxIdentityMismatch);
-        }
+            SupervisorIdentityBinding::Bound(session) => session,
+            SupervisorIdentityBinding::Mismatch => return Err(OutboxError::OutboxIdentityMismatch),
+            SupervisorIdentityBinding::MissingSession => return Err(OutboxError::MissingSession),
+        };
         Ok(Self {
             conn,
             registration,
@@ -286,6 +288,8 @@ impl QueuedFrame {
 /// Durable-outbox errors are explicit so a future transport never guesses delivery state.
 #[derive(Debug, Error)]
 pub enum OutboxError {
+    #[error("the durable outbox lacks its original session declaration; evidence retained; restore the original state from backup or investigate before configuring a new supervisor and state directory")]
+    MissingSession,
     #[error("frame does not support durable supervisor delivery")]
     UnsupportedFrame,
     #[error("invalid supervisor declaration: {0}")]

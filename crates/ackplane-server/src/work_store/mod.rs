@@ -19,6 +19,9 @@ use std::time::SystemTime;
 use crate::db_pool::{PgConnection, PgPool};
 use thiserror::Error;
 
+#[cfg(test)]
+mod detail_tests;
+
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
 const WORK_TASK_COMMAND_EXECUTION_MIGRATION: &str =
@@ -207,7 +210,8 @@ impl WorkStore {
     }
 
     /// One page of tasks, newest-updated first, optionally filtered to one
-    /// state (ADR-0112 bounded pagination).
+    /// state (ADR-0112 bounded pagination). The total and rows share one query,
+    /// including when the requested page is beyond the matching tasks.
     pub async fn list_tasks(
         &self,
         tenant_id: &str,
@@ -216,67 +220,62 @@ impl WorkStore {
         page: i64,
         page_size: i64,
     ) -> Result<WorkTaskPage, WorkStoreError> {
-        let offset = (page - 1) * page_size;
-        // One checkout for either branch: both arms are the same read with a
-        // different filter, so taking two connections would be accidental.
+        let offset = (page - 1).saturating_mul(page_size);
+        let state = state.map(|state| state.as_i16());
         let connection = self.connection().await?;
-        let rows = match state {
-            Some(state) => {
-                connection
-                    .query(
-                        "SELECT *, COUNT(*) OVER()::BIGINT AS total_count FROM work_tasks \
-                         WHERE tenant_id = $1 AND repository_id = $2 AND state = $3 \
-                         ORDER BY updated_at DESC, task_id ASC LIMIT $4 OFFSET $5",
-                        &[
-                            &tenant_id,
-                            &repository_id,
-                            &state.as_i16(),
-                            &page_size,
-                            &offset,
-                        ],
-                    )
-                    .await?
-            }
-            None => {
-                connection
-                    .query(
-                        "SELECT *, COUNT(*) OVER()::BIGINT AS total_count FROM work_tasks \
-                         WHERE tenant_id = $1 AND repository_id = $2 \
-                         ORDER BY updated_at DESC, task_id ASC LIMIT $3 OFFSET $4",
-                        &[&tenant_id, &repository_id, &page_size, &offset],
-                    )
-                    .await?
-            }
-        };
+        let rows = connection
+            .query(
+                "WITH matching AS ( \
+                     SELECT * FROM work_tasks \
+                     WHERE tenant_id = $1 AND repository_id = $2 \
+                       AND ($3::SMALLINT IS NULL OR state = $3) \
+                 ), page AS ( \
+                     SELECT * FROM matching \
+                     ORDER BY updated_at DESC, task_id ASC LIMIT $4 OFFSET $5 \
+                 ) \
+                 SELECT page.*, totals.total_count \
+                 FROM (SELECT COUNT(*)::BIGINT AS total_count FROM matching) totals \
+                 LEFT JOIN page ON TRUE \
+                 ORDER BY page.updated_at DESC, page.task_id ASC",
+                &[&tenant_id, &repository_id, &state, &page_size, &offset],
+            )
+            .await?;
         let total = rows.first().map(|row| row.get("total_count")).unwrap_or(0);
         let mut items = Vec::with_capacity(rows.len());
         for row in &rows {
-            items.push(Self::row_to_task(row)?);
+            if row.get::<_, Option<&str>>("task_id").is_some() {
+                items.push(Self::row_to_task(row)?);
+            }
         }
         Ok(WorkTaskPage { items, total })
     }
 
+    /// Reads the task, history and waits from one committed snapshot.
     pub async fn task_detail(
         &self,
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
     ) -> Result<Option<WorkTaskDetail>, WorkStoreError> {
-        let Some(task_row) = self
-            .connection()
-                .await?
+        let mut connection = self.connection().await?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await?;
+        let Some(task_row) = transaction
             .query_opt(
                 "SELECT * FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
                 &[&tenant_id, &repository_id, &task_id],
             )
             .await?
         else {
+            transaction.commit().await?;
             return Ok(None);
         };
         let task = Self::row_to_task(&task_row)?;
-        let history_rows = self
-            .connection()
-            .await?
+        let history_rows = transaction
             .query(
                 "SELECT event_id, from_state, to_state, actor_id, stream_position, recorded_at \
                  FROM work_task_history \
@@ -298,9 +297,7 @@ impl WorkStore {
                 recorded_at: row.get("recorded_at"),
             });
         }
-        let wait_rows = self
-            .connection()
-            .await?
+        let wait_rows = transaction
             .query(
                 "SELECT wait_id, question, audience, asked_by, asked_at, answered_by, answer, \
                     answered_at FROM work_task_waits \
@@ -323,6 +320,7 @@ impl WorkStore {
                 answered_at: row.get("answered_at"),
             })
             .collect();
+        transaction.commit().await?;
         Ok(Some(WorkTaskDetail {
             task,
             history,
@@ -381,13 +379,21 @@ pub use model::{
 pub use publication::{ClaimsOnlyWork, WorkPublication};
 
 #[cfg(test)]
+mod pagination_tests;
+
+#[cfg(test)]
 mod tests {
     use std::time::SystemTime;
 
     use super::*;
     use crate::test_support::unique_id;
 
-    fn new_task(tenant_id: &str, repository_id: &str, task_id: &str, title: &str) -> NewWorkTask {
+    pub(super) fn new_task(
+        tenant_id: &str,
+        repository_id: &str,
+        task_id: &str,
+        title: &str,
+    ) -> NewWorkTask {
         NewWorkTask {
             tenant_id: tenant_id.to_owned(),
             repository_id: repository_id.to_owned(),

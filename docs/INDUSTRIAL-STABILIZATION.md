@@ -50,7 +50,7 @@ repository. They are provisional, not deadlines; reassess after STAB-03.
 | Task | Ledger ID | Status | Estimate | Acceptance Summary |
 | --- | --- | --- | --- | --- |
 | STAB-01: Reproducible build and database gate | `task:52eb3f6d82bd` | Merged, CI passed, required check enabled | 1-3 days | Fail closed without database/recovery prerequisites; migrate explicitly; compile every target; run all-feature workspace tests against disposable Postgres in CI and locally. |
-| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: installed TLS workflow exercised; qualification and review open | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
+| STAB-02: Installation and enrolled identity | `task:f60a0347a46d` | In progress: pinned installation exposed a supervisor restart defect; repair and requalification tracked below | 3-5 days | Clean-machine TLS setup, tenant-consistent enrollment, persisted identity, actionable refusals and idempotent repeat setup. |
 | STAB-03: Real worker execution and isolation | `task:df1e790eefca` | Queued after STAB-02 | 5-10 days | Addressed, authenticated work drives a real configured worker with bounded current context in its own worktree; two-node isolation and peer-impersonation refusals pass. |
 | STAB-04: Completion and restart recovery | `task:a200ebd9ec16` | Queued after STAB-03 | 5-8 days | Attributed evidence and conformance govern completion; crashes, reconnects, duplicate messages, expired claims and lost outbox state cannot silently lose or repeat work. |
 | STAB-05: Shared context and honest freshness | `task:8edce4b7d4a9` | Queued after STAB-04 | 4-7 days | Enrolled-node embedding production feeds shared recall; invalidation, cross-tenant refusal and explicit unembedded/stale/unavailable states are tested. Resolve the Work freshness design mismatch explicitly. |
@@ -62,6 +62,52 @@ This is roughly 7-13 engineering weeks plus pilot observation. The first useful
 confined industrial demonstration targets STAB-03, not the completion of every
 production requirement. A production deployment needs the entire chain and may
 require more work after security and capacity measurement.
+
+## Pinned Installation Qualification (2026-09-14)
+
+The first single-revision run used protected PR #951 merge
+`43a5d7027ef86ad89feb83f74e6bed4c7c0c3469` for both the isolated Compose
+application images and all six extracted macOS ARM64 commands. The archive was
+15,332,005 bytes, SHA-256
+`dfab58b4c917d905087fd086c5b92a87c49a44df9d9c5ba5cc6efea4040a9692`.
+This is a local qualification artifact, not a published or publisher-signed release.
+
+ZIP integrity, manifest revision and hashes, repeated Node-only installation,
+executable permissions, and idempotent public trust preparation passed. The
+installed CLI refused missing providers, unusable socket paths and missing or
+incorrect TLS trust. Trusted enrollment request and activation retries retained
+one provider identity, one request, one receipt and one signing key. Premature
+activation and wrong-tenant approval were refused. All three installed MCP
+clients initialized through the enrolled companion. Native credential operations
+used the real OS account; application state, binaries and services were isolated.
+
+**The qualification failed on supervisor restart.** A notification-only daemon
+registered and reported a heartbeat, but reopening the same queue announced the
+same session ID with a new process start time. Ackplane correctly rejected the
+immutable session conflict; the daemon incorrectly retried that permanent frame
+refusal indefinitely. An immediate first-heartbeat assertion and a later SSE-based
+wait were not valid readiness proofs; direct runtime diagnostics and the server's
+stored session exposed the defect.
+
+The repair persists the original full session with the queue identity, restores
+it before announcing the restarted daemon, and stops on non-retryable frame
+refusals. Missing original declarations are refused without inventing history.
+Deterministic reopen and refusal regressions were demonstrated failing before
+their fixes. A real PostgreSQL/server/companion test now runs the daemon twice,
+requires a newer server heartbeat each time, preserves the original session and
+requires both runs to shut down successfully. Queue and recovery tests cover
+atomic persistence, missing history, mismatched sessions and evidence retention.
+
+Repair validation: strict all-target/all-feature supervisor Clippy passed. The
+full Industrial runner passed 2,812 tests with zero failures and three existing
+ignored tests across 92 targets, with database, recovery and native credential
+gates enabled against the isolated deployment's separate test database.
+
+These repair tests do not turn the failed archive into a qualified one. A new
+reviewed revision still needs the complete installed-client refusal, companion
+and service restart workflow, followed by test-credential cleanup. The approval
+used here was the documented development-only database command, not authenticated
+production administration. STAB-02 and all later milestone gates remain open.
 
 ## First Gate
 
@@ -500,3 +546,53 @@ administrator approval, packaged distribution and the recorded conformance
 review remain open. The current claim history records four lapses totaling
 249,052 unleased seconds; no merge or successful test waives that history.
 Execution evidence: `execution:7dcd26c2d9aa`.
+
+## Installed Candidate Rehearsal (2026-09-14)
+
+The exact [PR #960](https://github.com/monk-eee/MindLeak/pull/960) candidate
+`1e6ce34993089fb14ccd647baa56d9a2258d407a` passed a single-revision installation
+and restart rehearsal after its [CI check set](https://github.com/monk-eee/MindLeak/actions/runs/34801167641)
+passed. At this checkpoint the PR was armed but had not merged; this evidence
+does not certify a later queue-update or merge commit.
+
+All six host binaries and both application images were built from that clean,
+pinned checkout. The macOS ARM64 Industrial ZIP was 15,338,481 bytes, SHA-256
+`c05d8d6ee5475d1b6c70c73ed0d755c961c02435286538f9e5aa260e6a759dae`.
+The deployment used empty project-owned volumes and random loopback ports.
+Installation used a temporary home; native credential operations used the normal
+OS account with isolated application state.
+
+- Independent ZIP validation and two Node-only installations passed, with all
+  six installed hashes, sizes and executable permissions matching the manifest.
+  Repeated trust preparation preserved CA/salt bytes, timestamps and modes.
+- TLS enrollment request and activation retries retained the same provider
+  identity and exactly one request, receipt and signing key. Missing or incorrect
+  trust, unusable socket paths, premature activation and wrong-tenant approval
+  refused. Approval was the explicit development-only database command.
+- All three installed MCP clients worked through the companion. Wrong tenant or
+  repository, missing companion, obsolete seed settings and endpoint mismatch
+  refused; companion loss did not disable the independent Local profile.
+- The installed notification-only supervisor restarted against its original
+  queue. The Bridge reported one unchanged session and original start time plus
+  a newer heartbeat. Both supervisor shutdowns in each runtime run exited zero.
+- PostgreSQL, Ackplane and Bridge restarted with unchanged image revision,
+  volumes, trust, provider metadata and enrollment counts. The installed runtime
+  checks passed again; a subsequent server-session comparison also passed.
+- Cleanup deleted only the exact test credential by reference and verified its
+  absence without reading a password. Missing-provider startup then refused
+  without replacement or metadata changes. Test containers, volumes, network,
+  image tags and temporary state were removed. Original live container IDs and
+  start times were unchanged; peer services were not touched.
+
+The optional all-service Compose wait returned failure for a successful
+one-shot migration. Direct migration results and long-running service checks
+discriminated that [external wait limitation](KNOWN-LIMITATIONS.md#external-tools);
+the restart used waits scoped to the long-running services.
+
+This closes the candidate's observed supervisor restart failure, not the
+programme's release gate. A final reviewed revision must be qualified separately.
+Fresh OS-account setup, real-worker execution, two-node isolation, authenticated
+production administration, signed publication and pilot endurance were not tested
+here. STAB-02 and the historical conformance review remain open.
+Evidence: `execution:d488392e4cc0` and `execution:c1988a15bd2f`, also recorded in
+the [PR qualification comment](https://github.com/monk-eee/MindLeak/pull/960#issuecomment-5658702254).

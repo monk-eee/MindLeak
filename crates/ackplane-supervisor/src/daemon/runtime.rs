@@ -17,7 +17,6 @@ use crate::{
 
 pub(super) struct WorkerRuntime {
     pub session: SupervisorSession,
-    pub started_at: OffsetDateTime,
     pub registration: SupervisorRegistration,
     pub inbox: SupervisorInbox,
     pub outbox: SupervisorOutbox,
@@ -38,23 +37,22 @@ pub(super) struct WorkerLease {
 
 impl WorkerRuntime {
     pub fn new(config: &SupervisorConfig, node_id: &str) -> Result<Self, DaemonError> {
-        let started_at = OffsetDateTime::now_utc();
         let registration = registration(config, node_id);
-        let session = session(config, started_at)?;
+        let outbox = SupervisorOutbox::open(
+            config.outbox_path(),
+            registration.clone(),
+            session(config, OffsetDateTime::now_utc())?,
+        )?;
+        let session = outbox.session().clone();
         Ok(Self {
             inbox: SupervisorInbox::open(
                 config.inbox_path(),
                 registration.clone(),
                 session.clone(),
             )?,
-            outbox: SupervisorOutbox::open(
-                config.outbox_path(),
-                registration.clone(),
-                session.clone(),
-            )?,
+            outbox,
             session,
             registration,
-            started_at,
             adapter: ProcessWorkerAdapter::new(),
             command: config.workers.values().next().cloned(),
             lease: None,
