@@ -19,6 +19,9 @@ use std::time::SystemTime;
 use crate::db_pool::{PgConnection, PgPool};
 use thiserror::Error;
 
+#[cfg(test)]
+mod detail_tests;
+
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
 const WORK_TASK_COMMAND_EXECUTION_MIGRATION: &str =
@@ -256,27 +259,32 @@ impl WorkStore {
         Ok(WorkTaskPage { items, total })
     }
 
+    /// Reads the task, history and waits from one committed snapshot.
     pub async fn task_detail(
         &self,
         tenant_id: &str,
         repository_id: &str,
         task_id: &str,
     ) -> Result<Option<WorkTaskDetail>, WorkStoreError> {
-        let Some(task_row) = self
-            .connection()
-                .await?
+        let mut connection = self.connection().await?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await?;
+        let Some(task_row) = transaction
             .query_opt(
                 "SELECT * FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
                 &[&tenant_id, &repository_id, &task_id],
             )
             .await?
         else {
+            transaction.commit().await?;
             return Ok(None);
         };
         let task = Self::row_to_task(&task_row)?;
-        let history_rows = self
-            .connection()
-            .await?
+        let history_rows = transaction
             .query(
                 "SELECT event_id, from_state, to_state, actor_id, stream_position, recorded_at \
                  FROM work_task_history \
@@ -298,9 +306,7 @@ impl WorkStore {
                 recorded_at: row.get("recorded_at"),
             });
         }
-        let wait_rows = self
-            .connection()
-            .await?
+        let wait_rows = transaction
             .query(
                 "SELECT wait_id, question, audience, asked_by, asked_at, answered_by, answer, \
                     answered_at FROM work_task_waits \
@@ -323,6 +329,7 @@ impl WorkStore {
                 answered_at: row.get("answered_at"),
             })
             .collect();
+        transaction.commit().await?;
         Ok(Some(WorkTaskDetail {
             task,
             history,
@@ -387,7 +394,12 @@ mod tests {
     use super::*;
     use crate::test_support::unique_id;
 
-    fn new_task(tenant_id: &str, repository_id: &str, task_id: &str, title: &str) -> NewWorkTask {
+    pub(super) fn new_task(
+        tenant_id: &str,
+        repository_id: &str,
+        task_id: &str,
+        title: &str,
+    ) -> NewWorkTask {
         NewWorkTask {
             tenant_id: tenant_id.to_owned(),
             repository_id: repository_id.to_owned(),
