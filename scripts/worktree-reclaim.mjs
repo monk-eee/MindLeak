@@ -121,8 +121,13 @@ export function classifyArtefact(candidate, options = {}) {
     landed,
     owner,
     building,
+    locked,
     modifiedAt,
   } = candidate;
+
+  if (locked) {
+    return { sweep: false, reason: "Git worktree is locked" };
+  }
 
   // The fleet host serves the tooling every agent is using right now: the MCP
   // binaries `resolveServer` resolves to, and the prettier/eslint the commit
@@ -253,9 +258,21 @@ export function classifyWorktree(
     abandonedBranches = new Set(),
   } = {},
 ) {
-  const { path, branch, bare, dirty, landed, owner, building, current } =
-    worktree;
+  const {
+    path,
+    branch,
+    bare,
+    dirty,
+    landed,
+    owner,
+    building,
+    current,
+    locked,
+  } = worktree;
 
+  if (locked) {
+    return { reclaim: false, reason: "Git worktree is locked" };
+  }
   if (bare) {
     return {
       reclaim: false,
@@ -503,17 +520,28 @@ export function claimStateRefusal(claimState) {
     : message;
 }
 
-/** Re-read claims at the destructive boundary, after the report was printed. */
+/** Re-read worktree facts and claims at the destructive boundary after the report. */
 export function revalidateBeforeReclaim(
   worktree,
   {
     session,
+    readWorktree = () => null,
     readClaimState = () => ({ available: false, branches: new Set() }),
     readAbandoned = () => new Set(),
   } = {},
 ) {
+  const fresh = readWorktree(worktree);
+  if (!fresh) {
+    return { reclaim: false, reason: "worktree facts could not be re-read" };
+  }
+  if (fresh.path !== worktree.path || fresh.branch !== worktree.branch) {
+    return {
+      reclaim: false,
+      reason: "worktree identity changed since the preview",
+    };
+  }
   const state = readClaimState();
-  return classifyWorktree(worktree, {
+  return classifyWorktree(fresh, {
     session,
     liveClaimBranches: state.branches,
     claimStateAvailable: state.available,
@@ -682,6 +710,9 @@ export function readWorktrees(anchor) {
           .find((l) => l.startsWith("branch refs/heads/"))
           ?.slice("branch refs/heads/".length) ?? null,
       bare: lines.includes("bare"),
+      locked: lines.some(
+        (line) => line === "locked" || line.startsWith("locked "),
+      ),
       // git lists the main worktree first; the linked ones follow. This is the
       // checkout the fleet's scripts resolve their server binaries from.
       primary: index === 0,
@@ -861,6 +892,12 @@ function main() {
     const { branch } = entry.worktree;
     const refreshed = revalidateBeforeReclaim(entry.worktree, {
       session,
+      readWorktree: (worktree) => {
+        const fresh = readWorktrees(anchor).find(
+          (candidate) => candidate.path === worktree.path,
+        );
+        return fresh ? gatherFacts(fresh, anchor) : null;
+      },
       readClaimState: () => readLiveClaimState(anchor),
       readAbandoned: readAbandonedBranches,
     });

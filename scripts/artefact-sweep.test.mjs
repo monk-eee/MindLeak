@@ -44,6 +44,19 @@ const cache = (over = {}) => ({
   ...over,
 });
 
+// The sweep must respect a retention lock acquired after its plan was built.
+test("a newly acquired Git lock prevents artifact removal", () => {
+  const removed = [];
+  const result = applySweep([cache()], {
+    now: NOW,
+    revalidate: (candidate) => ({ ...candidate, locked: true }),
+    remove: (path) => removed.push(path),
+  });
+  assert.deepEqual(removed, []);
+  assert.equal(result.abandoned.length, 1);
+  assert.match(result.abandoned[0].reason, /Git worktree is locked/);
+});
+
 // --- cadence --------------------------------------------------------------
 
 test("a sweep that has never run is due, so an upgrade audits immediately", () => {
