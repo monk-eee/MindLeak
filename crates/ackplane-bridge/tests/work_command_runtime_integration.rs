@@ -373,7 +373,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
         .find(|entry| entry.registration.supervisor_id == supervisor_id)
         .unwrap()
         .registration;
-    let mut session = supervisors
+    let session = supervisors
         .list_sessions(&tenant_id, &repository_id, &supervisor_id)
         .await
         .unwrap()
@@ -387,7 +387,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
         .unwrap()
         .pop()
         .unwrap();
-    session.state = completed.receipt.state;
+    assert_eq!(session.state, completed.receipt.state);
     assert_eq!(session.state, SupervisorWorkerState::Completed);
     let outbox_path = config.state_dir.join(format!("{supervisor_id}.outbox.db"));
     assert!(matches!(
