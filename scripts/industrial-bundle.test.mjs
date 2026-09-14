@@ -58,7 +58,15 @@ function fixture(context, target = "x86_64-unknown-linux-gnu") {
       return binary.endsWith("-mcp")
         ? JSON.stringify({
             id: 1,
-            result: { serverInfo: { name: binary, version: "0.1.7-alpha" } },
+            result: {
+              serverInfo: {
+                name: binary,
+                version:
+                  binary === "ackplane-mcp"
+                    ? "0.1.7-alpha"
+                    : "0.1.7-alpha+aaaaaaaaaaaa",
+              },
+            },
           })
         : "usage: fixture";
     }
@@ -211,7 +219,8 @@ test("archive source checks ignore inherited Git pointers and refuse dirty or un
           if (args[0] === "rev-parse") revision = output.trim();
           return output;
         }
-        console.log(JSON.stringify({ revision }));
+        const childRevision = execFileSync("git", ["rev-parse", "HEAD"], options).trim();
+        console.log(JSON.stringify({ revision, childRevision }));
         throw new Error("probe stopped before Cargo");
       });
     } catch (error) {
@@ -243,7 +252,10 @@ test("archive source checks ignore inherited Git pointers and refuse dirty or un
   // Foreign Git pointers mislabeled archives and hid dirty source from the build guard.
   const clean = inspect();
   assert.equal(clean.status, 0, clean.stderr);
-  assert.deepEqual(JSON.parse(clean.stdout), { revision });
+  assert.deepEqual(JSON.parse(clean.stdout), {
+    revision,
+    childRevision: revision,
+  });
   for (const file of ["source.txt", "untracked.txt"]) {
     fs.writeFileSync(path.join(candidate, file), "changed\n");
     const dirty = inspect();
@@ -421,4 +433,27 @@ test("an MCP binary identifying another version cannot enter the bundle", (conte
     /unexpected installed MCP identity/,
   );
   assert.deepEqual(fs.readdirSync(path.join(setup.root, "dist")), []);
+});
+
+test("an MCP binary with a missing or foreign build revision cannot enter the bundle", (context) => {
+  for (const binary of ["mindleak-mcp", "lodestar-mcp"]) {
+    for (const version of ["0.1.7-alpha", "0.1.7-alpha+bbbbbbbbbbbb"]) {
+      const setup = fixture(context);
+      // Version-only smoke checks accepted executables built with a foreign source identity.
+      assert.throws(
+        () =>
+          packageIndustrialBundle(setup.options, (command, args, options) => {
+            if (path.basename(command) === binary) {
+              return JSON.stringify({
+                id: 1,
+                result: { serverInfo: { name: binary, version } },
+              });
+            }
+            return setup.execute(command, args, options);
+          }),
+        /unexpected installed MCP source revision/,
+      );
+      assert.deepEqual(fs.readdirSync(path.join(setup.root, "dist")), []);
+    }
+  }
 });
