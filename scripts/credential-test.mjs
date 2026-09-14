@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const script = fileURLToPath(import.meta.url);
 const sessionVariable = "MINDLEAK_CREDENTIAL_TEST_SESSION";
 
-function launch(command, args, options, run) {
+function launch(command, args, options, run, completionEvent = "exit") {
   try {
     const child = run(command, args, options);
     const process = { child, finished: false };
@@ -17,7 +17,9 @@ function launch(command, args, options, run) {
         resolve(result);
       };
       child.once("error", (error) => finish({ error }));
-      child.once("exit", (status, signal) => finish({ status, signal }));
+      child.once(completionEvent, (status, signal) =>
+        finish({ status, signal }),
+      );
     });
     return process;
   } catch (error) {
@@ -80,6 +82,31 @@ export async function runCredentialTest({
       error,
     );
   }
+  const stop = async (owned, label, timeoutMs = shutdownTimeoutMs) => {
+    if (!owned?.child) return true;
+    try {
+      terminate(owned.child, "SIGTERM");
+      if (!owned.finished) {
+        await bounded(owned.done, timeoutMs);
+      }
+      terminate(owned.child, "SIGKILL");
+      if (!owned.finished) {
+        const killed = await bounded(owned.done, timeoutMs);
+        if (killed.error?.code === "ETIMEDOUT") {
+          error(`credential-test: ${label} did not exit after SIGKILL`);
+          return false;
+        }
+      }
+    } catch (failure) {
+      if (failure.code !== "ESRCH") {
+        error(
+          `credential-test: ${label} cleanup failed (${failure.code ?? "unknown"})`,
+        );
+        return false;
+      }
+    }
+    return true;
+  };
   if (!insideSession) {
     const directory = mkdtempSync(join(tmpdir(), "mindleak-credential-test-"));
     try {
@@ -93,27 +120,51 @@ export async function runCredentialTest({
       delete environment.DBUS_SESSION_BUS_ADDRESS;
       delete environment.GNOME_KEYRING_CONTROL;
       delete environment.GNOME_KEYRING_PID;
-      return outcome(
-        await launch(
-          "dbus-run-session",
-          [
-            "--",
-            process.execPath,
-            script,
-            "--inside-session",
-            "--",
-            command,
-            ...args,
-          ],
-          {
-            env: environment,
-            stdio: "inherit",
-          },
-          run,
-        ).done,
-        "isolated credential session",
-        error,
+      const session = launch(
+        "dbus-run-session",
+        [
+          "--",
+          process.execPath,
+          script,
+          "--inside-session",
+          "--",
+          command,
+          ...args,
+        ],
+        {
+          env: environment,
+          stdio: ["inherit", "pipe", "pipe"],
+          detached: true,
+        },
+        run,
+        "close",
       );
+      session.child?.stdout.pipe(process.stdout, { end: false });
+      session.child?.stderr.pipe(process.stderr, { end: false });
+      let interrupted;
+      const interruption = new Promise((resolve) => {
+        interrupted = resolve;
+      });
+      const interrupt = () => interrupted({ interrupted: 130 });
+      const terminateSession = () => interrupted({ interrupted: 143 });
+      signals.on("SIGINT", interrupt);
+      signals.on("SIGTERM", terminateSession);
+      try {
+        const result = await Promise.race([session.done, interruption]);
+        const stopped = await stop(
+          session,
+          "isolated credential session",
+          shutdownTimeoutMs * 5,
+        );
+        return (
+          result.interrupted ??
+          (outcome(result, "isolated credential session", error) ||
+            (stopped ? 0 : 1))
+        );
+      } finally {
+        signals.off("SIGINT", interrupt);
+        signals.off("SIGTERM", terminateSession);
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -152,31 +203,6 @@ export async function runCredentialTest({
   const terminateSession = () => interrupted({ interrupted: 143 });
   signals.on("SIGINT", interrupt);
   signals.on("SIGTERM", terminateSession);
-  const stop = async (owned, label) => {
-    if (!owned?.child) return true;
-    try {
-      terminate(owned.child, "SIGTERM");
-      if (!owned.finished) {
-        await bounded(owned.done, shutdownTimeoutMs);
-      }
-      terminate(owned.child, "SIGKILL");
-      if (!owned.finished) {
-        const killed = await bounded(owned.done, shutdownTimeoutMs);
-        if (killed.error?.code === "ETIMEDOUT") {
-          error(`credential-test: ${label} did not exit after SIGKILL`);
-          return false;
-        }
-      }
-    } catch (failure) {
-      if (failure.code !== "ESRCH") {
-        error(
-          `credential-test: ${label} cleanup failed (${failure.code ?? "unknown"})`,
-        );
-        return false;
-      }
-    }
-    return true;
-  };
   let tests;
   let code = 1;
   try {

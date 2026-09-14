@@ -63,6 +63,9 @@ function fakeProcess(result = { status: 0 }) {
     child.exitCode = status;
     child.signalCode = signal;
     child.emit("exit", status, signal);
+    child.stdout.end();
+    child.stderr.end();
+    child.emit("close", status, signal);
   };
   child.kill = (signal) => {
     queueMicrotask(() => child.finish(null, signal));
@@ -160,6 +163,49 @@ test("a missing isolated bus refuses before keyring access", async () => {
     }),
     2,
   );
+});
+
+test("outer interruption waits for session streams to close before releasing its directory", async () => {
+  const signals = new EventEmitter();
+  let directory;
+  let closed = false;
+  const stopped = [];
+  const code = await runCredentialTest({
+    command: "cargo",
+    platform: "linux",
+    signals,
+    env: {},
+    run: (command, args, options) => {
+      assert.equal(command, "dbus-run-session");
+      assert.equal(options.detached, true);
+      directory = options.env.MINDLEAK_CREDENTIAL_TEST_SESSION;
+      const child = fakeProcess({ pending: true });
+      queueMicrotask(() => signals.emit("SIGTERM"));
+      return child;
+    },
+    terminate: (child, signal) => {
+      stopped.push(signal);
+      if (signal === "SIGTERM") {
+        child.emit("exit", null, signal);
+        setImmediate(() => {
+          assert.equal(existsSync(directory), true);
+          closed = true;
+          child.finish(null, signal);
+        });
+      } else {
+        assert.equal(
+          closed,
+          true,
+          "session leader exit must not preempt worker cleanup",
+        );
+      }
+    },
+    error: () => {},
+  });
+  assert.equal(code, 143);
+  assert.deepEqual(stopped, ["SIGTERM", "SIGKILL"]);
+  assert.equal(existsSync(directory), false);
+  assert.equal(signals.listenerCount("SIGTERM"), 0);
 });
 
 test("test keyring starts before the command without evaluating its output", async () => {
