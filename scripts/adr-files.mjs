@@ -38,11 +38,15 @@ const GIT_REPOSITORY_VARIABLES = [
 ];
 
 /** git, run against `cwd` only, deaf to inherited repository pointers. */
-export const isolatedGit = (gitArgs, cwd = process.cwd()) => {
+export const isolatedGit = (
+  gitArgs,
+  cwd = process.cwd(),
+  execute = execFileSync,
+) => {
   try {
     const isolated = { ...process.env };
     for (const variable of GIT_REPOSITORY_VARIABLES) delete isolated[variable];
-    return execFileSync("git", gitArgs, {
+    return execute("git", gitArgs, {
       cwd,
       encoding: "utf8",
       stdio: "pipe",

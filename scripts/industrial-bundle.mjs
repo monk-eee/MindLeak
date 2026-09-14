@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
+import { isolatedGit } from "./adr-files.mjs";
 import {
   INDUSTRIAL_BINARIES,
   executableName,
@@ -31,11 +32,19 @@ export function packageIndustrialBundle(
   }
   const { platform, arch } = TARGETS[target];
   workspace = path.resolve(workspace);
-  const capture = (command, args) =>
-    execute(command, args, {
-      cwd: workspace,
-      encoding: "utf8",
-    }).trim();
+  const capture = (command, args) => {
+    const output =
+      command === "git"
+        ? isolatedGit(args, workspace, execute)
+        : execute(command, args, {
+            cwd: workspace,
+            encoding: "utf8",
+          }).trim();
+    if (output === null) {
+      throw new Error("cannot read Industrial source checkout with Git");
+    }
+    return output;
+  };
   const clean = (excludedDirectory) => {
     const relative =
       excludedDirectory && path.relative(workspace, excludedDirectory);
