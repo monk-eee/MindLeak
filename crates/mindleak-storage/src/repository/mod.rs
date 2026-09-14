@@ -434,6 +434,69 @@ mod tests {
         assert_eq!(explicit.origin, DatabaseOrigin::Explicit);
     }
 
+    // Failed Git discovery with visible metadata selected a new scratch store,
+    // hiding the existing fleet's goals and memory. Only real scratch may fall back.
+    #[test]
+    fn broken_git_metadata_cannot_silently_select_scratch_storage() {
+        let sandbox = Sandbox::new("broken-git-metadata");
+        let state_root = sandbox.root.join("state");
+        for metadata_kind in [
+            "link-file",
+            "directory",
+            #[cfg(unix)]
+            "symlink",
+        ] {
+            let repository = sandbox.root.join(metadata_kind);
+            let nested = repository.join("src").join("nested");
+            fs::create_dir_all(&nested).unwrap();
+            let marker = repository.join(".git");
+            match metadata_kind {
+                "link-file" => fs::write(&marker, b"gitdir: absent-admin-directory\n").unwrap(),
+                "directory" => fs::create_dir(&marker).unwrap(),
+                #[cfg(unix)]
+                "symlink" => std::os::unix::fs::symlink("absent-admin-directory", &marker).unwrap(),
+                _ => unreachable!(),
+            }
+            for workspace in [&repository, &nested] {
+                for kind in [DatabaseKind::MindLeak, DatabaseKind::Lodestar] {
+                    for result in [
+                        resolve_database(workspace, kind, None),
+                        resolve_database_in(workspace, kind, None, &state_root),
+                    ] {
+                        let error =
+                            result.expect_err("broken Git metadata is not a scratch workspace");
+                        assert!(matches!(error, RepositoryStorageError::Git(_)));
+                        assert!(error.to_string().contains("repository metadata"));
+                    }
+                    let explicit = resolve_database_in(
+                        workspace,
+                        kind,
+                        Some("custom/existing.db"),
+                        &state_root,
+                    )
+                    .unwrap();
+                    assert_eq!(explicit.origin, DatabaseOrigin::Explicit);
+                }
+                assert!(!workspace.join(".mindleak").exists());
+                assert!(!workspace.join(".lodestar").exists());
+            }
+            match metadata_kind {
+                "link-file" => assert_eq!(
+                    fs::read(&marker).unwrap(),
+                    b"gitdir: absent-admin-directory\n"
+                ),
+                "directory" => assert_eq!(fs::read_dir(&marker).unwrap().count(), 0),
+                #[cfg(unix)]
+                "symlink" => assert_eq!(
+                    fs::read_link(&marker).unwrap(),
+                    PathBuf::from("absent-admin-directory")
+                ),
+                _ => unreachable!(),
+            }
+        }
+        assert!(!state_root.exists());
+    }
+
     /// Restores the prior `MINDLEAK_HOME` value on drop so this test cannot
     /// leak process-global state into any test that runs after it, panic or not.
     struct MindleakHomeGuard {
