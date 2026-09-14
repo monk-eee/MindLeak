@@ -14,6 +14,8 @@ mod fixture;
 mod model;
 #[path = "indexing/process.rs"]
 mod process;
+#[path = "indexing/recall.rs"]
+mod recall;
 #[path = "indexing/service.rs"]
 mod service;
 
