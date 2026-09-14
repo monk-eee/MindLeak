@@ -378,6 +378,30 @@ Defects and limits in tools this repository depends on but does not own. Nothing
 here is fixable from this codebase. Each entry records the version measured,
 because that is what lets a future reader check whether it still holds.
 
+- **GNOME Keyring can abort while opening a Secret Service session.** Measured
+  2026-09-14 with Ubuntu 24.04's `gnome-keyring 46.1-2ubuntu0.2`: the AMD64
+  [coverage job 103945063173](https://github.com/monk-eee/MindLeak/actions/runs/34834477362/job/103945063173)
+  on `dfafd360f0032c1bc6176574dc83603ef50b8874` failed with daemon `SIGTRAP`.
+  The unchanged enrollment tests reproduced it in a private Ubuntu ARM64
+  container with the same keyring package and `libglib2.0-0t64 2.80.0-6ubuntu3.8`.
+  Eight fresh processes passed all five tests; the ninth lost provider access
+  and the supervised runner exited 1. The daemon reported missing `client` and
+  `session` assertions, followed by `g_variant_new` receiving a null variant.
+  This matches open upstream [issue 190](https://gitlab.gnome.org/GNOME/gnome-keyring/-/work_items/190):
+  deferred client initialization can leave `OpenSession` without a client
+  record, and a failed negotiation reaches the success reply with a null body.
+  The upstream repair is not established as shipped in this measured package.
+  Supervision bounds test-process cleanup after daemon loss; it cannot repair
+  the native service or restore an unlocked replacement. A successful retry,
+  older Debian package, or macOS Keychain test does not qualify this Linux
+  dependency. Do not disable credential tests, weaken credential storage, or
+  treat this as a passing Linux endurance result. The reproduction's original
+  log, daemon diagnostics and result are retained under
+  `target/ubuntu-keyring-1789384227468/` in the investigation checkout; no host
+  credentials or deployed services were used. The separate repository-owned
+  [unresponsive-service cleanup gap](../gaps.d/linux-credential-service-loss-stalls-enrollment-tests.md)
+  remains open.
+
 - **Docker Compose 5.4.0 all-service wait can reject a successful one-shot.**
   Measured 2026-09-14 on macOS through Podman's external Compose provider during
   the `1e6ce34993089fb14ccd647baa56d9a2258d407a` installation rehearsal:
