@@ -256,6 +256,26 @@ serves concurrent callers distinguished by registered `session_id` values.
 | `check_enrollment_status`  | Ask Ackplane about the companion's provider-backed (node, key) binding, translating `NodeEnrollmentService.CheckEnrollmentStatus` (ADR-0122). The companion signs the request; the front door never reads a private key or legacy candidate file. An unavailable companion reports unable to ask, not an authoritative "not enrolled" verdict. `state` is returned only when the arbiter says `verified: true`. |
 | `active_claims`            | List the claims Ackplane currently arbitrates for this repository, translating `ClaimDelegationService.ListActiveClaims` (ADR-0096, ADR-0139 clause 1). Read-only and unsigned: the request carries no `ClaimAuthentication` because it asks only what the arbiter already states about its own arbitration, and grants no authority. Scope comes from `MINDLEAK_ACKPLANE_TENANT_ID` and `MINDLEAK_ACKPLANE_REPOSITORY_ID`; either being unset is refused by name rather than asked with a blank scope, which would return an empty list indistinguishable from "no claims". This reports the arbiter's view, not Lodestar's board — the two answer different questions. |
 | `task_query`               | Read Ackplane's read-only Industrial Work projection, translating `WorkQueryService` (ADR-0139 clause 2) exactly as Bridge's first Work read surface already does. `view` selects the question: `list` (a paged/filterable task list, optionally by `state`, following ADR-0112's pagination discipline), `detail` (requires `task_id`; task, acceptance, event history, and waits), or `doctor` (Board Doctor findings — missing publication, impossible state/lease combinations, unresolved waits, and declared scope overlap). Every `list` answer names ADR-0120 decision 6's publication state (`current`/`claims_only`/`not_published` today — `lagging`/`unavailable` are not yet computed by any read surface). Same scope discipline as `active_claims`: an unset `MINDLEAK_ACKPLANE_TENANT_ID`/`MINDLEAK_ACKPLANE_REPOSITORY_ID` is refused rather than asked with a blank scope. This is materially narrower than Lodestar's own `task_query` (ADR-0139 clause 6): no create, mutation, conformance, or goal/constitution body. |
+| `index`                    | Explicitly populate this repository's server projection embeddings (ADR-0148). `limit` defaults to 200, bounded 1-1000; all other arguments are refused. The node-side MCP process sends only projected labels to the configured embedding endpoint, validates each entire vector batch, and publishes through the enrolled companion. It does not index local SQLite or perform inference inside Ackplane. |
+
+Industrial `index` uses `MINDLEAK_EMBED_URL` (default
+`http://localhost:11434/v1`), `MINDLEAK_EMBED_MODEL` (default `nomic-embed-text`)
+and optional `MINDLEAK_EMBED_API_KEY`. A remote model endpoint deliberately
+receives the projected labels; keep it local when those labels must stay on the
+machine. URLs containing user information, query parameters or fragments are
+refused, as are redirects and non-success responses. Response bodies are capped
+at 4 MiB; requests use a one-second connect and thirty-second overall timeout.
+
+One pass embeds batches of at most 20 labels. It reports `indexed` (confirmed
+writes), `attempted` (publication attempts), `stale_sources`, and `remaining`.
+`status` is `complete` for the observed queue, `limited` at a work/time budget,
+or `source_changed` when a previously attempted source reappears. The 120-second
+pass budget is checked at page and publication boundaries, not hard cancellation
+of an in-flight call. A tool error retains confirmed progress with `incomplete`,
+the failing stage and `remaining: null` when the remaining state is unknown.
+An empty queue makes no model call. Rerun to continue; the server's conditional
+write refuses stale labels. Completion describes this pass only, not projection
+freshness or the still-unfinished Industrial `recall` tool.
 
 Per ADR-0139 clause 3, this surface deliberately has no `task_create`, and no
 `task_transition` accepting a terminal state. Ackplane does not accept those

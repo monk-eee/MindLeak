@@ -1,0 +1,6 @@
+{
+  "design_id": "design:retry-receipts",
+  "title": "Preserve receipts across reconnects",
+  "summary": "## Problem\nA lost reply must not lose the original receipt.\n\n## Decision\nReplay the same durable record after reconnect.\n\n## Acceptance\nTwo workers retain separate receipts and a duplicate reply does not repeat execution.",
+  "source_version": "conversation-v1"
+}

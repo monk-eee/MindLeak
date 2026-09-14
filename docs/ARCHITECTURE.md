@@ -43,6 +43,12 @@ provenance, on-demand health results, and typed `ureq` failure classification
 clients, prompts, budgets, cancellation, and persistence behavior while sharing
 one vocabulary that cannot drift between their MCP results.
 
+The optional `embedding` feature also supplies a storage-free OpenAI response
+parser shared by both planes and the node-side Industrial indexer. It preserves
+input order, rejects malformed explicit indices and refuses incomplete,
+inconsistent or non-finite vectors. Plane-specific error wrappers remain at
+their callers; the shared crate performs no HTTP request or storage write.
+
 It also carries `NodeType` and the recall discrimination contract
 (`kind_prior`, `distinctive_cut`, `DISTINCTIVE_MIN_FIELD`, `DISTINCTIVE_SIGMA`,
 ADR-0140 decisions 3/5): narrow, pure, storage-agnostic ranking logic with no
@@ -591,6 +597,20 @@ Every Work event -- a creation from either path above, and every lifecycle effec
 
 The Bridge's `work_command_api/` (`ackplane-bridge`) is ADR-0125's first command route: `POST /api/v1/repositories/:repository_id/work/commands` (submit) and `POST /api/v1/repositories/:repository_id/work/commands/:command_id/confirm` (confirm), covering all ten command kinds through one JSON envelope tagged by `kind`. Split across three files -- `mod.rs` (state, routing, handlers), `payload.rs` (wire payload shapes and their conversion), `response.rs` (the typed outcome vocabulary) -- to stay under this repository's module-length control. It calls `WorkCommandService` directly -- never `WorkStore`/`ClaimStore` -- and, since ADR-0142 recognizes the Bridge's hardened loopback developer profile (`state.tenant_id`, the salted `development_tenant_token`) as a real verified principal for a self-hosted, single-tenant deployment (the same recognition ADR-0128 already gave Administration), every request now resolves to `WorkCommandAuthorization::Verified` -- scoped to the repository already confirmed visible, the full closed command vocabulary (`WorkCommandKind::ALL`), and no adopted policy or delegation (a Bridge-originated request is a direct verified human request, never a delegation). A well-formed, correctly-attributed request records a genuine `pending_confirmation` preview against a real `WorkCommandService`; confirmation still requires the exact payload digest, exactly as ADR-0125 decision 8 specified -- this changed *who* is asking, never *how* a consequential command executes. `ackplane-workctl` (`crates/ackplane-workctl`) is a small standalone CLI binary that calls this same versioned API over plain HTTP -- a scriptable, non-browser caller of the identical route and outcome contract, not a second way to reach the command service.
 
+Conversational authoring reuses that operator boundary. `ackplane-workctl`'s
+`design.rs` translates bounded proposal files and explicitly confirmed decisions
+to the existing Bridge Design routes; `design/materialization.rs` records
+confirmed references to existing Work and constitution publications. Preview
+digests bind content and target without claiming human authentication. Work
+submission can omit the principal and let Bridge resolve it. The materialization
+store canonicalizes Work reference ordering, including locale-independent read
+order, so identical retries remain idempotent. `ackplane-mcp`'s `prompts.rs`
+advertises `design_workflow` through standard MCP prompts, not new node mutation
+tools: the developer's model guides the review and invokes the permitted operator
+CLI. It performs no server read or write itself and exposes startup refusals as
+such. [Conversational Design](CONVERSATIONAL-DESIGN.md) describes the sequence,
+explicit approval boundaries, and remaining concurrency risk.
+
 The Bridge Work read response derives command availability from the same verified principal as the mutation route and exposes the authoritative task version. `static/work-page.mjs` renders the task board, published-goal and scoped-task creation, advertised supervisor-session selection, questions, and review submission. It refreshes task/goal/capability state before preparing a command. `static/work-command-client.mjs` owns immutable preview/confirmation requests and retry identity; a confirmation with an uncertain result remains retryable after expiry so the server can return its original receipt. An omitted browser principal comes from the handler's verified profile; explicit supplied identities still undergo authorization. `static/work-page.css` supplies the responsive page palette and layout. Pending delivery, command application, worker exit, review submission, and verified task completion remain distinct. [Bridge Work](BRIDGE-WORK.md) documents the workflow and its limits.
 
 `work_command_vocabulary.rs` declares the ten Work command operation names (ADR-0125 decision 3: "gRPC, HTTP, and future clients cannot grow different meanings of scope") as one canonical public `WORK_COMMAND_OPERATIONS` constant, in `WorkCommandKind`'s stable wire order. Both `WorkCommandKind::operation_name()` and the Bridge's `command_capabilities()` now derive from this single constant, replacing a Bridge-local hardcoded duplicate that could otherwise drift from the store's own vocabulary. It is deliberately data-only and exposes no store, service, or mutation capability of its own. `WorkCommandKind::ALL` is the same single-sourced list read as typed variants rather than wire-format strings -- the closed vocabulary a verified loopback principal is granted (ADR-0142 clause 2).
@@ -655,6 +675,41 @@ its own domain separator (`knowledge_auth::KNOWLEDGE_DOMAIN`), its own
 the signed bytes, and its own `knowledge_authentication_nonces` table —
 mirrored, not shared with claims', so the two domains' replay protection and
 signed-byte encodings can never collide or drift into each other.
+
+`ProjectionEmbeddingService` (`projection_embedding_service/`, ADR-0148)
+exposes `ListMissingProjectionEmbeddings` and `PublishProjectionEmbedding` over
+the existing projection store. Both calls require the enrolled node's own
+tenant/repository binding, a fresh timestamp and a single-use 16-byte nonce.
+`projection_embedding_auth` signs the operation, model, exact source label and
+every vector component in a separate domain; migration `0068` supplies its
+durable nonce table. Forged requests cannot consume nonces. Revoked, expired,
+cross-scope and replayed requests are refused before projection access.
+
+The shared protocol validator limits models to 128 bytes, source identifiers to
+2048 bytes, labels to 4096 bytes and vectors to 768 finite components with a
+nonzero norm. Missing-source reads default to 20 rows, cap at 100 and return
+whole sources within a 192 KiB encoded page, with `has_more` for the remainder.
+That byte budget also fits the companion's JSON envelope. Unsupported projected
+sources fail explicitly rather than being truncated or silently skipped. A
+publication returns `stored: false` if its source label changed or disappeared;
+it cannot replace a newer vector. A response lost after publication can be
+retried through the companion with fresh authentication and the same source
+snapshot. An exact authentication replay is always refused.
+
+`ackplane-node::companion::embeddings` owns signing and dispatch for the closed
+`ProjectionEmbeddingsMissing` and `ProjectionEmbeddingPublish` IPC operations.
+Callers use `NodeClient::protobuf`; they supply no private key, authentication
+envelope or alternate scope. Ackplane performs no inference. These calls make
+the optional producer path usable. `ackplane-mcp::tools::embeddings` now runs
+that loop on explicit `index` calls: fetch bounded projected label snapshots,
+embed in batches of 20 using the configured node-side HTTP endpoint, validate
+the whole batch, and publish via the companion. Confirmed writes, attempted
+writes and stale-source refusals are counted separately. Work and time budgets
+plus repeated-source detection bound retries; incomplete results preserve
+progress without claiming an unknown write succeeded. No local graph is opened
+and no model client is added to Ackplane. Background scheduling and the end-user
+recall surface remain unfinished; an empty missing-source page is not a recall
+verdict or a statement of projection freshness.
 
 A recorded statement's `lifecycle_state` (`KnowledgeLifecycleState`,
 `knowledge_store/activation.rs`) starts as `Candidate` and is never implicit

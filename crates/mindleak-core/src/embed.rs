@@ -10,9 +10,10 @@
 //! schema/migration coupling.
 
 use mindleak_model::discrimination::{distinctive_cut, kind_prior};
+use mindleak_model::embedding::parse_embedding_response;
 use mindleak_model::failure;
 use rusqlite::{params, Connection};
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::error::{MindLeakError, ModelFailureReason, Result};
 use crate::model::NodeType;
@@ -83,73 +84,8 @@ impl Embedder {
             }
             other => other,
         })?;
-        parse_embedding_response(&value, texts.len())
+        parse_embedding_response(&value, texts.len()).map_err(MindLeakError::from)
     }
-}
-
-fn parse_embedding_response(value: &Value, expected_count: usize) -> Result<Vec<Vec<f32>>> {
-    let data = value
-        .get("data")
-        .and_then(|d| d.as_array())
-        .ok_or_else(|| model_error("embeddings response missing data[]"))?;
-    if data.len() != expected_count {
-        return Err(model_error(format!(
-            "embeddings returned {} vectors for {expected_count} inputs",
-            data.len()
-        )));
-    }
-    let mut out: Vec<Vec<f32>> = vec![Vec::new(); expected_count];
-    let mut dimension = None;
-    for (position, item) in data.iter().enumerate() {
-        let index = item
-            .get("index")
-            .and_then(|i| i.as_u64())
-            .map(|i| i as usize)
-            .unwrap_or(position);
-        if index >= out.len() {
-            return Err(model_error("embeddings response index out of range"));
-        }
-        let vector = parse_embedding_vector(item)?;
-        if vector.is_empty() {
-            return Err(model_error("empty embedding vector"));
-        }
-        match dimension {
-            Some(expected) if vector.len() != expected => {
-                return Err(model_error(format!(
-                    "embeddings response has inconsistent dimensions: expected {expected}, got {}",
-                    vector.len()
-                )));
-            }
-            None => dimension = Some(vector.len()),
-            Some(_) => {}
-        }
-        out[index] = vector;
-    }
-    if out.iter().any(Vec::is_empty) {
-        return Err(model_error("embeddings response was missing a vector"));
-    }
-    Ok(out)
-}
-
-fn parse_embedding_vector(item: &serde_json::Value) -> Result<Vec<f32>> {
-    item.get("embedding")
-        .and_then(|embedding| embedding.as_array())
-        .ok_or_else(|| model_error("embeddings response item missing embedding"))?
-        .iter()
-        .enumerate()
-        .map(|(position, value)| {
-            let number = value.as_f64().ok_or_else(|| {
-                model_error(format!("embedding component {position} is not numeric"))
-            })?;
-            let narrowed = number as f32;
-            if !number.is_finite() || !narrowed.is_finite() {
-                return Err(model_error(format!(
-                    "embedding component {position} is not finite as f32"
-                )));
-            }
-            Ok(narrowed)
-        })
-        .collect()
 }
 
 fn model_error(detail: impl ToString) -> MindLeakError {
@@ -688,7 +624,9 @@ mod tests {
         let response = json!({
             "data": [{"index": 0, "embedding": [0.1, "bad", 0.2]}]
         });
-        let error = parse_embedding_response(&response, 1).unwrap_err();
+        let error = parse_embedding_response(&response, 1)
+            .map_err(MindLeakError::from)
+            .unwrap_err();
 
         assert!(error.to_string().contains("not numeric"));
     }
@@ -700,7 +638,9 @@ mod tests {
         let response = json!({
             "data": [{"index": 0, "embedding": [3.5e38, 0.2]}]
         });
-        let error = parse_embedding_response(&response, 1).unwrap_err();
+        let error = parse_embedding_response(&response, 1)
+            .map_err(MindLeakError::from)
+            .unwrap_err();
 
         assert!(error.to_string().contains("not finite"));
     }
@@ -715,7 +655,9 @@ mod tests {
                 {"index": 1, "embedding": [0.1, 0.2, 0.3]}
             ]
         });
-        let error = parse_embedding_response(&response, 2).unwrap_err();
+        let error = parse_embedding_response(&response, 2)
+            .map_err(MindLeakError::from)
+            .unwrap_err();
 
         assert!(error.to_string().contains("inconsistent dimensions"));
     }

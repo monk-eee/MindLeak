@@ -9,6 +9,7 @@ description = "Shared optional model-call vocabulary and transport classificatio
 
 [features]
 test-support = ["dep:serde_json"]
+embedding = ["dep:serde_json"]
 
 [dependencies]
 serde = { workspace = true }

@@ -136,6 +136,8 @@ pub(crate) const HUMAN_DECISION_REQUESTS: i64 = 54;
 /// `migrations/0055_projected_node_embeddings.sql` (ADR-0140 decision 1).
 /// `migration-audit --next` selected 55: no live discrepancy above 54.
 pub(crate) const PROJECTED_NODE_EMBEDDINGS: i64 = 55;
+/// `migrations/0068_projection_embedding_authentication_nonces.sql` (ADR-0148).
+pub(crate) const PROJECTION_EMBEDDING_AUTHENTICATION_NONCES: i64 = 68;
 /// `migrations/0056_supervisor_outbox_positions.sql` (ADR-0146 decision 3).
 /// `migration-audit --next` selected 56 from committed source; no live
 /// database was reachable to check for a higher applied key, so this is

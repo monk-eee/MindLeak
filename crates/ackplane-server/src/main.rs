@@ -26,6 +26,7 @@ use ackplane_server::{
     knowledge_store::KnowledgeStore,
     ledger::LedgerStore,
     projection::{run_projection_worker, Projector},
+    projection_embedding_service::ProjectionEmbeddingService,
     service::NodeSyncService,
     supervisor_store::SupervisorStore,
     telemetry_service::TelemetryGrpcService,
@@ -201,13 +202,14 @@ async fn main() -> ExitCode {
             // ADR-0086 clause 9: a projection worker reads the durable ledger
             // through checkpoints on its own cadence, decoupled from request
             // handling; a stalled or errored tick never stops the gRPC server.
+            let embedding_service = ProjectionEmbeddingService::new(projector.clone());
             tokio::spawn(run_projection_worker(
                 projector,
                 std::time::Duration::from_secs(config.projection_interval_secs as u64),
             ));
 
             println!(
-                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, EvidenceService, ConstitutionService, TelemetryService, WorkQueryService, authenticated supervisor facts, directive receipts, and native Industrial Work ingress"
+                "ackplane-server: serving NodeSyncService.Synchronize, NodeEnrollmentService, ClaimDelegationService, KnowledgeService, ProjectionEmbeddingService, EvidenceService, ConstitutionService, TelemetryService, WorkQueryService, authenticated supervisor facts, directive receipts, and native Industrial Work ingress"
             );
             let server = tonic::transport::Server::builder();
             let mut server = match tls {
@@ -244,6 +246,7 @@ async fn main() -> ExitCode {
                 .add_service(KnowledgeServiceServer::new(KnowledgeGrpcService::new(
                     knowledge_store,
                 )))
+                .add_service(embedding_service.into_server())
                 .add_service(EvidenceServiceServer::new(EvidenceGrpcService::new(
                     evidence_store,
                 )))

@@ -10,6 +10,7 @@
 
 mod endpoint;
 mod node_trust;
+mod prompts;
 mod server;
 mod tools;
 

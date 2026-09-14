@@ -217,9 +217,10 @@ impl MaterializationStore {
     /// or appended as a fresh revision.
     pub async fn record_materialization(
         &self,
-        request: RecordMaterializationRequest,
+        mut request: RecordMaterializationRequest,
     ) -> Result<MaterializationRevision, MaterializationStoreError> {
         validate_request(&request)?;
+        request.work_task_ids.sort_unstable();
 
         if let Some(existing) = self
             .find_by_idempotency_key(
@@ -335,6 +336,8 @@ mod query;
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod work_references;
+
     use crate::constitution_store::{
         ClauseSnapshot, ConstitutionStore, RecordConstitutionPublicationRequest,
     };

@@ -1,6 +1,20 @@
-- **ADR-0140's Ackplane recall path has no producer: nothing outside tests ever
-  writes `projected_node_embeddings`, so wiring the read half would ship a tool
-  that can only ever answer nothing — MEASURED 2026-09-02 on `81461328`, OPEN.**
+- **ADR-0140's shared recall surface and freshness reporting remain
+  unfinished -- updated 2026-09-14, OPEN.** The server now has
+  authenticated `ListMissingProjectionEmbeddings` and
+  `PublishProjectionEmbedding` RPCs plus closed node-companion operations.
+  `projection_embedding_service/` is a real production caller of
+  `Projector::nodes_missing_embedding` and `Projector::upsert_embedding`, with
+  tests through an enrolled companion, gRPC and PostgreSQL. Source snapshots,
+  vector bits, scope, model and nonce are signed; stale sources and replays are
+  refused. An explicit `ackplane-mcp` `index` pass now runs the optional
+  node-side embed-and-publish loop with bounded batches, progress reporting and
+  no model calls in Ackplane. Seven real MCP/HTTP/companion/PostgreSQL tests
+  exercise it. A recall response that distinguishes unembedded/stale data from
+  no match remains required; background scheduling is not provided by this pass.
+
+  **Original observation (2026-09-02 on `81461328`):** nothing outside tests
+  wrote `projected_node_embeddings`, so wiring the read half alone would ship a
+  tool that could only answer nothing.
   Slice 2's own task text asserts that "the WRITE half of ADR-0140 already
   shipped — `migrations/0055_projected_node_embeddings.sql` creates the table and
   `crates/ackplane-server/src/projection/embeddings.rs` populates it". The second
@@ -37,11 +51,11 @@
   (2026-09-02) puts the pass on an enrolled node, publishing under its enrolled
   key in its own domain, with Ackplane storing and ranking but computing
   nothing.** That followed the path knowledge embeddings already take rather
-  than giving the federation service an HTTP client and a model. What remains is
-  building it: the authenticated request pair (ask which projected nodes lack an
-  embedding for a model, publish the vectors) and the node-side loop.
+  than giving the federation service an HTTP client and a model. The authenticated
+  request pair and explicit node-side loop are now implemented; the shared recall
+  response and freshness distinctions remain open.
 
-  **Not fixed this run, and deliberately not worked around.** Found while
+  **Not fully fixed, and deliberately not worked around.** Found while
   starting `task:ddb8b1a4705b` (slice 3's proto/service/MCP plumbing); that task
   is blocked on this rather than built over it. The stage-two ranking it would
   have called is already landed and unit-tested
