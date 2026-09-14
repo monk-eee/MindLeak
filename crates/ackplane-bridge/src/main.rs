@@ -1,4 +1,5 @@
 use std::{
+    process::ExitCode,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -88,14 +89,14 @@ fn freshness_label(freshness: RepositoryFreshness) -> &'static str {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let salt_path = match std::env::var("ACKPLANE_BRIDGE_SALT_PATH") {
         Ok(raw) if !raw.trim().is_empty() => std::path::PathBuf::from(raw.trim()),
         _ => {
             eprintln!(
                 "ackplane-bridge: ACKPLANE_BRIDGE_SALT_PATH must be set for the loopback developer profile"
             );
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let salt = match ackplane_bridge::load_or_generate_salt(&salt_path) {
@@ -104,14 +105,14 @@ async fn main() {
             eprintln!(
                 "ackplane-bridge: could not load or generate the developer-tenant salt: {error}"
             );
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let config = match BridgeConfig::resolve(|key| std::env::var(key).ok(), &salt) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("ackplane-bridge: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     // One pool for this process (ADR-0143 decision 1); every migrated store
@@ -124,21 +125,21 @@ async fn main() {
         Ok(pool) => pool,
         Err(error) => {
             eprintln!("ackplane-bridge: could not build the Ackplane database pool: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let fleet_store = match FleetStore::connect(&db_pool).await {
         Ok(fleet) => Arc::new(fleet),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane read models: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let knowledge_store = match KnowledgeStore::connect(&db_pool).await {
         Ok(knowledge) => Arc::new(knowledge),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane knowledge domain: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let constitution_store = match ConstitutionStore::connect(&db_pool).await {
@@ -147,7 +148,7 @@ async fn main() {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane constitution domain: {error}"
             );
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let claim_store = match ClaimStore::connect(&db_pool).await {
@@ -159,77 +160,77 @@ async fn main() {
         Ok(claims) => Arc::new(claims),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane claim delegation: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let projector = match Projector::connect(&db_pool).await {
         Ok(projector) => Arc::new(projector),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's graph projection: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let readiness_store = match ReadinessStore::connect(&db_pool).await {
         Ok(readiness) => Arc::new(readiness),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane readiness rollup: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let telemetry_store = match TelemetryStore::connect(&db_pool).await {
         Ok(telemetry) => Arc::new(telemetry),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane telemetry domain: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let evidence_store = match BridgeEvidenceStore::connect(&db_pool).await {
         Ok(evidence) => Arc::new(evidence),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane evidence domain: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let supervisor_store = match SupervisorStore::connect(&db_pool).await {
         Ok(store) => Arc::new(store),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane supervisor store: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let context_packet_store = match ContextPacketStore::connect(&db_pool).await {
         Ok(context_packets) => Arc::new(context_packets),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane context packets: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let live_feed_store = match LiveFeedStore::connect(&db_pool).await {
         Ok(live_feed) => Arc::new(live_feed),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane live feed: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let human_decision_store = match HumanDecisionStore::connect(&db_pool).await {
         Ok(decisions) => Arc::new(decisions),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane human decisions: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let delegation_store = match DelegationStore::connect(&db_pool).await {
         Ok(delegations) => Arc::new(delegations),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane delegations: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let work_store = match WorkStore::connect(&db_pool).await {
         Ok(work) => Arc::new(work),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's Work domain: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let work_command_service = match WorkCommandService::connect(&db_pool).await {
@@ -238,14 +239,14 @@ async fn main() {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane's Work command domain: {error}"
             );
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let design_store = match DesignStore::connect(&db_pool).await {
         Ok(design) => Arc::new(design),
         Err(error) => {
             eprintln!("ackplane-bridge: could not connect to Ackplane's Design domain: {error}");
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let design_materialization_store = match MaterializationStore::connect(&db_pool).await {
@@ -254,7 +255,7 @@ async fn main() {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane's Design materialization domain: {error}"
             );
-            return;
+            return ExitCode::FAILURE;
         }
     };
     let administration_store = match AdministrationStore::connect(&db_pool).await {
@@ -263,7 +264,7 @@ async fn main() {
             eprintln!(
                 "ackplane-bridge: could not connect to Ackplane's Administration domain: {error}"
             );
-            return;
+            return ExitCode::FAILURE;
         }
     };
     // `None` (Snapshot reports `unavailable`) unless an operator has opted in
@@ -405,7 +406,7 @@ async fn main() {
                 "ackplane-bridge: could not listen on {}: {error}",
                 config.listen
             );
-            return;
+            return ExitCode::FAILURE;
         }
     };
     println!(
@@ -414,7 +415,9 @@ async fn main() {
     );
     if let Err(error) = axum::serve(listener, application).await {
         eprintln!("ackplane-bridge: server stopped with an error: {error}");
+        return ExitCode::FAILURE;
     }
+    ExitCode::SUCCESS
 }
 
 async fn fleet_page() -> impl IntoResponse {
