@@ -248,6 +248,71 @@ fn traverse_respects_depth_and_min_weight() {
     assert!(ids2.contains(&"c".to_string()));
 }
 
+// HashMap order shuffled equal-score seeds behind descendants, changing which
+// evidence survived a context limit even when graph, query and time were identical.
+#[test]
+fn equal_score_traversal_preserves_seed_order_then_depth_and_stable_identity() {
+    for reverse_insertion in [false, true] {
+        let graph = store();
+        let mut ids = vec!["seed-z", "seed-a", "near-z", "near-a", "far-a", "weak-a"];
+        if reverse_insertion {
+            ids.reverse();
+        }
+        for id in ids {
+            add_node(&graph, id, NodeType::Artifact, id, NOW);
+        }
+        for (source, target, weight) in [
+            ("seed-z", "near-z", 1.0),
+            ("seed-z", "near-a", 1.0),
+            ("near-z", "far-a", 1.0),
+            ("seed-z", "weak-a", 0.5),
+        ] {
+            graph
+                .upsert_edge(&raw_edge(
+                    source,
+                    target,
+                    RelationType::Contains,
+                    weight,
+                    168.0,
+                    NOW,
+                ))
+                .unwrap();
+        }
+        let seeds = vec!["seed-z".to_string(), "seed-a".to_string()];
+        for _repeat in 0..16 {
+            let subgraph = graph
+                .traverse(&seeds, Direction::Outgoing, 2, 0.0, NOW)
+                .unwrap();
+            let actual = subgraph
+                .nodes
+                .iter()
+                .map(|node| node.node.id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual,
+                ["seed-z", "seed-a", "near-a", "near-z", "far-a", "weak-a"]
+            );
+        }
+        let reversed = graph
+            .traverse(
+                &[seeds[1].clone(), seeds[0].clone()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(
+            reversed
+                .nodes
+                .iter()
+                .map(|node| node.node.id.as_str())
+                .collect::<Vec<_>>(),
+            ["seed-a", "seed-z", "near-a", "near-z", "weak-a"]
+        );
+    }
+}
+
 #[test]
 fn traverse_both_directions_reaches_incoming() {
     let s = store();

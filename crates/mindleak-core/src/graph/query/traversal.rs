@@ -240,10 +240,27 @@ impl GraphStore {
                 });
             }
         }
-        nodes.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
+        let mut seed_order = HashMap::new();
+        for (index, seed) in seeds.iter().enumerate() {
+            seed_order.entry(seed.as_str()).or_insert(index);
+        }
+        nodes.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.depth.cmp(&right.depth))
+                .then_with(|| {
+                    seed_order
+                        .get(left.node.id.as_str())
+                        .unwrap_or(&usize::MAX)
+                        .cmp(
+                            seed_order
+                                .get(right.node.id.as_str())
+                                .unwrap_or(&usize::MAX),
+                        )
+                })
+                .then_with(|| left.node.id.cmp(&right.node.id))
         });
 
         Ok(Subgraph {
