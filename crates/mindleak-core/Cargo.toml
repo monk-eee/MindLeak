@@ -23,3 +23,7 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 mindleak-model = { path = "../mindleak-model", features = ["test-support"] }
+
+[[example]]
+name = "evaluate_signal"
+test = true
