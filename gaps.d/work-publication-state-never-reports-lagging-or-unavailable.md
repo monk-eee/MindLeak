@@ -1,6 +1,26 @@
-- **Neither Work read surface computes ADR-0120 decision 6's `lagging` or
-  `unavailable` publication states — MEASURED 2026-08-30, OPEN, and BLOCKED on
-  the Work event-log foundation (`task:1b94d6ca5365`).** Decision 6
+- **Work reads still lack explicit unavailable reporting for synchronous
+  projection inconsistency -- OPEN IMPLEMENTATION; design choice resolved
+  2026-09-14.** The user explicitly approved retaining atomic event/projection
+  updates and amending ADR-0120, not introducing an asynchronous Work projector.
+  Its amended decision 6 removes `lagging` from Work's vocabulary and requires
+  per-task event/position/state checks from a coherent snapshot. Read failures
+  and committed inconsistencies must not appear as a current or empty board.
+  Matching repository-wide maximum positions is insufficient and structural
+  checks are not a substitute for full replay verification.
+
+  This amendment changes the contract, not the running read surfaces.
+  `WorkStore::publication`, Bridge's publication mapping, and
+  `WorkQueryService::publication_to_wire` still need the shared implementation
+  and regression coverage. Ordinary reads must withhold known-inconsistent
+  data; diagnostic paths must report the affected scope without repairing it.
+  Implementation is deliberately separate from the current integration batch,
+  whose live claim overlaps the Work store and integration tests. Keep this
+  fragment until the implemented behavior and required tests satisfy the amended
+  contract. The evidence below records why the original plan was corrected.
+
+  **Historical observation, 2026-08-30:** neither read surface computed the
+  originally described `lagging` or `unavailable` states, initially blocked on
+  the Work event-log foundation (`task:1b94d6ca5365`). Original decision 6
   names five publication states a Work answer must carry: `current`,
   `lagging`, `claims_only`, `not_published`, or `unavailable`. Bridge's own
   `WorkPublicationResponse::from` (`crates/ackplane-bridge/src/work_api.rs`)

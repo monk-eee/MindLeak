@@ -5,6 +5,143 @@ use crate::graph::test_support::*;
 use crate::graph::{ArtifactStub, Direction, GraphStore, SignalCandidate};
 use crate::model::{Edge, Node, NodeType, RelationType};
 
+// Extreme persisted timestamps panicked before decay evaluation in debug builds
+// and wrapped the reinforcement span in release builds, changing signal lifetime.
+#[test]
+fn reinforcement_spans_do_not_overflow_or_turn_reversed_time_into_signal() {
+    for (first_seen, updated_at, expected_span) in [
+        (i64::MIN, i64::MAX, i64::MAX as f64 / 3600.0),
+        (i64::MAX, i64::MIN, 0.0),
+        (NOW - 72 * HOUR, NOW, 72.0),
+        (NOW, NOW - HOUR, 0.0),
+    ] {
+        let graph = store();
+        add_node(&graph, "artifact:source", NodeType::Artifact, "source", NOW);
+        add_node(&graph, "artifact:target", NodeType::Artifact, "target", NOW);
+        let mut edge = Edge::new(
+            "artifact:source",
+            "artifact:target",
+            RelationType::Modified,
+            first_seen,
+        );
+        graph.upsert_edge(&edge).unwrap();
+        edge.updated_at = updated_at;
+        graph.upsert_edge(&edge).unwrap();
+        graph.upsert_edge(&edge).unwrap();
+
+        let evidence = graph.signal_evidence(&edge, updated_at).unwrap();
+        assert_eq!(evidence.reinforcement_count, 3);
+        assert_eq!(evidence.reinforcement_span_hours, expected_span);
+        let weighted = graph
+            .traverse(
+                &[edge.source_id.clone()],
+                Direction::Outgoing,
+                1,
+                0.0,
+                updated_at,
+            )
+            .unwrap();
+        assert_eq!(weighted.edges.len(), 1);
+        assert!(weighted.edges[0].effective.is_finite());
+        assert_eq!(
+            weighted.edges[0].signal_multiplier > 1.0,
+            expected_span >= 48.0
+        );
+    }
+}
+
+// A failure at the earliest representable instant cannot have a week-old target.
+#[test]
+fn signal_timestamps_do_not_overflow_in_surprise_lookback() {
+    let graph = store();
+    add_node(
+        &graph,
+        "execution:failed",
+        NodeType::Execution,
+        "failed",
+        i64::MIN,
+    );
+    add_node(
+        &graph,
+        "artifact:target",
+        NodeType::Artifact,
+        "target",
+        i64::MIN,
+    );
+    let failure = Edge::new(
+        "execution:failed",
+        "artifact:target",
+        RelationType::FailedOn,
+        i64::MIN,
+    );
+    graph.upsert_edge(&failure).unwrap();
+    let evidence = graph.signal_evidence(&failure, i64::MIN).unwrap();
+    assert!(!evidence.surprise);
+    assert!(!evidence.consequence);
+    assert_eq!(evidence.reinforcement_span_hours, 0.0);
+    assert_eq!(
+        graph
+            .traverse(
+                std::slice::from_ref(&failure.source_id),
+                Direction::Outgoing,
+                1,
+                0.0,
+                i64::MIN,
+            )
+            .unwrap()
+            .edges
+            .len(),
+        1
+    );
+}
+
+// Rehearsed attention used a second unchecked span and could still panic after
+// the primary span was repaired. It must consume that same derived evidence.
+#[test]
+fn signal_timestamps_do_not_overflow_in_rehearsed_attention() {
+    let graph = store();
+    add_node(&graph, "agent:reader", NodeType::Agent, "reader", NOW);
+    add_node(&graph, "artifact:source", NodeType::Artifact, "source", NOW);
+    add_node(&graph, "artifact:target", NodeType::Artifact, "target", NOW);
+    let mut observed = Edge::new(
+        "agent:reader",
+        "artifact:target",
+        RelationType::Observed,
+        i64::MIN,
+    );
+    graph.upsert_edge(&observed).unwrap();
+    observed.updated_at = NOW;
+    graph.upsert_edge(&observed).unwrap();
+    graph.upsert_edge(&observed).unwrap();
+    let dependency = Edge::new(
+        "artifact:source",
+        "artifact:target",
+        RelationType::Imports,
+        NOW,
+    );
+    graph.upsert_edge(&dependency).unwrap();
+    assert!(
+        graph
+            .signal_evidence(&dependency, NOW)
+            .unwrap()
+            .deliberate_attention
+    );
+    assert_eq!(
+        graph
+            .traverse(
+                std::slice::from_ref(&dependency.source_id),
+                Direction::Outgoing,
+                1,
+                0.0,
+                NOW,
+            )
+            .unwrap()
+            .edges
+            .len(),
+        1
+    );
+}
+
 #[test]
 fn decay_policy_retroactively_overrides_the_stored_half_life() {
     let graph = store();
