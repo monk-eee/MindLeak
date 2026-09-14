@@ -200,7 +200,7 @@ fn dot_identifiers_are_refused_instead_of_silently_removed_from_the_target_url()
 #[tokio::test]
 async fn publication_refuses_redirects_and_http_errors_and_reports_uncertain_readback() {
     use axum::{
-        body::Body,
+        body::{Body, Bytes},
         http::{Method, Response, StatusCode},
         Router,
     };
@@ -213,7 +213,10 @@ async fn publication_refuses_redirects_and_http_errors_and_reports_uncertain_rea
     let calls = Arc::new(AtomicUsize::new(0));
     let handler_mode = mode.clone();
     let handler_calls = calls.clone();
-    let app = Router::new().fallback(move |method: Method| {
+    let app = Router::new().fallback(move |method: Method, body: Bytes| {
+        if method == Method::POST {
+            assert!(serde_json::from_slice::<Value>(&body).unwrap().is_object());
+        }
         handler_calls.fetch_add(1, Ordering::SeqCst);
         let mode = handler_mode.load(Ordering::SeqCst);
         async move {
@@ -236,6 +239,34 @@ async fn publication_refuses_redirects_and_http_errors_and_reports_uncertain_rea
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
+    let probe_origin = origin.clone();
+    tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Read};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        let address = probe_origin.strip_prefix("http://").unwrap();
+        let mut connection = TcpStream::connect(address).unwrap();
+        connection.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let body = include_bytes!("fixtures/conversation_design.json");
+        write!(connection,
+            "POST / HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nExpect: 100-continue\r\nConnection: close\r\n\r\n",
+            body.len()
+        ).unwrap();
+        let mut reader = BufReader::new(connection);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        // Replying before reading the POST body raced the client's send and
+        // produced a transport failure instead of the HTTP status under test.
+        assert_eq!(line, "HTTP/1.1 100 Continue\r\n");
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert_eq!(line, "\r\n");
+        reader.get_mut().write_all(body).unwrap();
+        let mut response = String::new();
+        reader.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 307"), "{response}");
+    }).await.unwrap();
     let review: Value = serde_json::from_slice(
         &preview(
             include_bytes!("fixtures/conversation_design.json"),
