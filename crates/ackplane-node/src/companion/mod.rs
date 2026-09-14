@@ -21,6 +21,7 @@ use tokio::{
 use crate::{NodeSigner, SigningBinding};
 
 mod constitution;
+mod embeddings;
 mod endpoint;
 mod operations;
 mod relay;

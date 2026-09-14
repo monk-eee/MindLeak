@@ -670,6 +670,34 @@ the signed bytes, and its own `knowledge_authentication_nonces` table —
 mirrored, not shared with claims', so the two domains' replay protection and
 signed-byte encodings can never collide or drift into each other.
 
+`ProjectionEmbeddingService` (`projection_embedding_service/`, ADR-0148)
+exposes `ListMissingProjectionEmbeddings` and `PublishProjectionEmbedding` over
+the existing projection store. Both calls require the enrolled node's own
+tenant/repository binding, a fresh timestamp and a single-use 16-byte nonce.
+`projection_embedding_auth` signs the operation, model, exact source label and
+every vector component in a separate domain; migration `0068` supplies its
+durable nonce table. Forged requests cannot consume nonces. Revoked, expired,
+cross-scope and replayed requests are refused before projection access.
+
+The shared protocol validator limits models to 128 bytes, source identifiers to
+2048 bytes, labels to 4096 bytes and vectors to 768 finite components with a
+nonzero norm. Missing-source reads default to 20 rows, cap at 100 and return
+whole sources within a 192 KiB encoded page, with `has_more` for the remainder.
+That byte budget also fits the companion's JSON envelope. Unsupported projected
+sources fail explicitly rather than being truncated or silently skipped. A
+publication returns `stored: false` if its source label changed or disappeared;
+it cannot replace a newer vector. A response lost after publication can be
+retried through the companion with fresh authentication and the same source
+snapshot. An exact authentication replay is always refused.
+
+`ackplane-node::companion::embeddings` owns signing and dispatch for the closed
+`ProjectionEmbeddingsMissing` and `ProjectionEmbeddingPublish` IPC operations.
+Callers use `NodeClient::protobuf`; they supply no private key, authentication
+envelope or alternate scope. Ackplane performs no inference. These calls make
+the optional producer path usable, but the automatic node-side embedding loop
+and end-user recall surface remain unfinished; an empty missing-source page is
+not a recall verdict or a statement of projection freshness.
+
 A recorded statement's `lifecycle_state` (`KnowledgeLifecycleState`,
 `knowledge_store/activation.rs`) starts as `Candidate` and is never implicit
 or cosmetic (ADR-0113 decision 1): `recall`/`active_page` only ever return

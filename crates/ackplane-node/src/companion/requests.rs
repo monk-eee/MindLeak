@@ -18,6 +18,17 @@ impl NodeService {
             Operation::ConstitutionPublish { snapshot } => {
                 self.publish_constitution(&snapshot).await
             }
+            Operation::ProjectionEmbeddingsMissing { model, limit } => {
+                self.missing_projection_embeddings(model, limit).await
+            }
+            Operation::ProjectionEmbeddingPublish {
+                source,
+                model,
+                embedding,
+            } => {
+                self.publish_projection_embedding(&source, model, embedding)
+                    .await
+            }
             Operation::Claim(claim) => self.claim(claim).await,
             Operation::ActiveClaims => {
                 let mut client = ackplane_client::ClaimClient::connect(&self.endpoint).await?;
