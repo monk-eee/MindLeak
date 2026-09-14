@@ -6,21 +6,17 @@
 //! asking a question. This module adds the missing half: an embedding per
 //! statement, and cosine ranking behind the read surface agents already call.
 //!
-//! **Why this duplicates `mindleak_core::embed` rather than reusing it.**
-//! `mindleak-core` is a *dev-dependency only* of `lodestar-core` (ADR-0004), so
-//! the Intent Plane's runtime cannot reach the Memory Plane's embedder at all.
-//! Reusing it would mean promoting that dependency and coupling the two planes,
-//! which is the decoupling ADR-0004 exists to protect. Extracting a third,
-//! shared crate is the other way to remove the duplication and was deliberately
-//! not taken here: it buys one copy of ~60 lines at the cost of a new published
-//! surface for both planes to version against. If a third consumer appears,
-//! that trade changes and the extraction becomes worth doing.
+//! The Intent and Memory Planes keep separate HTTP clients (ADR-0004), so
+//! `mindleak-core` remains a dev-dependency here. A third consumer, server
+//! indexing, now justifies sharing response parsing through the existing,
+//! storage-free `mindleak-model` crate without coupling the planes.
 //!
 //! Everything here is optional. No embedder means no index, and every caller
 //! degrades to substring matching rather than failing.
 
 use std::time::Duration;
 
+use mindleak_model::embedding::parse_embedding_response;
 use rusqlite::{params, Connection};
 
 use crate::error::{LodestarError, Result};
@@ -111,88 +107,8 @@ impl Embedder {
             .into_json()
             .map_err(|e| LodestarError::Invalid(format!("embedder returned no JSON: {e}")))?;
         parse_embedding_response(&body, texts.len())
+            .map_err(|failure| LodestarError::Invalid(failure.detail))
     }
-}
-
-/// Parse an OpenAI-compatible embeddings response strictly.
-///
-/// Every check here exists because the lenient version of it fails silently: a
-/// dropped component shortens a vector, a reordered `data[]` attaches a vector
-/// to the wrong statement, and a mismatched dimension scores zero against
-/// everything. All three produce confident, wrong rankings rather than an error.
-fn parse_embedding_response(value: &serde_json::Value, expected: usize) -> Result<Vec<Vec<f32>>> {
-    let data = value
-        .get("data")
-        .and_then(|d| d.as_array())
-        .ok_or_else(|| LodestarError::Invalid("embeddings response missing data[]".into()))?;
-    if data.len() != expected {
-        return Err(LodestarError::Invalid(format!(
-            "embeddings returned {} vectors for {expected} inputs",
-            data.len()
-        )));
-    }
-    let mut out: Vec<Vec<f32>> = vec![Vec::new(); expected];
-    let mut dimension: Option<usize> = None;
-    for (position, item) in data.iter().enumerate() {
-        // `index` is authoritative when present: the API does not promise to
-        // return vectors in the order they were submitted.
-        let index = item
-            .get("index")
-            .and_then(|i| i.as_u64())
-            .map_or(position, |i| i as usize);
-        if index >= out.len() {
-            return Err(LodestarError::Invalid(
-                "embeddings response index out of range".into(),
-            ));
-        }
-        let vector = parse_embedding_vector(item)?;
-        match dimension {
-            Some(expected_dim) if vector.len() != expected_dim => {
-                return Err(LodestarError::Invalid(format!(
-                    "embeddings response has inconsistent dimensions: expected {expected_dim}, \
-                     got {}",
-                    vector.len()
-                )));
-            }
-            None => dimension = Some(vector.len()),
-            Some(_) => {}
-        }
-        out[index] = vector;
-    }
-    if out.iter().any(Vec::is_empty) {
-        return Err(LodestarError::Invalid(
-            "embeddings response was missing a vector".into(),
-        ));
-    }
-    Ok(out)
-}
-
-fn parse_embedding_vector(item: &serde_json::Value) -> Result<Vec<f32>> {
-    let components = item
-        .get("embedding")
-        .and_then(|e| e.as_array())
-        .ok_or_else(|| {
-            LodestarError::Invalid("embeddings response item missing embedding".into())
-        })?;
-    if components.is_empty() {
-        return Err(LodestarError::Invalid("empty embedding vector".into()));
-    }
-    components
-        .iter()
-        .enumerate()
-        .map(|(position, value)| {
-            let number = value.as_f64().ok_or_else(|| {
-                LodestarError::Invalid(format!("embedding component {position} is not numeric"))
-            })?;
-            let narrowed = number as f32;
-            if !narrowed.is_finite() {
-                return Err(LodestarError::Invalid(format!(
-                    "embedding component {position} is not finite as f32"
-                )));
-            }
-            Ok(narrowed)
-        })
-        .collect()
 }
 
 /// Cosine similarity. Zero for a degenerate vector, so an unembeddable

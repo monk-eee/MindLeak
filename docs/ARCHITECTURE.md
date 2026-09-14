@@ -43,6 +43,12 @@ provenance, on-demand health results, and typed `ureq` failure classification
 clients, prompts, budgets, cancellation, and persistence behavior while sharing
 one vocabulary that cannot drift between their MCP results.
 
+The optional `embedding` feature also supplies a storage-free OpenAI response
+parser shared by both planes and the node-side Industrial indexer. It preserves
+input order, rejects malformed explicit indices and refuses incomplete,
+inconsistent or non-finite vectors. Plane-specific error wrappers remain at
+their callers; the shared crate performs no HTTP request or storage write.
+
 It also carries `NodeType` and the recall discrimination contract
 (`kind_prior`, `distinctive_cut`, `DISTINCTIVE_MIN_FIELD`, `DISTINCTIVE_SIGMA`,
 ADR-0140 decisions 3/5): narrow, pure, storage-agnostic ranking logic with no
@@ -680,9 +686,16 @@ snapshot. An exact authentication replay is always refused.
 `ProjectionEmbeddingsMissing` and `ProjectionEmbeddingPublish` IPC operations.
 Callers use `NodeClient::protobuf`; they supply no private key, authentication
 envelope or alternate scope. Ackplane performs no inference. These calls make
-the optional producer path usable, but the automatic node-side embedding loop
-and end-user recall surface remain unfinished; an empty missing-source page is
-not a recall verdict or a statement of projection freshness.
+the optional producer path usable. `ackplane-mcp::tools::embeddings` now runs
+that loop on explicit `index` calls: fetch bounded projected label snapshots,
+embed in batches of 20 using the configured node-side HTTP endpoint, validate
+the whole batch, and publish via the companion. Confirmed writes, attempted
+writes and stale-source refusals are counted separately. Work and time budgets
+plus repeated-source detection bound retries; incomplete results preserve
+progress without claiming an unknown write succeeded. No local graph is opened
+and no model client is added to Ackplane. Background scheduling and the end-user
+recall surface remain unfinished; an empty missing-source page is not a recall
+verdict or a statement of projection freshness.
 
 A recorded statement's `lifecycle_state` (`KnowledgeLifecycleState`,
 `knowledge_store/activation.rs`) starts as `Candidate` and is never implicit

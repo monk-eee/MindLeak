@@ -7,6 +7,8 @@ use std::io;
 use serde::{Deserialize, Serialize};
 
 pub mod discrimination;
+#[cfg(feature = "embedding")]
+pub mod embedding;
 mod node_type;
 #[cfg(feature = "test-support")]
 pub mod test_support;

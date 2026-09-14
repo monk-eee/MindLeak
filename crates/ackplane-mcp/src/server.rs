@@ -220,11 +220,12 @@ mod tests {
         )
         .expect("tools/list is answered");
         let tools = response["result"]["tools"].as_array().expect("an array");
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 5);
         assert_eq!(tools[0]["name"], tools::OPEN_SESSION);
         assert_eq!(tools[1]["name"], tools::CHECK_ENROLLMENT_STATUS);
         assert_eq!(tools[2]["name"], tools::ACTIVE_CLAIMS);
         assert_eq!(tools[3]["name"], tools::TASK_QUERY);
+        assert_eq!(tools[4]["name"], tools::INDEX);
     }
 
     /// The clause-4 refusal has to reach the agent, and a tool result is the

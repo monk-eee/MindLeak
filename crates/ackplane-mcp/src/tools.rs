@@ -14,6 +14,8 @@ use ackplane_protocol::v1::EnrollmentState;
 use mindleak_session::{SessionContext, SessionRegistry};
 use serde_json::{json, Value};
 
+mod embeddings;
+
 /// Named for the RPC it translates rather than for a local tool, because
 /// Ackplane's enrolment question has no local-vocabulary equivalent to track
 /// (ADR-0136 clause 2).
@@ -38,6 +40,7 @@ pub const TASK_QUERY: &str = "task_query";
 /// process*; `open_session` layers an independently-declared agent identity
 /// on top, distinguishing concurrent callers behind one long-lived front door.
 pub const OPEN_SESSION: &str = "open_session";
+pub const INDEX: &str = "index";
 
 const TENANT_ID_ENV: &str = "MINDLEAK_ACKPLANE_TENANT_ID";
 const REPOSITORY_ID_ENV: &str = "MINDLEAK_ACKPLANE_REPOSITORY_ID";
@@ -103,6 +106,7 @@ pub fn advertised() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        embeddings::definition(),
     ]
 }
 
@@ -131,7 +135,7 @@ pub fn open_session(sessions: &SessionRegistry, arguments: &Value) -> Result<Val
 /// [`OPEN_SESSION`] is deliberately absent from this match: the server
 /// intercepts it before ever calling here (see [`open_session`]'s doc
 /// comment), so it never reaches the "unknown tool" branch below despite
-/// being one of [`advertised`]'s four names.
+/// being one of [`advertised`]'s names.
 pub fn call<F>(
     endpoint: &str,
     name: &str,
@@ -145,6 +149,7 @@ where
         CHECK_ENROLLMENT_STATUS => check_enrollment_status(endpoint, environment),
         ACTIVE_CLAIMS => active_claims(endpoint, environment),
         TASK_QUERY => task_query(endpoint, arguments, environment),
+        INDEX => embeddings::index(endpoint, arguments, environment),
         // ADR-0139 clause 3: Ackplane does not accept these, so neither does its
         // front door. Named separately from an unknown tool because the reason
         // is different and actionable -- the operation exists, the authority
@@ -156,7 +161,7 @@ where
         )),
         other => Err(format!(
             "unknown tool: {other}. This front door serves {OPEN_SESSION}, \
-             {CHECK_ENROLLMENT_STATUS}, {ACTIVE_CLAIMS}, and {TASK_QUERY}; it refuses a name it \
+             {CHECK_ENROLLMENT_STATUS}, {ACTIVE_CLAIMS}, {TASK_QUERY}, and {INDEX}; it refuses a name it \
              does not translate rather than approximating one."
         )),
     }
@@ -440,13 +445,14 @@ mod tests {
     }
 
     #[test]
-    fn the_advertised_surface_is_exactly_this_slice_s_four_tools() {
+    fn the_advertised_surface_includes_explicit_node_indexing() {
         let advertised = advertised();
-        assert_eq!(advertised.len(), 4);
+        assert_eq!(advertised.len(), 5);
         assert_eq!(advertised[0]["name"], OPEN_SESSION);
         assert_eq!(advertised[1]["name"], CHECK_ENROLLMENT_STATUS);
         assert_eq!(advertised[2]["name"], ACTIVE_CLAIMS);
         assert_eq!(advertised[3]["name"], TASK_QUERY);
+        assert_eq!(advertised[4]["name"], INDEX);
     }
 
     /// ADR-0137 clause 2's contract, in one call: a session opens and returns

@@ -69,8 +69,11 @@ dependencies = [
  "ackplane-protocol",
  "ackplane-server",
  "anyhow",
+ "axum",
  "ed25519-dalek",
+ "mindleak-model",
  "mindleak-session",
+ "prost",
  "serde_json",
  "tempfile",
  "thiserror",
@@ -78,6 +81,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "ureq",
  "url",
 ]
 
