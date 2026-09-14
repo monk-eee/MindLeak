@@ -14,6 +14,7 @@
 //! ```
 
 use ackplane_client::{
+    auth::{authenticate, SeedSigner},
     ClaimAnswerRequest, ClaimClient, ClaimLeaseOutcome, ClaimLeaseRequest, ClaimOperation,
     ClaimParkRequest, ClaimReleaseRequest, ClaimRenewRequest,
 };
@@ -22,13 +23,11 @@ use ackplane_protocol::v1::{
 };
 use ackplane_server::{
     claim_service::ClaimDelegationService,
-    claim_signature::claim_signing_bytes,
     claim_store::ClaimStore,
     enrollment_store::EnrollmentStore,
     signing_keys::{self, SigningKeyRecord},
 };
-use ed25519_dalek::{Signer, SigningKey};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use ed25519_dalek::SigningKey;
 use tokio::sync::oneshot;
 use tokio_postgres::NoTls;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -50,36 +49,66 @@ fn authentication(
     owner_id: &str,
     operation: &ClaimOperation,
 ) -> ClaimAuthentication {
-    let mut authentication = ClaimAuthentication {
-        signing_key_id: SIGNING_KEY_ID.to_string(),
-        node_id: NODE_ID.to_string(),
-        signed_at: OffsetDateTime::now_utc().format(&Rfc3339).unwrap(),
-        nonce: unique_task_id().into_bytes(),
-        signature: Vec::new(),
-    };
-    authentication.signature = signing_key()
-        .sign(&claim_signing_bytes(
-            tenant_id,
-            repository_id,
-            task_id,
-            owner_id,
-            operation,
-            &authentication,
-        ))
-        .to_bytes()
-        .to_vec();
-    authentication
+    authenticate(
+        &SeedSigner::new(SIGNING_KEY_ID, NODE_ID, &signing_key().to_bytes()),
+        tenant_id,
+        repository_id,
+        task_id,
+        owner_id,
+        operation,
+    )
+    .expect("the fixture signer should produce a fresh claim proof")
 }
 
 fn unique_task_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("ackplane-client-arbitration-{nanos}")
+    let mut bytes = [0; 16];
+    getrandom::getrandom(&mut bytes).expect("the OS random source should be available");
+    format!(
+        "ackplane-client-arbitration-{:032x}",
+        u128::from_le_bytes(bytes)
+    )
 }
 
 static KEY_REGISTERED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+#[test]
+fn fixture_nonces_use_production_random_freshness_under_concurrency() {
+    // Clock-only nonces collided during repeated arbitration runs and the
+    // server correctly refused the second use, failing otherwise valid tests.
+    let values = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    (0..32)
+                        .map(|_| {
+                            let proof = authentication(
+                                TENANT_ID,
+                                REPOSITORY_ID,
+                                "task:nonce-regression",
+                                "owner",
+                                &ClaimOperation::Release,
+                            );
+                            assert_eq!(
+                                proof.nonce.len(),
+                                16,
+                                "use the production random nonce, not a clock string"
+                            );
+                            (proof.nonce, unique_task_id())
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let nonces: std::collections::HashSet<_> = values.iter().map(|(nonce, _)| nonce).collect();
+    let tasks: std::collections::HashSet<_> = values.iter().map(|(_, task)| task).collect();
+    assert_eq!(nonces.len(), values.len());
+    assert_eq!(tasks.len(), values.len());
+}
 
 // Regression (see the test below): the two tests in this file both register
 // this identical fixture identity, and two overlapping calls used to each
@@ -184,33 +213,41 @@ async fn a_second_owner_is_rejected_while_the_first_owners_lease_is_active() {
     let repository_id = REPOSITORY_ID.to_string();
     let task_id = unique_task_id();
 
+    let initial_request = ClaimLeaseRequest {
+        tenant_id: tenant_id.clone(),
+        repository_id: repository_id.clone(),
+        task_id: task_id.clone(),
+        owner_id: "owner-a".to_string(),
+        branch: "feat/owner-a".to_string(),
+        lease_seconds: 60,
+        paths: vec!["src/lib.rs".to_string()],
+        symbols: vec![],
+        authentication: Some(authentication(
+            &tenant_id,
+            &repository_id,
+            &task_id,
+            "owner-a",
+            &ClaimOperation::Delegate {
+                branch: "feat/owner-a",
+                lease_seconds: 60,
+                paths: &["src/lib.rs".to_string()],
+                symbols: &[],
+            },
+        )),
+    };
     let granted = client
-        .delegate_claim(ClaimLeaseRequest {
-            tenant_id: tenant_id.clone(),
-            repository_id: repository_id.clone(),
-            task_id: task_id.clone(),
-            owner_id: "owner-a".to_string(),
-            branch: "feat/owner-a".to_string(),
-            lease_seconds: 60,
-            paths: vec!["src/lib.rs".to_string()],
-            symbols: vec![],
-            authentication: Some(authentication(
-                &tenant_id,
-                &repository_id,
-                &task_id,
-                "owner-a",
-                &ClaimOperation::Delegate {
-                    branch: "feat/owner-a",
-                    lease_seconds: 60,
-                    paths: &["src/lib.rs".to_string()],
-                    symbols: &[],
-                },
-            )),
-        })
+        .delegate_claim(initial_request.clone())
         .await
         .expect("delegate_claim should round-trip over the wire");
     assert_eq!(granted.outcome(), ClaimLeaseOutcome::Granted);
     assert_eq!(granted.owner_id, "owner-a");
+
+    let replay = client.delegate_claim(initial_request).await.unwrap_err();
+    assert!(
+        matches!(replay, ackplane_client::ClientError::Rejected(ref status)
+        if status.code() == tonic::Code::Unauthenticated
+            && status.message().contains("already been used"))
+    );
 
     // The real arbitration: a second, different owner racing for the same
     // task while owner-a's lease is still active must be refused by the
