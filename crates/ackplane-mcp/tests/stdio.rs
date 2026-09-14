@@ -72,6 +72,56 @@ fn the_server_completes_a_handshake_and_advertises_its_tool_over_stdio() {
     assert_eq!(responses[1]["result"]["tools"][0]["name"], "open_session");
 }
 
+#[test]
+fn conversation_design_prompt_is_discoverable_without_claiming_operator_authority() {
+    let responses = exchange(
+        &[("ACKPLANE_MCP_ENDPOINT", "http://127.0.0.1:8443")],
+        &[
+            request(1, "initialize", json!({})),
+            request(2, "prompts/list", json!({})),
+            request(
+                3,
+                "prompts/get",
+                json!({
+                    "name": "design_workflow",
+                    "arguments": {
+                        "request": "Preserve receipts across reconnects",
+                        "bridge_url": "http://127.0.0.1:3000",
+                        "repository_id": "repository:conversation"
+                    }
+                }),
+            ),
+        ],
+    );
+    assert_eq!(
+        responses[0]["result"]["capabilities"]["prompts"]["listChanged"],
+        false
+    );
+    assert_eq!(
+        responses[1]["result"]["prompts"][0]["name"],
+        "design_workflow"
+    );
+    let messages = responses[2]["result"]["messages"].as_array().unwrap();
+    let guidance = messages[0]["content"]["text"].as_str().unwrap();
+    for boundary in [
+        "ackplane-workctl design preview",
+        "ackplane-workctl design propose",
+        "explicit",
+        "not authorization",
+        "ContextPacket",
+        "MINDLEAK_ACKPLANE_STATE_DIR",
+    ] {
+        assert!(
+            guidance.contains(boundary),
+            "missing workflow boundary: {boundary}"
+        );
+    }
+    let inputs: Value =
+        serde_json::from_str(messages[1]["content"]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(inputs["request"], "Preserve receipts across reconnects");
+    assert_eq!(inputs["repository_id"], "repository:conversation");
+}
+
 /// Session registration must not bypass the front door's required node trust.
 #[test]
 fn an_unconfigured_front_door_refuses_session_open_over_stdio() {

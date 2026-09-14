@@ -56,7 +56,7 @@ impl MaterializationStore {
                 "SELECT work_task_id FROM industrial_design_materialization_work_tasks \
                  WHERE tenant_id = $1 AND repository_id = $2 AND design_id = $3 \
                    AND revision_number = $4 \
-                 ORDER BY work_task_id",
+                 ORDER BY work_task_id COLLATE \"C\"",
                 &[&tenant_id, &repository_id, &design_id, &revision_number],
             )
             .await?;

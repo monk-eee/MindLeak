@@ -191,8 +191,18 @@ dependencies = [
 name = "ackplane-workctl"
 version = "0.1.7-alpha"
 dependencies = [
+ "ackplane-bridge",
+ "ackplane-protocol",
+ "ackplane-server",
+ "axum",
+ "ed25519-dalek",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
  "ureq",
+ "url",
 ]
 
 [[package]]

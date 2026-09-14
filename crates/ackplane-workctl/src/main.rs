@@ -6,11 +6,9 @@
 //! do, a browser calling the identical route can do too; the only thing it
 //! adds is a terminal-friendly, scriptable caller.
 //!
-//! Every command today resolves to a typed `authorization_unavailable`
-//! result under the Bridge's loopback developer profile (ADR-0125 decision
-//! 2) -- this tool does not, and cannot, work around that; it exists to
-//! exercise and script against the real contract, honestly, not to grant
-//! itself authority the Bridge itself does not have.
+//! The hardened loopback developer profile supplies the verified operator
+//! principal (ADR-0142). Design authoring uses the same Bridge routes as the
+//! browser; Work submission and confirmation retain their typed outcomes.
 //!
 //! Usage:
 //! ```text
@@ -27,6 +25,8 @@ use std::{
 };
 
 use serde_json::{json, Value};
+
+mod design;
 
 const KINDS: [&str; 10] = [
     "create_work",
@@ -45,11 +45,19 @@ fn usage() -> String {
     format!(
         "usage:\n  \
          ackplane-workctl submit <kind> --bridge-url URL --repository-id ID \
-         --issuing-principal-id ID --idempotency-key KEY --rationale TEXT \
+         [--issuing-principal-id ID] --idempotency-key KEY --rationale TEXT \
          --expires-in-seconds N [--existing-task-id ID] [--expected-task-version N] \
          [--delegation-id ID] [--policy-ref REF ...] <kind-specific flags>\n  \
          ackplane-workctl confirm <kind> --bridge-url URL --repository-id ID \
          --command-id ID <kind-specific flags>\n  \
+         ackplane-workctl design preview --bridge-url URL --repository-id ID --file proposal.json\n  \
+         ackplane-workctl design propose --bridge-url URL --repository-id ID --file proposal.json --confirm-digest DIGEST\n  \
+         ackplane-workctl design show --bridge-url URL --repository-id ID --design-id ID\n  \
+         ackplane-workctl design list --bridge-url URL --repository-id ID [--state STATE] [--page N]\n  \
+         ackplane-workctl design decision-preview --bridge-url URL --repository-id ID --design-id ID --decision STATE --rationale TEXT\n  \
+         ackplane-workctl design decide --bridge-url URL --repository-id ID --design-id ID --decision STATE --rationale TEXT --confirm-digest DIGEST\n  \
+         ackplane-workctl design materialization-preview --bridge-url URL --repository-id ID --design-id ID --constitution-version-id ID --work-task-id ID --idempotency-key KEY --rationale TEXT\n  \
+         ackplane-workctl design materialize <same flags> --confirm-digest DIGEST\n  \
          ackplane-workctl help\n\ncreate_work scope: repeat --path PATH and --symbol ID on submit and confirm.\n\nkinds: {}",
         KINDS.join(", ")
     )
@@ -74,6 +82,14 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     match mode.as_str() {
         "submit" => submit(rest),
         "confirm" => confirm(rest),
+        "design" => {
+            let result = design::run(rest)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&result).map_err(|error| error.to_string())?
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         "help" | "-h" | "--help" => {
             println!("{}", usage());
             Ok(ExitCode::SUCCESS)
@@ -236,7 +252,7 @@ fn submit(args: &[String]) -> Result<ExitCode, String> {
     let flags = parse_flags(rest)?;
     let bridge_url = one(&flags, "bridge-url")?;
     let repository_id = one(&flags, "repository-id")?;
-    let issuing_principal_id = one(&flags, "issuing-principal-id")?;
+    let issuing_principal_id = optional(&flags, "issuing-principal-id");
     let idempotency_key = one(&flags, "idempotency-key")?;
     let rationale = one(&flags, "rationale")?;
     let expires_in_seconds = parse_u64(&flags, "expires-in-seconds")?;
@@ -255,12 +271,14 @@ fn submit(args: &[String]) -> Result<ExitCode, String> {
     let policy_refs = many(&flags, "policy-ref");
 
     let mut body = json!({
-        "issuing_principal_id": issuing_principal_id,
         "idempotency_key": idempotency_key,
         "rationale": rationale,
         "policy_refs": policy_refs,
         "expires_at_seconds": now_unix_seconds() + expires_in_seconds,
     });
+    if let Some(issuing_principal_id) = issuing_principal_id {
+        body["issuing_principal_id"] = json!(issuing_principal_id);
+    }
     if let Some(existing_task_id) = existing_task_id {
         body["existing_task_id"] = json!(existing_task_id);
     }
