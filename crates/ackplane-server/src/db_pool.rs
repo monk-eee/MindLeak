@@ -72,9 +72,10 @@ pub fn build_pool(database_url: &str, default_max_size: usize) -> Result<PgPool,
     });
 
     let mut pool_config = PoolConfig::new(max_size);
-    // Bounded, so exhaustion is a typed refusal rather than a request that
-    // hangs forever (ADR-0143 decision 5).
+    // Bound waiting and creation separately so a stalled PostgreSQL startup
+    // cannot occupy a pool slot indefinitely (ADR-0143 decision 5).
     pool_config.timeouts.wait = Some(Duration::from_millis(timeout_ms as u64));
+    pool_config.timeouts.create = pool_config.timeouts.wait;
     config.pool = Some(pool_config);
 
     Ok(config.create_pool(Some(Runtime::Tokio1), NoTls)?)
@@ -233,6 +234,65 @@ mod tests {
             .expect_err("an unparseable url must not produce a pool");
 
         assert!(matches!(error, PoolBuildError::Create(_)), "got {error}");
+    }
+
+    // A free pool slot did not bound a PostgreSQL handshake that never completed.
+    #[tokio::test]
+    async fn a_stalled_postgres_startup_returns_a_typed_creation_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an owned startup fixture");
+        let address = listener.local_addr().expect("read the fixture address");
+        let pool = build_pool(
+            &format!("postgresql://timeout-test@{address}/fixture?sslmode=disable"),
+            1,
+        )
+        .expect("build a pool for the local fixture");
+        let configured_timeout = pool.timeouts().wait.expect("the pool has a wait limit");
+        let mut acquisition = Box::pin(checkout(&pool));
+        let (stalled_connection, _) = tokio::select! {
+            accepted = listener.accept() => accepted.expect("accept the pool connection"),
+            _ = &mut acquisition => panic!("checkout must connect before the fixture stalls it"),
+        };
+
+        let result = tokio::time::timeout(
+            configured_timeout + Duration::from_secs(2),
+            &mut acquisition,
+        )
+        .await
+        .expect("connection creation must not outlive its configured timeout");
+        drop(stalled_connection);
+
+        assert!(
+            matches!(
+                result,
+                Err(deadpool_postgres::PoolError::Timeout(
+                    deadpool_postgres::TimeoutType::Create
+                ))
+            ),
+            "a stalled handshake must report Timeout(Create), not wait indefinitely"
+        );
+        assert_eq!(pool.status().size, 0);
+        assert_eq!(pool.status().waiting, 0);
+
+        let (retried, ()) =
+            tokio::time::timeout(configured_timeout + Duration::from_secs(2), async {
+                tokio::join!(checkout(&pool), async {
+                    let (connection, _) = listener
+                        .accept()
+                        .await
+                        .expect("the next caller can create another connection");
+                    drop(connection);
+                })
+            })
+            .await
+            .expect("timed-out creation must release capacity for the next caller");
+        assert!(
+            matches!(retried, Err(deadpool_postgres::PoolError::Backend(_))),
+            "a subsequent connection refusal must remain a backend error"
+        );
+        assert_eq!(pool.status().size, 0);
+        assert_eq!(pool.status().waiting, 0);
     }
 
     /// The boundary `checkout` refuses at: as many callers already waiting

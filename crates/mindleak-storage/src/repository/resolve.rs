@@ -125,19 +125,30 @@ fn git_common_dir(workspace: &Path) -> Result<Option<PathBuf>, RepositoryStorage
         .current_dir(workspace)
         .output()
     {
-        Ok(output) => output,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Ok(output) => Some(output),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),
     };
-    if !output.status.success() {
+    let common_dir = output
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let Some(value) = common_dir else {
+        for ancestor in workspace.canonicalize()?.ancestors() {
+            match std::fs::symlink_metadata(ancestor.join(".git")) {
+                Ok(_) => {
+                    return Err(RepositoryStorageError::Git(
+                        "repository metadata is present but Git cannot resolve it; repair the checkout or configure an explicit database path"
+                            .to_string(),
+                    ));
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
         return Ok(None);
-    }
-    let raw = String::from_utf8_lossy(&output.stdout);
-    let value = raw.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    let path = Path::new(value);
+    };
+    let path = Path::new(&value);
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {

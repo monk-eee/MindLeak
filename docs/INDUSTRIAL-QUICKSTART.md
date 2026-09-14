@@ -97,6 +97,13 @@ Protect the salt as local installation state; do not commit or print it.
 Activation and serving reuse the recorded tenant instead of deriving another
 identity. No key bytes belong in `.env`.
 
+Bridge startup refuses an existing empty or unreadable salt instead of replacing
+it. Restore the original salt from protected backup, or correct its access
+permissions, before restarting. Do not delete the file to clear the error:
+generating a different salt changes the tenant id and hides the original tenant's
+records. First-time creation publishes a complete salt without overwriting an
+existing file; concurrent starts reuse the same winner.
+
 ---
 
 ## 5. Build the client binaries
