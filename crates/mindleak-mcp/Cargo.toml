@@ -31,3 +31,4 @@ federation-client = ["ackplane-core/federation-client"]
 
 [dev-dependencies]
 mindleak-model = { path = "../mindleak-model", features = ["test-support"] }
+tempfile = "3"
