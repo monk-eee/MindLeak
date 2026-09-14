@@ -370,7 +370,8 @@ function reportPruned({ pruned }, directory) {
 // which would leave the CLI silently doing nothing.
 if (
   process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  fs.realpathSync(process.argv[1]) ===
+    fs.realpathSync(fileURLToPath(import.meta.url))
 ) {
   try {
     main();

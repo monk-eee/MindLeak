@@ -79,26 +79,23 @@ function installerFixture(context) {
       );
       return { directory: bundle, manifest };
     },
-    run(args = [], environment = {}) {
-      return spawnSync(
-        process.execPath,
-        [
-          fileURLToPath(new URL("./install-servers.mjs", import.meta.url)),
-          ...args,
-        ],
-        {
-          cwd: root,
-          env: {
-            ...process.env,
-            HOME: home,
-            USERPROFILE: home,
-            CARGO_TARGET_DIR: "",
-            ...environment,
-          },
-          encoding: "utf8",
-          timeout: 10_000,
+    run(
+      args = [],
+      environment = {},
+      script = fileURLToPath(new URL("./install-servers.mjs", import.meta.url)),
+    ) {
+      return spawnSync(process.execPath, [script, ...args], {
+        cwd: root,
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          CARGO_TARGET_DIR: "",
+          ...environment,
         },
-      );
+        encoding: "utf8",
+        timeout: 10_000,
+      });
     },
   };
 }
@@ -117,6 +114,30 @@ test("a verified Industrial bundle installs without a Git checkout or Cargo", (c
     INDUSTRIAL_BINARIES.map((name) => executableName(name)).sort(),
   );
   assert.match(result.stdout, new RegExp(bundle.manifest.revision));
+});
+
+// ESM resolves directory links but argv retains them, so extracted installers returned success without installing.
+test("an extracted installer launched through a directory link actually installs the bundle", (context) => {
+  const fixture = installerFixture(context);
+  const bundle = fixture.bundle();
+  const installer = path.join(bundle.directory, "install.mjs");
+  fs.copyFileSync(new URL("./install-servers.mjs", import.meta.url), installer);
+  const alias = path.join(fixture.workspace, "extracted-alias");
+  fs.symlinkSync(
+    bundle.directory,
+    alias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const result = fixture.run(
+    ["--profile", "industrial", "--bundle", alias],
+    { PATH: "" },
+    path.join(alias, "install.mjs"),
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    fs.readdirSync(fixture.directory).sort(),
+    INDUSTRIAL_BINARIES.map((name) => executableName(name)).sort(),
+  );
 });
 
 // A swapped or damaged bundle member must not partially replace a working installation.

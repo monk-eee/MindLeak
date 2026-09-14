@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { packageIndustrialBundle } from "./industrial-bundle.mjs";
 import {
@@ -115,6 +117,27 @@ test("one clean build packages exactly six binaries with revision, version and h
   assert.ok(!build.args.includes("register-me"));
 });
 
+test("the bundle CLI reports help when invoked through a linked directory", (context) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-cli-link-"));
+  context.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const alias = path.join(root, "scripts");
+  fs.symlinkSync(
+    path.dirname(fileURLToPath(import.meta.url)),
+    alias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [path.join(alias, "industrial-bundle.mjs"), "--help"],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Usage: node scripts\/industrial-bundle.mjs/);
+});
+
 test("target platforms select native filenames and architecture without host guessing", (context) => {
   for (const target of [
     "x86_64-pc-windows-msvc",
@@ -205,6 +228,33 @@ test("dirty source discovered after packaging removes staging without publishing
     /clean committed checkout/,
   );
   assert.deepEqual(fs.readdirSync(path.join(setup.root, "dist")), []);
+});
+
+test("a custom archive path does not make the builder's own staging look like changed source", (context) => {
+  const setup = fixture(context);
+  execFileSync("git", ["init", "--quiet", setup.root]);
+  fs.writeFileSync(
+    path.join(setup.root, ".git", "info", "exclude"),
+    "/custom-target/\n/scripts/\n/LICENSE\n",
+  );
+  const result = packageIndustrialBundle(
+    { ...setup.options, out: "host release.zip" },
+    (command, args) => {
+      if (command === "git" && args[0] === "status") {
+        return execFileSync(command, args, {
+          cwd: setup.root,
+          encoding: "utf8",
+        });
+      }
+      return setup.execute(command, args);
+    },
+  );
+  assert.equal(fs.readFileSync(result.destination, "utf8"), "archive fixture");
+  assert.ok(
+    !fs
+      .readdirSync(setup.root)
+      .some((name) => name.startsWith(".industrial-bundle-")),
+  );
 });
 
 test("an output published by another process is preserved at final publication", (context) => {

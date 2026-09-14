@@ -36,8 +36,24 @@ export function packageIndustrialBundle(
       cwd: workspace,
       encoding: "utf8",
     }).trim();
-  const clean = () => {
-    if (capture("git", ["status", "--porcelain", "--untracked-files=normal"])) {
+  const clean = (excludedDirectory) => {
+    const relative =
+      excludedDirectory && path.relative(workspace, excludedDirectory);
+    const pathspec =
+      relative &&
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative)
+        ? ["--", ".", `:(exclude,literal)${relative.split(path.sep).join("/")}`]
+        : [];
+    if (
+      capture("git", [
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+        ...pathspec,
+      ])
+    ) {
       throw new Error("Industrial bundles require a clean committed checkout");
     }
   };
@@ -251,7 +267,7 @@ export function packageIndustrialBundle(
       ],
       { cwd: workspace, stdio: "inherit" },
     );
-    clean();
+    clean(staging);
     if (capture("git", ["rev-parse", "HEAD"]) !== revision) {
       throw new Error(
         "source revision changed while packaging the Industrial bundle",
@@ -266,7 +282,8 @@ export function packageIndustrialBundle(
 
 if (
   process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  fs.realpathSync(process.argv[1]) ===
+    fs.realpathSync(fileURLToPath(import.meta.url))
 ) {
   try {
     const { values } = parseArgs({
