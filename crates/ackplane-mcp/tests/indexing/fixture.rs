@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, time::SystemTime};
 
+use ackplane_node::SigningBinding;
 use ackplane_protocol::v1::{
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer, FlowControl,
@@ -25,6 +26,8 @@ pub struct Fixture {
     pub repository_id: String,
     pub endpoint: String,
     pub labels: BTreeMap<String, String>,
+    pub binding: SigningBinding,
+    producer_sequence: i64,
     companion: Option<TestCompanion>,
     pub directory: tempfile::TempDir,
     server: RunningServer,
@@ -74,60 +77,94 @@ impl Fixture {
         );
         let tenant_id = format!("{unique}-tenant");
         let repository_id = format!("{unique}-repository");
-        let binding = enrollment::activate(&pool, &endpoint, &tenant_id, &repository_id).await;
+        let binding = enrollment::activate(
+            &pool,
+            &endpoint,
+            &tenant_id,
+            &repository_id,
+            &enrollment::SEED,
+        )
+        .await;
         let directory = tempfile::tempdir().unwrap();
-        let companion =
-            TestCompanion::start(&endpoint, binding, &enrollment::SEED, directory.path()).await;
-        let labels: BTreeMap<_, _> = (0..source_count)
-            .map(|index| {
-                (
-                    format!("artifact:index-test-{index:02}"),
-                    format!("projected label {index:02}"),
-                )
-            })
-            .collect();
-        let ledger = LedgerStore::connect(&pool).await.unwrap();
-        for (index, (node_id, label)) in labels.iter().enumerate() {
-            let fact = StructuralFact {
-                node_id: node_id.clone(),
-                node_type: "artifact".into(),
-                label: label.clone(),
-                edges: vec![],
-            };
-            let outcome = ledger
-                .append(&EventEnvelope {
-                    key: DedupKey {
-                        tenant_id: tenant_id.clone(),
-                        repository_id: repository_id.clone(),
-                        producer_id: "index-test-facts".into(),
-                        producer_sequence: i64::try_from(index + 1).unwrap(),
-                    },
-                    payload: serde_json::to_vec(&fact).unwrap(),
-                    payload_digest: vec![42; 32],
-                    schema_version: "v1".into(),
-                    occurred_at: SystemTime::now(),
-                    payload_type: STRUCTURAL_FACT_PAYLOAD_TYPE.into(),
-                    previous_envelope_digest: None,
-                    signing_key_id: None,
-                    signature: None,
-                    provenance: ProvenanceClass::EnrolledNode,
-                })
-                .await
-                .unwrap();
-            assert!(matches!(outcome, AppendOutcome::Accepted { .. }));
-        }
-        let summary = projector.rebuild(&tenant_id, &repository_id).await.unwrap();
-        assert_eq!(summary.nodes, i64::try_from(source_count).unwrap());
-        Some(Self {
+        let companion = TestCompanion::start(
+            &endpoint,
+            binding.clone(),
+            &enrollment::SEED,
+            directory.path(),
+        )
+        .await;
+        let mut fixture = Self {
             pool,
             tenant_id,
             repository_id,
             endpoint,
-            labels,
+            labels: BTreeMap::new(),
+            binding,
+            producer_sequence: 0,
             companion: Some(companion),
             directory,
             server,
-        })
+        };
+        for index in 0..source_count {
+            fixture
+                .append_fact(StructuralFact {
+                    node_id: format!("artifact:index-test-{index:02}"),
+                    node_type: "artifact".into(),
+                    label: format!("projected label {index:02}"),
+                    edges: vec![],
+                })
+                .await;
+        }
+        fixture.rebuild().await;
+        Some(fixture)
+    }
+
+    pub async fn append_fact(&mut self, fact: StructuralFact) {
+        let ledger = LedgerStore::connect(&self.pool).await.unwrap();
+        let producer_sequence = self.producer_sequence + 1;
+        let outcome = ledger
+            .append(&EventEnvelope {
+                key: DedupKey {
+                    tenant_id: self.tenant_id.clone(),
+                    repository_id: self.repository_id.clone(),
+                    producer_id: "index-test-facts".into(),
+                    producer_sequence,
+                },
+                payload: serde_json::to_vec(&fact).unwrap(),
+                payload_digest: vec![42; 32],
+                schema_version: "v1".into(),
+                occurred_at: SystemTime::now(),
+                payload_type: STRUCTURAL_FACT_PAYLOAD_TYPE.into(),
+                previous_envelope_digest: None,
+                signing_key_id: None,
+                signature: None,
+                provenance: ProvenanceClass::EnrolledNode,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(outcome, AppendOutcome::Accepted { .. }));
+        self.producer_sequence = producer_sequence;
+        self.labels.insert(fact.node_id, fact.label);
+    }
+
+    pub async fn rebuild(&self) {
+        let projector = Projector::connect(&self.pool).await.unwrap();
+        let summary = projector
+            .rebuild(&self.tenant_id, &self.repository_id)
+            .await
+            .unwrap();
+        assert_eq!(summary.nodes, i64::try_from(self.labels.len()).unwrap());
+    }
+
+    pub async fn enroll(&self, seed: &[u8; 32]) -> SigningBinding {
+        enrollment::activate(
+            &self.pool,
+            &self.endpoint,
+            &self.tenant_id,
+            &self.repository_id,
+            seed,
+        )
+        .await
     }
 
     pub async fn embeddings(&self) -> Vec<(String, String, Vec<f32>)> {

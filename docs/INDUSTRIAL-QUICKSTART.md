@@ -243,8 +243,18 @@ receives the projected labels. Inference runs in the node-side MCP process,
 never in Ackplane; the running companion still owns publication signatures.
 Inspect the returned progress and rerun when `remaining` is true. A model or
 publication failure reports partial progress rather than claiming completion.
-This explicit pass does not enable a background scheduler or the unfinished
-Industrial recall tool.
+This explicit pass does not enable a background scheduler.
+
+Call `recall` with `{"query": "why this decision was made", "limit": 10}` to
+search those shared vectors. An independently enrolled node in the same tenant
+and repository can use its own companion and the same model configuration to
+query them. Recall reports projection state and embedding coverage: unindexed
+data asks for `index`, stale data requires projection catch-up, and an unavailable
+model or companion is an error, not a no-match. Empty or unsearchable states make
+no model call. Searchable data sends only the query to the configured embedding
+endpoint; Ackplane receives the signed vector and performs ranking itself.
+See the [recall state reference](TOOLS.md#industrial-front-door-tools-ackplane-mcp)
+for point-in-time freshness and partial-coverage limits.
 
 ### Option C — `lodestar-mcp`'s federation client
 
