@@ -156,7 +156,7 @@ impl GraphStore {
                      SELECT 1 FROM nodes
                      WHERE id = ?1 AND created_at <= ?2
                  )",
-                params![raw.target_id, raw.updated_at - 7 * 24 * 3600],
+                params![raw.target_id, raw.updated_at.checked_sub(7 * 24 * 3600)],
                 |row| row.get(0),
             )?;
             let prior_failure: bool = self.conn.query_row(
@@ -204,9 +204,9 @@ impl GraphStore {
             statement.query_map(params![target_id, SIGNAL_MIN_COUNT, now], row_to_raw_edge)?;
         for row in rows {
             let raw = row?;
-            let span_hours = ((raw.updated_at - raw.first_seen) as f64 / 3600.0).max(0.0);
-            if span_hours >= SIGNAL_MIN_SPAN_HOURS
-                && self.weighted_edge(&raw, now)?.effective >= self.decay_policy.prune_threshold()
+            let weighted = self.weighted_edge(&raw, now)?;
+            if weighted.signal_evidence.reinforcement_span_hours >= SIGNAL_MIN_SPAN_HOURS
+                && weighted.effective >= self.decay_policy.prune_threshold()
                 && self
                     .working_set(&raw.source_id, self.working_set_size, now)?
                     .iter()
