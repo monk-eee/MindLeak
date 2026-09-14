@@ -58,10 +58,9 @@ fn wire_capability(capability: SupervisorDirectiveCapability) -> v1::SupervisorD
     }
 }
 
-pub(super) fn session_frame(
-    session: &SupervisorSession,
-    started_at: OffsetDateTime,
-) -> Result<v1::NodeFrame, DaemonError> {
+pub(super) fn session_frame(session: &SupervisorSession) -> Result<v1::NodeFrame, DaemonError> {
+    let started_at =
+        OffsetDateTime::from_unix_timestamp(session.started_at).map_err(|_| DaemonError::Clock)?;
     Ok(v1::NodeFrame {
         frame: Some(v1::node_frame::Frame::SupervisorSession(
             v1::SupervisorSession {

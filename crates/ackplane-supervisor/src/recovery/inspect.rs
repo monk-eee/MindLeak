@@ -6,7 +6,7 @@ use super::{
     record::{digest, RunRecord},
     RecoveryError, RecoveryPreview,
 };
-use crate::{config::SupervisorConfig, SupervisorOutbox};
+use crate::{config::SupervisorConfig, storage::SupervisorIdentityBinding, SupervisorOutbox};
 
 pub fn inspect(config: &SupervisorConfig, slot: &str) -> Result<RecoveryPreview, RecoveryError> {
     let (record, bytes, _) = RunRecord::load(config, slot)?;
@@ -22,18 +22,31 @@ pub(super) fn inspect_record(
         record.registration.clone(),
         record.session.clone(),
     )?;
+    if outbox.session() != &record.session {
+        return Err(RecoveryError::Refused(
+            "outbox session does not match the run".into(),
+        ));
+    }
     let evidence = outbox.recovery_snapshot()?;
     let inbox = Connection::open_with_flags(&record.inbox, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let _snapshot = Transaction::new_unchecked(&inbox, TransactionBehavior::Deferred)?;
-    if !crate::storage::ensure_supervisor_identity(
+    match crate::storage::ensure_supervisor_identity(
         &inbox,
         &record.registration.identity,
         &record.session.supervisor_id,
         &record.session,
     )? {
-        return Err(RecoveryError::Refused(
-            "inbox identity does not match the run".into(),
-        ));
+        SupervisorIdentityBinding::Bound(session) if session == record.session => {}
+        SupervisorIdentityBinding::Bound(_) | SupervisorIdentityBinding::Mismatch => {
+            return Err(RecoveryError::Refused(
+                "inbox identity or session does not match the run".into(),
+            ));
+        }
+        SupervisorIdentityBinding::MissingSession => {
+            return Err(RecoveryError::Refused(
+                "inbox original session declaration is missing; evidence retained".into(),
+            ));
+        }
     }
     let effect_size: Option<u64> = inbox
         .query_row(

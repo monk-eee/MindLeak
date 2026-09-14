@@ -8,7 +8,7 @@ use std::{fs, path::Path};
 
 use crate::storage::{
     configure, ensure_supervisor_identity, load_effect, load_receipt, next_sequence, store_effect,
-    store_receipt,
+    store_receipt, SupervisorIdentityBinding,
 };
 use prost::Message;
 
@@ -64,13 +64,17 @@ impl SupervisorInbox {
         }
 
         configure(&conn)?;
-        if !ensure_supervisor_identity(
+        match ensure_supervisor_identity(
             &conn,
             &registration.identity,
             &registration.supervisor_id,
             &session,
         )? {
-            return Err(InboxError::InboxIdentityMismatch);
+            SupervisorIdentityBinding::Bound(stored) if stored == session => {}
+            SupervisorIdentityBinding::Bound(_) | SupervisorIdentityBinding::Mismatch => {
+                return Err(InboxError::InboxIdentityMismatch);
+            }
+            SupervisorIdentityBinding::MissingSession => return Err(InboxError::MissingSession),
         }
 
         Ok(Self {
@@ -267,6 +271,8 @@ impl SupervisorInbox {
 /// Durable-inbox errors are explicit so a transport adapter can report a typed receipt or refusal.
 #[derive(Debug, Error)]
 pub enum InboxError {
+    #[error("the durable inbox lacks its original session declaration; evidence retained; restore the original state from backup or investigate before configuring a new supervisor and state directory")]
+    MissingSession,
     #[error("stored directive effect receipt is unreadable: {0}")]
     ReceiptDecode(#[from] prost::DecodeError),
     #[error("invalid supervisor declaration: {0}")]
