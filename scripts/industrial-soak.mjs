@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   closeSync,
   existsSync,
@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { setImmediate as yieldToSignals } from "node:timers/promises";
 
+import { isolatedGit } from "./adr-files.mjs";
 import { runIndustrialTests } from "./industrial-test.mjs";
 
 const EIGHT_HOURS_MS = 8 * 60 * 60 * 1000;
@@ -65,12 +66,13 @@ export function validateFixtures(env, disposable) {
 }
 
 export function readSource(directory = workspace) {
-  const git = (args) =>
-    execFileSync("git", args, {
-      cwd: directory,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
+  const git = (args) => {
+    const output = isolatedGit(args, directory);
+    if (output === null) {
+      throw new Error("cannot read endurance source checkout with Git");
+    }
+    return output;
+  };
   const [commit, tree] = git(["rev-parse", "HEAD", "HEAD^{tree}"]).split(
     /\r?\n/,
   );
