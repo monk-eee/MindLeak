@@ -139,9 +139,16 @@ pub fn endpoint_name(directory: &Path) -> io::Result<Name<'static>> {
     #[cfg(unix)]
     {
         use interprocess::local_socket::{GenericFilePath, ToFsName};
-        directory
-            .join("ackplane-node.sock")
-            .to_fs_name::<GenericFilePath>()
+        let socket = directory.join("ackplane-node.sock");
+        std::os::unix::net::SocketAddr::from_pathname(&socket).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "node companion socket path is invalid ({error}); choose a shorter node state directory"
+                ),
+            )
+        })?;
+        socket.to_fs_name::<GenericFilePath>()
     }
     #[cfg(windows)]
     {

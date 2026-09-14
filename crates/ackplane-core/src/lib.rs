@@ -16,11 +16,6 @@ const COORDINATION_MODE_ENV: &str = "MINDLEAK_COORDINATION_MODE";
 /// --local` scope `mindleak.repositoryId` already uses.
 pub const COORDINATION_MODE_GIT_CONFIG_KEY: &str = "mindleak.coordinationMode";
 
-/// Where a `federated` repository declares its Ackplane deployment (e.g.
-/// `http://127.0.0.1:8443`). Read only when a real probe is compiled in and
-/// only for a `federated` declaration; a `local` repository never needs it.
-pub const ACKPLANE_ENDPOINT_ENV: &str = "MINDLEAK_ACKPLANE_ENDPOINT";
-
 /// Which arbiter owns this repository's shared task namespace, cross-machine
 /// sessions, and claims (ADR-0082 decision 3).
 ///
@@ -71,6 +66,9 @@ impl CoordinationMode {
             Self::Federated => match federation {
                 FederationReadiness::Ready => Ok(()),
                 FederationReadiness::NoClient => Err(CoordinationModeError::NoFederationClient),
+                FederationReadiness::CompanionUnavailable => {
+                    Err(CoordinationModeError::CompanionUnavailable)
+                }
                 FederationReadiness::ArbiterUnreachable => {
                     Err(CoordinationModeError::ArbiterUnreachable)
                 }
@@ -88,7 +86,7 @@ impl std::fmt::Display for CoordinationMode {
 
 /// What this repository can currently do about a `federated` declaration.
 ///
-/// Three separable failures, because they have three different remedies and
+/// Separate failures, because they have different remedies and
 /// only one of them is fixed by changing the binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FederationReadiness {
@@ -97,6 +95,8 @@ pub enum FederationReadiness {
     Ready,
     /// This build carries no Ackplane client at all.
     NoClient,
+    /// The companion configuration is invalid or protected local IPC is unavailable.
+    CompanionUnavailable,
     /// A client is compiled in, but the arbiter did not answer.
     ArbiterUnreachable,
     /// The arbiter answered and does not recognise this repository.
@@ -105,45 +105,45 @@ pub enum FederationReadiness {
 
 /// What federation the running build can actually perform.
 ///
-/// A pure function of the injected `environment`, resolved lazily: it is
+/// Uses the injected companion configuration, resolved lazily: it is
 /// never called for `CoordinationMode::Local`, so a repository-local build
 /// never attempts a connection it does not need (ADR-0094's local path stays
 /// network-free regardless of which cargo features this workspace enables).
 ///
-/// Reachability only: an unreachable arbiter is `ArbiterUnreachable`, a
-/// reachable one is `Ready`. This deliberately still cannot answer
-/// `NotEnrolled` -- that would mean signing a `CheckEnrollmentStatus`
-/// request with this repository's own candidate private key.
-/// `ackplane_client::identity` now sources and persists that key for
-/// CLI-side bootstrapping (`register-me`), narrowing
-/// `gaps.d/ackplane-client-cannot-detect-unenrolled-repositories.md`, but it
-/// is deliberately NOT wired in here: doing so would make every `federated`
-/// local plane load and sign with the raw key itself at startup, which
-/// ADR-0100 decision 3 reserves for the `ackplane-node` companion's
-/// non-exporting signer. That remains this function's one open gap.
+/// Only a verified active enrollment reported over protected companion IPC is
+/// ready. The companion owns the remote TLS connection and signing credential;
+/// local planes neither probe a second endpoint nor load its CA or key.
 #[cfg(feature = "federation-client")]
 pub fn compiled_federation_readiness<F>(environment: &F) -> FederationReadiness
 where
     F: Fn(&str) -> Option<String>,
 {
-    let endpoint = match environment(ACKPLANE_ENDPOINT_ENV) {
-        Some(raw) if !raw.trim().is_empty() => raw,
-        // A `federated` declaration with nowhere to reach is the same
-        // remedy as an arbiter that did not answer: check the deployment,
-        // or declare `local`. It is not a fourth cause.
-        _ => return FederationReadiness::ArbiterUnreachable,
+    let node = match ackplane_client::node_identity::resolve_node_client(environment) {
+        Ok(node) => node,
+        Err(_) => return FederationReadiness::CompanionUnavailable,
     };
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(runtime) => runtime,
-        Err(_) => return FederationReadiness::ArbiterUnreachable,
+        Err(_) => return FederationReadiness::CompanionUnavailable,
     };
-    if runtime.block_on(ackplane_client::probe_reachable(&endpoint)) {
-        FederationReadiness::Ready
-    } else {
-        FederationReadiness::ArbiterUnreachable
+    match runtime.block_on(node.status()) {
+        Ok(status)
+            if status.verified
+                && status.state == ackplane_protocol::v1::EnrollmentState::Active as i32 =>
+        {
+            FederationReadiness::Ready
+        }
+        Ok(_) => FederationReadiness::NotEnrolled,
+        Err(ackplane_client::ClientError::ConnectionRefused {
+            retryable: true, ..
+        }) => FederationReadiness::ArbiterUnreachable,
+        Err(ackplane_client::ClientError::ConnectionRefused {
+            retryable: false, ..
+        }) => FederationReadiness::NotEnrolled,
+        Err(_) => FederationReadiness::CompanionUnavailable,
     }
 }
 
@@ -179,21 +179,30 @@ pub enum CoordinationModeError {
     )]
     NoFederationClient,
     #[error(
+        "MINDLEAK_COORDINATION_MODE is `federated`, but the enrolled node companion is \
+         unavailable or its configuration is invalid. Check MINDLEAK_ACKPLANE_STATE_DIR, \
+         MINDLEAK_ACKPLANE_TENANT_ID and MINDLEAK_ACKPLANE_REPOSITORY_ID, remove obsolete \
+         node/key/seed overrides, and run `register-me serve` with the original enrolled \
+         state directory. Rebuilding will not help. Local arbitration is refused rather \
+         than used as a fallback (ADR-0082, ADR-0045)."
+    )]
+    CompanionUnavailable,
+    #[error(
         "MINDLEAK_COORDINATION_MODE is `federated` and this build can federate, but the \
          Ackplane arbiter did not answer. Continuing locally would create a second arbiter \
          for the claims this repository expects Ackplane to own (ADR-0082, ADR-0045), so \
          this is refused rather than downgraded. Rebuilding will not help — this build is \
-         already correct. Check that the arbiter is running and reachable from here, or \
+         already correct. Check that the arbiter is running and reachable by the companion, or \
          declare `local` if this repository is meant to be locally arbitrated."
     )]
     ArbiterUnreachable,
     #[error(
-        "MINDLEAK_COORDINATION_MODE is `federated` and the Ackplane arbiter answered, but \
-         it does not recognise this repository. Coordinating locally instead would create \
+        "MINDLEAK_COORDINATION_MODE is `federated`, but the companion did not verify active \
+         enrollment for this repository. Coordinating locally instead would create \
          a second arbiter for claims this repository expects Ackplane to own (ADR-0082, \
          ADR-0045), so this is refused rather than downgraded. Rebuilding will not help \
-         and the connection is fine — enrol this repository with the arbiter (ADR-0085), \
-         or declare `local`."
+         — check the companion's tenant/repository scope and restore its original enrollment \
+         or complete enrollment with the arbiter (ADR-0085). Do not replace its identity."
     )]
     NotEnrolled,
     #[error(
@@ -287,6 +296,9 @@ where
     Ok(mode)
 }
 
+#[cfg(all(test, feature = "federation-client"))]
+mod companion_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,11 +316,7 @@ mod tests {
         resolve_coordination_mode(
             move |name| match name {
                 COORDINATION_MODE_ENV => process.clone(),
-                // A federated declaration may also consult the endpoint, when a
-                // real probe is compiled in; an undeclared endpoint reads as
-                // absent, exactly like production.
-                ACKPLANE_ENDPOINT_ENV => None,
-                other => panic!("unexpected environment lookup: {other}"),
+                _ => None,
             },
             move || repository.clone(),
         )
@@ -420,6 +428,10 @@ mod tests {
                 CoordinationModeError::NoFederationClient,
             ),
             (
+                FederationReadiness::CompanionUnavailable,
+                CoordinationModeError::CompanionUnavailable,
+            ),
+            (
                 FederationReadiness::ArbiterUnreachable,
                 CoordinationModeError::ArbiterUnreachable,
             ),
@@ -466,6 +478,7 @@ mod tests {
         // against it rather than merely describing the rule.
         for readiness in [
             FederationReadiness::NoClient,
+            FederationReadiness::CompanionUnavailable,
             FederationReadiness::ArbiterUnreachable,
             FederationReadiness::NotEnrolled,
         ] {
@@ -489,6 +502,7 @@ mod tests {
         for error in [
             CoordinationModeError::Unrecognised("cloud".to_string()),
             CoordinationModeError::NoFederationClient,
+            CoordinationModeError::CompanionUnavailable,
             CoordinationModeError::ArbiterUnreachable,
             CoordinationModeError::NotEnrolled,
             CoordinationModeError::ConflictingDeclaration {
@@ -528,11 +542,22 @@ mod tests {
 
     #[test]
     fn a_local_repository_never_consults_federation() {
+        assert_eq!(
+            resolve_coordination_mode(
+                |name| {
+                    assert_eq!(name, COORDINATION_MODE_ENV);
+                    Some("local".into())
+                },
+                || None,
+            ),
+            Ok(CoordinationMode::Local),
+        );
         // A repository that declared `local` is not waiting on an arbiter, so
         // an unreachable one must not stop it starting.
         for readiness in [
             FederationReadiness::Ready,
             FederationReadiness::NoClient,
+            FederationReadiness::CompanionUnavailable,
             FederationReadiness::ArbiterUnreachable,
             FederationReadiness::NotEnrolled,
         ] {
@@ -556,44 +581,44 @@ mod tests {
         use super::*;
 
         #[test]
-        fn a_federated_repository_with_the_real_probe_compiled_in_is_still_refused_without_an_endpoint(
+        fn a_federated_repository_with_the_real_probe_compiled_in_is_still_refused_without_a_companion(
         ) {
             // The cause changes once a client is compiled in (there is now
             // something to ask), but the outcome does not: still refused,
             // never arbitrated locally.
             assert_eq!(
                 declared(Some("federated")),
-                Err(CoordinationModeError::ArbiterUnreachable)
+                Err(CoordinationModeError::CompanionUnavailable)
             );
         }
 
         #[test]
-        fn a_federated_repository_with_no_endpoint_declared_is_unreachable() {
-            // Nowhere to reach is the same remedy as an arbiter that did not
-            // answer, not a fourth cause: check the deployment or declare
-            // `local`.
+        fn a_federated_repository_with_no_companion_configuration_is_unavailable() {
             assert_eq!(
                 compiled_federation_readiness(&|_: &str| None),
-                FederationReadiness::ArbiterUnreachable
+                FederationReadiness::CompanionUnavailable
             );
         }
 
         #[test]
-        fn an_endpoint_nothing_is_listening_on_is_unreachable() {
-            // Port 1 is reserved/unassigned; connecting to it on loopback
-            // fails fast (ECONNREFUSED), so this arm is deterministic and
-            // needs no live Ackplane deployment to test.
-            let env = |name: &str| {
-                (name == ACKPLANE_ENDPOINT_ENV).then(|| "http://127.0.0.1:1".to_string())
+        fn a_companion_nothing_is_listening_on_is_unavailable() {
+            let directory = tempfile::tempdir().unwrap();
+            let env = |name: &str| match name {
+                "MINDLEAK_ACKPLANE_STATE_DIR" => {
+                    Some(directory.path().to_string_lossy().into_owned())
+                }
+                "MINDLEAK_ACKPLANE_TENANT_ID" => Some("tenant".into()),
+                "MINDLEAK_ACKPLANE_REPOSITORY_ID" => Some("repository".into()),
+                _ => None,
             };
             assert_eq!(
                 compiled_federation_readiness(&env),
-                FederationReadiness::ArbiterUnreachable
+                FederationReadiness::CompanionUnavailable
             );
         }
 
         #[test]
-        fn a_federated_declaration_with_no_reachable_arbiter_is_refused_end_to_end() {
+        fn a_federated_declaration_with_only_a_direct_endpoint_is_refused_end_to_end() {
             // Exercises the full `resolve_coordination_mode` path (not just
             // `ensure_supported` in isolation) with the real probe compiled
             // in, proving the refusal survives the plumbing between them.
@@ -604,7 +629,7 @@ mod tests {
             };
             assert_eq!(
                 resolve_coordination_mode(env, || None),
-                Err(CoordinationModeError::ArbiterUnreachable)
+                Err(CoordinationModeError::CompanionUnavailable)
             );
         }
 
@@ -612,11 +637,11 @@ mod tests {
         fn a_repository_declared_federated_mode_is_honoured_when_the_process_declares_nothing() {
             // Same proof as the non-feature build's counterpart, with the real
             // probe compiled in: the repository source alone drives resolution
-            // to `Federated`, reaching the network-probe refusal rather than
+            // to `Federated`, reaching the companion refusal rather than
             // the default `Local`.
             assert_eq!(
                 declared_with_repository(None, Some("federated")),
-                Err(CoordinationModeError::ArbiterUnreachable)
+                Err(CoordinationModeError::CompanionUnavailable)
             );
         }
     }
