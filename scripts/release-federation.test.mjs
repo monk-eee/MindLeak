@@ -95,3 +95,29 @@ test("the refusal names a remedy a user can actually reach", () => {
       "that is the only other way to reach a federation-capable binary",
   );
 });
+
+test("every release platform builds and publishes its Industrial host bundle", () => {
+  const workflow = fs.readFileSync(
+    path.join(repoRoot, ".github", "workflows", "release.yml"),
+    "utf8",
+  );
+  const step = workflow
+    .split(/^\s*-\s+name:/m)
+    .find((value) => value.includes("node scripts/industrial-bundle.mjs"));
+  assert.ok(
+    step,
+    "release platforms must run the single-revision Industrial builder",
+  );
+  assert.ok(step.includes("--target ${{ matrix.target }}"));
+  assert.ok(
+    step.includes(
+      "--out dist/mindleak-industrial-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}.zip",
+    ),
+  );
+  assert.ok(
+    workflow.includes(
+      "`mindleak-industrial-${process.env.RELEASE_TAG}-${platform}.zip`",
+    ),
+    "release publication must require the Industrial archive for every platform",
+  );
+});

@@ -13,6 +13,7 @@
 // that does not match its source.
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,13 +22,80 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 export const SERVERS = ["mindleak-mcp", "lodestar-mcp"];
-const INDUSTRIAL_BINARIES = [
+export const INDUSTRIAL_BINARIES = [
   ...SERVERS,
   "ackplane-mcp",
   "ackplane-supervisor",
   "register-me",
   "ackplane-workctl",
 ];
+
+function verifyBundleFile(source, expected) {
+  const metadata = fs.lstatSync(source);
+  if (!metadata.isFile() || metadata.size !== expected.size) {
+    throw new Error(
+      `bundle integrity check failed for ${path.basename(source)}`,
+    );
+  }
+  const digest = createHash("sha256")
+    .update(fs.readFileSync(source))
+    .digest("hex");
+  if (digest !== expected.sha256) {
+    throw new Error(`bundle checksum mismatch for ${path.basename(source)}`);
+  }
+}
+
+export function readIndustrialBundle(
+  directory,
+  platform = process.platform,
+  arch = process.arch,
+) {
+  const manifestPath = path.join(directory, "industrial-manifest.json");
+  const metadata = fs.lstatSync(manifestPath);
+  if (!metadata.isFile() || metadata.size > 65_536) {
+    throw new Error(
+      "Industrial bundle manifest must be a regular file of at most 64 KiB",
+    );
+  }
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  if (
+    manifest?.schema !== 1 ||
+    manifest.profile !== "industrial" ||
+    typeof manifest.version !== "string" ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
+      manifest.version,
+    ) ||
+    typeof manifest.revision !== "string" ||
+    !/^[0-9a-f]{40}$/.test(manifest.revision) ||
+    !Array.isArray(manifest.files) ||
+    manifest.files.length !== INDUSTRIAL_BINARIES.length
+  ) {
+    throw new Error("invalid Industrial bundle manifest");
+  }
+  if (manifest.platform !== platform || manifest.arch !== arch) {
+    throw new Error(
+      `Industrial bundle platform does not match ${platform}/${arch}`,
+    );
+  }
+  const builds = INDUSTRIAL_BINARIES.map((name) => {
+    const fileName = executableName(name, platform);
+    const matches = manifest.files.filter((entry) => entry?.name === fileName);
+    const integrity = matches[0];
+    if (
+      matches.length !== 1 ||
+      !Number.isSafeInteger(integrity.size) ||
+      integrity.size <= 0 ||
+      typeof integrity.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(integrity.sha256)
+    ) {
+      throw new Error(`invalid Industrial bundle entry for ${fileName}`);
+    }
+    const source = path.join(directory, fileName);
+    verifyBundleFile(source, integrity);
+    return { name, source, integrity };
+  });
+  return { manifest, builds };
+}
 
 /** Executable name for a platform. Windows needs the extension to spawn. */
 export function executableName(name, platform = process.platform) {
@@ -78,7 +146,12 @@ export function pickBuild(
  * old file is moved aside rather than deleted: the running process keeps its
  * handle, and the next spawn picks up the new binary.
  */
-export function installOne(source, destination, now = Date.now()) {
+export function installOne(
+  source,
+  destination,
+  now = Date.now(),
+  integrity = null,
+) {
   const directory = path.dirname(destination);
   fs.mkdirSync(directory, { recursive: true });
   const staging = fs.mkdtempSync(path.join(directory, ".install-"));
@@ -86,6 +159,7 @@ export function installOne(source, destination, now = Date.now()) {
   let previous = null;
   try {
     fs.copyFileSync(source, candidate);
+    if (integrity) verifyBundleFile(candidate, integrity);
     const stamped = new Date();
     fs.utimesSync(candidate, stamped, stamped);
     if (process.platform !== "win32") {
@@ -148,16 +222,18 @@ function main() {
   const { values } = parseArgs({
     options: {
       profile: { type: "string", default: "local" },
+      bundle: { type: "string" },
       prune: { type: "boolean", default: false },
       help: { type: "boolean", short: "h" },
     },
   });
   if (values.help) {
     console.log(
-      "Usage: node scripts/install-servers.mjs [--profile local|industrial] [--prune]\n" +
+      "Usage: node scripts/install-servers.mjs [--profile local|industrial] [--bundle DIRECTORY] [--prune]\n" +
         "Local (default): install mindleak-mcp and lodestar-mcp, preferring release over debug.\n" +
         "Industrial: install all six host binaries from target/release; no debug fallback.\n" +
         "CARGO_TARGET_DIR selects a different build directory for either profile.\n" +
+        "--profile industrial --bundle DIRECTORY installs verified extracted binaries without Cargo or Git.\n" +
         "This does not install or start the shared Ackplane/Bridge deployment.",
     );
     return;
@@ -168,6 +244,14 @@ function main() {
   if (values.prune && values.profile !== "local") {
     throw new Error(
       "--prune collects shared installs and cannot select an Industrial profile",
+    );
+  }
+  if (
+    values.bundle !== undefined &&
+    (!values.bundle.trim() || values.profile !== "industrial" || values.prune)
+  ) {
+    throw new Error(
+      "--bundle requires a directory and --profile industrial, without --prune",
     );
   }
   const directory = installDirectory();
@@ -182,9 +266,12 @@ function main() {
     return;
   }
 
-  const workspace = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-    encoding: "utf8",
-  }).trim();
+  const workspace = values.bundle
+    ? path.resolve(values.bundle)
+    : execFileSync("git", ["rev-parse", "--show-toplevel"], {
+        encoding: "utf8",
+      }).trim();
+  const bundle = values.bundle ? readIndustrialBundle(workspace) : null;
 
   const industrial = values.profile === "industrial";
   const targetDirectory = path.resolve(
@@ -192,13 +279,15 @@ function main() {
     process.env.CARGO_TARGET_DIR || "target",
   );
   const binaries = industrial ? INDUSTRIAL_BINARIES : SERVERS;
-  const builds = binaries.map((name) => ({
-    name,
-    source: pickBuild(workspace, name, fs.existsSync, process.platform, {
-      profiles: industrial ? ["release"] : ["release", "debug"],
-      targetDirectory,
-    }),
-  }));
+  const builds =
+    bundle?.builds ??
+    binaries.map((name) => ({
+      name,
+      source: pickBuild(workspace, name, fs.existsSync, process.platform, {
+        profiles: industrial ? ["release"] : ["release", "debug"],
+        targetDirectory,
+      }),
+    }));
   const missing = builds
     .filter(({ source }) => !source || !fs.statSync(source).isFile())
     .map(({ name }) => name);
@@ -222,9 +311,9 @@ function main() {
   for (const { source } of builds) {
     fs.accessSync(source, fs.constants.R_OK);
   }
-  for (const { name, source } of builds) {
+  for (const { name, source, integrity } of builds) {
     const destination = path.join(directory, executableName(name));
-    installOne(source, destination);
+    installOne(source, destination, Date.now(), integrity);
     console.log(
       `install-servers: ${path.relative(workspace, source)} -> ${destination}`,
     );
@@ -232,6 +321,11 @@ function main() {
   const { pruned, held } = pruneSupersededInstalls(directory);
   if (pruned > 0) {
     console.log(`install-servers: removed ${supersededCount(pruned)}`);
+  }
+  if (bundle) {
+    console.log(
+      `install-servers: Industrial ${bundle.manifest.version}, revision ${bundle.manifest.revision}`,
+    );
   }
   console.log(
     industrial

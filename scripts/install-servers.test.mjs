@@ -6,6 +6,7 @@
 // here rather than discovered on a broken fleet.
 import { test } from "node:test";
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -20,6 +21,7 @@ import {
   installOne,
   pickBuild,
   pruneSupersededInstalls,
+  readIndustrialBundle,
 } from "./install-servers.mjs";
 
 const INDUSTRIAL_BINARIES = [
@@ -51,6 +53,32 @@ function installerFixture(context) {
         );
       }
     },
+    bundle() {
+      this.build(INDUSTRIAL_BINARIES);
+      const bundle = path.join(root, "target", "release");
+      const manifest = {
+        schema: 1,
+        profile: "industrial",
+        version: "0.1.7-alpha",
+        revision: "a".repeat(40),
+        platform: process.platform,
+        arch: process.arch,
+        files: INDUSTRIAL_BINARIES.map((binary) => {
+          const name = executableName(binary);
+          const bytes = fs.readFileSync(path.join(bundle, name));
+          return {
+            name,
+            size: bytes.length,
+            sha256: createHash("sha256").update(bytes).digest("hex"),
+          };
+        }),
+      };
+      fs.writeFileSync(
+        path.join(bundle, "industrial-manifest.json"),
+        JSON.stringify(manifest),
+      );
+      return { directory: bundle, manifest };
+    },
     run(args = [], environment = {}) {
       return spawnSync(
         process.execPath,
@@ -74,6 +102,161 @@ function installerFixture(context) {
     },
   };
 }
+
+test("a verified Industrial bundle installs without a Git checkout or Cargo", (context) => {
+  const fixture = installerFixture(context);
+  const bundle = fixture.bundle();
+  fs.rmSync(path.join(fixture.workspace, ".git"), { recursive: true });
+  const result = fixture.run(
+    ["--profile", "industrial", "--bundle", bundle.directory],
+    { PATH: "" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(
+    fs.readdirSync(fixture.directory).sort(),
+    INDUSTRIAL_BINARIES.map((name) => executableName(name)).sort(),
+  );
+  assert.match(result.stdout, new RegExp(bundle.manifest.revision));
+});
+
+// A swapped or damaged bundle member must not partially replace a working installation.
+test("a bundle checksum mismatch refuses before replacing any installed binary", (context) => {
+  const fixture = installerFixture(context);
+  const bundle = fixture.bundle();
+  const installed = path.join(
+    fixture.directory,
+    executableName("mindleak-mcp"),
+  );
+  fs.writeFileSync(installed, "working install");
+  fs.writeFileSync(
+    path.join(bundle.directory, executableName("ackplane-workctl")),
+    "different build",
+  );
+  const result = fixture.run([
+    "--profile",
+    "industrial",
+    "--bundle",
+    bundle.directory,
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /integrity|checksum|digest/);
+  assert.equal(fs.readFileSync(installed, "utf8"), "working install");
+  assert.deepEqual(fs.readdirSync(fixture.directory), [
+    executableName("mindleak-mcp"),
+  ]);
+});
+
+test("bundle metadata cannot select another platform or an incomplete executable set", (context) => {
+  for (const change of [
+    (manifest) => {
+      manifest.schema = 2;
+    },
+    (manifest) => {
+      manifest.profile = "local";
+    },
+    (manifest) => {
+      manifest.platform = "another-platform";
+    },
+    (manifest) => {
+      manifest.arch = "another-architecture";
+    },
+    (manifest) => {
+      manifest.revision = "unknown";
+    },
+    (manifest) => {
+      manifest.version = "unversioned";
+    },
+    (manifest) => {
+      manifest.files.pop();
+    },
+    (manifest) => {
+      manifest.files[5] = manifest.files[0];
+    },
+    (manifest) => {
+      manifest.files[5].name = "../outside";
+    },
+    (manifest) => {
+      manifest.files[0].size = 0;
+    },
+    (manifest) => {
+      manifest.files[0].sha256 = "unchecked";
+    },
+  ]) {
+    const fixture = installerFixture(context);
+    const bundle = fixture.bundle();
+    change(bundle.manifest);
+    fs.writeFileSync(
+      path.join(bundle.directory, "industrial-manifest.json"),
+      JSON.stringify(bundle.manifest),
+    );
+    const result = fixture.run([
+      "--profile",
+      "industrial",
+      "--bundle",
+      bundle.directory,
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.deepEqual(fs.readdirSync(fixture.directory), []);
+  }
+});
+
+test("a bundle installs the same complete set when repeated", (context) => {
+  const fixture = installerFixture(context);
+  const bundle = fixture.bundle();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = fixture.run([
+      "--profile",
+      "industrial",
+      "--bundle",
+      bundle.directory,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      fs.readdirSync(fixture.directory).sort(),
+      INDUSTRIAL_BINARIES.map((name) => executableName(name)).sort(),
+    );
+  }
+});
+
+test("bundle validation rejects a directory or symlink in place of a binary", (context) => {
+  const fixture = installerFixture(context);
+  const bundle = fixture.bundle();
+  const member = path.join(
+    bundle.directory,
+    executableName("ackplane-workctl"),
+  );
+  const original = fs.readFileSync(member);
+  fs.unlinkSync(member);
+  fs.mkdirSync(member);
+  assert.throws(() => readIndustrialBundle(bundle.directory), /integrity/);
+  fs.rmdirSync(member);
+  const target = path.join(bundle.directory, "outside");
+  fs.writeFileSync(target, original);
+  fs.symlinkSync(target, member, "file");
+  assert.throws(() => readIndustrialBundle(bundle.directory), /integrity/);
+  assert.deepEqual(fs.readdirSync(fixture.directory), []);
+});
+
+test("a changed source cannot pass the staged bundle checksum check", (context) => {
+  const fixture = installerFixture(context);
+  const bundle = fixture.bundle();
+  const { source, integrity } = readIndustrialBundle(bundle.directory)
+    .builds[0];
+  const installed = path.join(
+    fixture.directory,
+    executableName("mindleak-mcp"),
+  );
+  fs.writeFileSync(installed, "working install");
+  fs.writeFileSync(source, "changed after preflight");
+  assert.throws(
+    () => installOne(source, installed, 1, integrity),
+    /integrity|checksum/,
+  );
+  assert.equal(fs.readFileSync(installed, "utf8"), "working install");
+  assert.deepEqual(fs.readdirSync(fixture.directory), [
+    executableName("mindleak-mcp"),
+  ]);
+});
 
 // Industrial enrollment succeeded but its companion and consumers were never installed.
 test("the Industrial profile installs every host runtime binary", (context) => {
@@ -174,6 +357,9 @@ test("invalid install options fail before touching the installation", (context) 
     ["--industrail"],
     ["industrial"],
     ["--prune", "--profile", "industrial"],
+    ["--bundle", "."],
+    ["--profile", "industrial", "--bundle", ""],
+    ["--profile", "industrial", "--bundle", ".", "--prune"],
   ]) {
     const result = fixture.run(args);
     assert.notEqual(result.status, 0, `accepted ${args.join(" ")}`);
