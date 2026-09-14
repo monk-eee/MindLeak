@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { gitEnvironment } from "./adr-files.mjs";
+
 const workspace = fileURLToPath(new URL("../", import.meta.url));
 const databaseVariables = [
   "ACKPLANE_TEST_DATABASE_URL",
@@ -13,7 +15,7 @@ export function runIndustrialTests({
   report = console.log,
   error = console.error,
 } = {}) {
-  const environment = { ...env };
+  const environment = gitEnvironment(env);
   for (const variable of databaseVariables) {
     const value = environment[variable]?.trim();
     if (!value) {

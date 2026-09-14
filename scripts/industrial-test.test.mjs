@@ -121,6 +121,47 @@ test("the gate checks recovery tools, builds every target, migrates, then tests 
   );
 });
 
+test("the gate isolates child Git access without mutating the caller environment", () => {
+  const pointers = {
+    GIT_DIR: "/foreign/.git",
+    GIT_WORK_TREE: "/foreign",
+    GIT_COMMON_DIR: "/foreign/.git",
+    GIT_INDEX_FILE: "/foreign/.git/index",
+    GIT_OBJECT_DIRECTORY: "/foreign/.git/objects",
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: "/alternate/objects",
+  };
+  const env = {
+    ...environment,
+    ...pointers,
+    CARGO_TARGET_DIR: "private-build",
+  };
+  const original = { ...env };
+  const calls = [];
+  assert.equal(
+    runIndustrialTests({
+      env,
+      run: (command, args, options) => {
+        calls.push(options.env);
+        return { status: 0 };
+      },
+      report: () => {},
+      error: () => assert.fail("valid fixture configuration must be accepted"),
+    }),
+    0,
+  );
+
+  // Inherited repository pointers redirected Git inside builds and tests despite their cwd.
+  assert.equal(calls.length, 5);
+  for (const child of calls) {
+    for (const name of Object.keys(pointers)) {
+      assert.equal(Object.hasOwn(child, name), false, name);
+    }
+    assert.equal(child.CARGO_TARGET_DIR, "private-build");
+    assert.equal(child.MINDLEAK_REQUIRE_CREDENTIAL_FACILITY, "1");
+  }
+  assert.deepEqual(env, original);
+});
+
 test("a failed migration stops validation and preserves its exit code", () => {
   const calls = [];
   const errors = [];
