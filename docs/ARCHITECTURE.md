@@ -608,8 +608,12 @@ order, so identical retries remain idempotent. `ackplane-mcp`'s `prompts.rs`
 advertises `design_workflow` through standard MCP prompts, not new node mutation
 tools: the developer's model guides the review and invokes the permitted operator
 CLI. It performs no server read or write itself and exposes startup refusals as
-such. [Conversational Design](CONVERSATIONAL-DESIGN.md) describes the sequence,
-explicit approval boundaries, and remaining concurrency risk.
+such. Materialization writes lock their tenant/repository/design row before
+checking idempotency and allocating a revision, with all reads and inserts on
+one read-committed transaction. Identical contenders replay the same receipt;
+distinct requests receive unique revisions without blocking unrelated designs.
+[Conversational Design](CONVERSATIONAL-DESIGN.md) describes the sequence and
+explicit approval boundaries.
 
 The Bridge Work read response derives command availability from the same verified principal as the mutation route and exposes the authoritative task version. `static/work-page.mjs` renders the task board, published-goal and scoped-task creation, advertised supervisor-session selection, questions, and review submission. It refreshes task/goal/capability state before preparing a command. `static/work-command-client.mjs` owns immutable preview/confirmation requests and retry identity; a confirmation with an uncertain result remains retryable after expiry so the server can return its original receipt. An omitted browser principal comes from the handler's verified profile; explicit supplied identities still undergo authorization. `static/work-page.css` supplies the responsive page palette and layout. Pending delivery, command application, worker exit, review submission, and verified task completion remain distinct. [Bridge Work](BRIDGE-WORK.md) documents the workflow and its limits.
 
