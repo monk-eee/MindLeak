@@ -125,15 +125,23 @@ fn concurrent_first_starts_share_one_complete_persisted_salt() {
     );
 }
 
+// Windows reports a file-parent read as NotFound; directory creation must not
+// replace that original error with AlreadyExists or attempt to create an identity.
 #[test]
 fn non_file_targets_propagate_read_errors_without_creating_salt_files() {
     let directory = tempfile::tempdir().expect("create an owned salt fixture");
     let file = directory.path().join("regular-file");
     fs::write(&file, b"unchanged fixture").expect("create a non-directory parent");
-    for path in [directory.path().to_path_buf(), file.join("salt.bin")] {
+    for path in [
+        directory.path().to_path_buf(),
+        file.join("salt.bin"),
+        file.join("nested").join("salt.bin"),
+        file.join("nested").join("deeper").join("salt.bin"),
+    ] {
         let original_error = fs::read(&path).expect_err("the fixture cannot be read as a salt");
         let error = load_or_generate_salt(&path).expect_err("invalid target must refuse");
         assert_eq!(error.kind(), original_error.kind());
+        assert_eq!(error.raw_os_error(), original_error.raw_os_error());
     }
     assert_eq!(
         fs::read(&file).expect("read unchanged parent"),

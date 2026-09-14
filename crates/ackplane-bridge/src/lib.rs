@@ -124,20 +124,35 @@ fn development_tenant_token(salt: &[u8], tenant_name: &str) -> String {
 /// Existing empty or unreadable files are errors, never permission to replace
 /// an identity. Concurrent first-time callers reuse the fully published winner.
 pub fn load_or_generate_salt(path: &Path) -> io::Result<Vec<u8>> {
-    match read_salt(path) {
+    let missing_error = match read_salt(path) {
         Ok(existing) => return Ok(existing),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => error,
         Err(error) => return Err(error),
-    }
-    let mut salt = vec![0_u8; 32];
-    getrandom::getrandom(&mut salt).map_err(|error| {
-        io::Error::other(format!("could not generate a Bridge tenant salt: {error}"))
-    })?;
+    };
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    for ancestor in parent
+        .ancestors()
+        .filter(|ancestor| !ancestor.as_os_str().is_empty())
+    {
+        match fs::metadata(ancestor) {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    return Err(missing_error);
+                }
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
     fs::create_dir_all(parent)?;
+    let mut salt = vec![0_u8; 32];
+    getrandom::getrandom(&mut salt).map_err(|error| {
+        io::Error::other(format!("could not generate a Bridge tenant salt: {error}"))
+    })?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(&salt)?;
     temporary.as_file().sync_all()?;
