@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     extract::State,
@@ -16,6 +19,7 @@ pub const UNTRUSTED_BODY: &str = "untrusted-model-response-body-sentinel";
 
 pub enum Mode {
     Valid,
+    Vectors(BTreeMap<String, Vec<f32>>),
     MalformedIndex,
     WrongDimensions,
     Unavailable,
@@ -97,18 +101,33 @@ async fn embed(
     let Some(inputs) = body["input"].as_array() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let mut data: Vec<_> = inputs.iter().enumerate().rev().map(|(index, label)| {
-        json!({"index": index, "embedding": vector_for_label(label.as_str().unwrap())})
-    }).collect();
+    let mut data: Vec<_> = inputs
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(index, label)| {
+            let label = label.as_str().unwrap();
+            let vector = match &state.mode {
+                Mode::Vectors(vectors) => vectors
+                    .get(label)
+                    .expect("a configured fixture input")
+                    .clone(),
+                _ => vector_for_label(label),
+            };
+            json!({"index": index, "embedding": vector})
+        })
+        .collect();
     match &state.mode {
-        Mode::Valid => Json(json!({"data": data})).into_response(),
+        Mode::Valid | Mode::Vectors(_) => Json(json!({"data": data})).into_response(),
         Mode::MalformedIndex => {
             data[0]["index"] = json!(-1);
-            Json(json!({"data": data})).into_response()
+            Json(json!({"data": data, "debug": format!("{UNTRUSTED_BODY} {API_KEY}")}))
+                .into_response()
         }
         Mode::WrongDimensions => {
             data[0]["embedding"] = json!(vec![1.0; 767]);
-            Json(json!({"data": data})).into_response()
+            Json(json!({"data": data, "debug": format!("{UNTRUSTED_BODY} {API_KEY}")}))
+                .into_response()
         }
         Mode::Unavailable => (
             StatusCode::SERVICE_UNAVAILABLE,

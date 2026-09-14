@@ -29,6 +29,12 @@ pub enum ProjectionEmbeddingOperation<'a> {
         model: &'a str,
         embedding: &'a [f32],
     },
+    Recall {
+        model: &'a str,
+        query_embedding: &'a [f32],
+        floor: f32,
+        limit: u32,
+    },
 }
 
 impl ProjectionEmbeddingOperation<'_> {
@@ -46,11 +52,22 @@ impl ProjectionEmbeddingOperation<'_> {
                 embedding,
             } => {
                 source.validate()?;
-                if embedding.len() != 768
-                    || embedding.iter().any(|component| !component.is_finite())
-                    || !embedding.iter().any(|component| *component != 0.0)
-                {
-                    return Err("embedding must contain 768 finite components and be nonzero");
+                validate_vector(embedding)?;
+                model
+            }
+            Self::Recall {
+                model,
+                query_embedding,
+                floor,
+                limit,
+            } => {
+                if *limit > 100 || !floor.is_finite() || !(0.0..=1.0).contains(floor) {
+                    return Err(
+                        "recall limit must not exceed 100 and floor must be between 0 and 1",
+                    );
+                }
+                if !query_embedding.is_empty() {
+                    validate_vector(query_embedding)?;
                 }
                 model
             }
@@ -59,6 +76,23 @@ impl ProjectionEmbeddingOperation<'_> {
             return Err("model must contain 1 to 128 bytes");
         }
         Ok(())
+    }
+}
+
+fn validate_vector(embedding: &[f32]) -> Result<(), &'static str> {
+    if embedding.len() != 768
+        || embedding.iter().any(|component| !component.is_finite())
+        || !embedding.iter().any(|component| *component != 0.0)
+    {
+        return Err("embedding must contain 768 finite components and be nonzero");
+    }
+    Ok(())
+}
+
+fn push_vector(bytes: &mut Vec<u8>, embedding: &[f32]) {
+    push_field(bytes, &(embedding.len() as u64).to_be_bytes());
+    for component in embedding {
+        push_field(bytes, &component.to_bits().to_be_bytes());
     }
 }
 
@@ -96,10 +130,19 @@ pub fn projection_embedding_signing_bytes(
             push_field(&mut bytes, source.node_id.as_bytes());
             push_field(&mut bytes, source.label.as_bytes());
             push_field(&mut bytes, model.as_bytes());
-            push_field(&mut bytes, &(embedding.len() as u64).to_be_bytes());
-            for component in *embedding {
-                push_field(&mut bytes, &component.to_bits().to_be_bytes());
-            }
+            push_vector(&mut bytes, embedding);
+        }
+        ProjectionEmbeddingOperation::Recall {
+            model,
+            query_embedding,
+            floor,
+            limit,
+        } => {
+            push_field(&mut bytes, b"recall");
+            push_field(&mut bytes, model.as_bytes());
+            push_vector(&mut bytes, query_embedding);
+            push_field(&mut bytes, &floor.to_bits().to_be_bytes());
+            push_field(&mut bytes, &limit.to_be_bytes());
         }
     }
     bytes
@@ -110,6 +153,95 @@ mod tests {
     use prost::Message;
 
     use super::*;
+
+    #[test]
+    fn recall_signs_the_query_floor_limit_model_and_operation() {
+        let authentication = authentication();
+        let vector = vec![0.25; 768];
+        let original = projection_embedding_signing_bytes(
+            "tenant-a",
+            "repo-a",
+            &ProjectionEmbeddingOperation::Recall {
+                model: "model-a",
+                query_embedding: &vector,
+                floor: 0.5,
+                limit: 10,
+            },
+            &authentication,
+        );
+        for field in 0..5 {
+            let mut changed = vector.clone();
+            let mut floor = 0.5;
+            let mut limit = 10;
+            let mut model = "model-a";
+            match field {
+                0 => changed.clear(),
+                1 => changed[0] = 0.75,
+                2 => floor = 0.6,
+                3 => limit = 11,
+                4 => model = "model-b",
+                _ => unreachable!(),
+            }
+            assert_ne!(
+                original,
+                projection_embedding_signing_bytes(
+                    "tenant-a",
+                    "repo-a",
+                    &ProjectionEmbeddingOperation::Recall {
+                        model,
+                        query_embedding: &changed,
+                        floor,
+                        limit
+                    },
+                    &authentication
+                )
+            );
+        }
+        assert_ne!(
+            original,
+            projection_embedding_signing_bytes(
+                "tenant-a",
+                "repo-a",
+                &ProjectionEmbeddingOperation::ListMissing {
+                    model: "model-a",
+                    limit: 10
+                },
+                &authentication
+            )
+        );
+    }
+
+    #[test]
+    fn recall_probe_and_vector_validation_are_distinct() {
+        assert!(ProjectionEmbeddingOperation::Recall {
+            model: "model",
+            query_embedding: &[],
+            floor: 0.5,
+            limit: 0
+        }
+        .validate()
+        .is_ok());
+        for vector in [vec![0.0; 768], vec![1.0; 767], vec![f32::NAN; 768]] {
+            assert!(ProjectionEmbeddingOperation::Recall {
+                model: "model",
+                query_embedding: &vector,
+                floor: 0.5,
+                limit: 10
+            }
+            .validate()
+            .is_err());
+        }
+        for (floor, limit) in [(f32::NAN, 10), (-0.1, 10), (1.1, 10), (0.5, 101)] {
+            assert!(ProjectionEmbeddingOperation::Recall {
+                model: "model",
+                query_embedding: &[],
+                floor,
+                limit
+            }
+            .validate()
+            .is_err());
+        }
+    }
 
     fn authentication() -> v1::ProjectionEmbeddingAuthentication {
         v1::ProjectionEmbeddingAuthentication {

@@ -41,6 +41,7 @@ pub const TASK_QUERY: &str = "task_query";
 /// on top, distinguishing concurrent callers behind one long-lived front door.
 pub const OPEN_SESSION: &str = "open_session";
 pub const INDEX: &str = "index";
+pub const RECALL: &str = "recall";
 
 const TENANT_ID_ENV: &str = "MINDLEAK_ACKPLANE_TENANT_ID";
 const REPOSITORY_ID_ENV: &str = "MINDLEAK_ACKPLANE_REPOSITORY_ID";
@@ -107,6 +108,7 @@ pub fn advertised() -> Vec<Value> {
             }
         }),
         embeddings::definition(),
+        embeddings::recall_definition(),
     ]
 }
 
@@ -150,6 +152,7 @@ where
         ACTIVE_CLAIMS => active_claims(endpoint, environment),
         TASK_QUERY => task_query(endpoint, arguments, environment),
         INDEX => embeddings::index(endpoint, arguments, environment),
+        RECALL => embeddings::recall(endpoint, arguments, environment),
         // ADR-0139 clause 3: Ackplane does not accept these, so neither does its
         // front door. Named separately from an unknown tool because the reason
         // is different and actionable -- the operation exists, the authority
@@ -161,7 +164,7 @@ where
         )),
         other => Err(format!(
             "unknown tool: {other}. This front door serves {OPEN_SESSION}, \
-             {CHECK_ENROLLMENT_STATUS}, {ACTIVE_CLAIMS}, {TASK_QUERY}, and {INDEX}; it refuses a name it \
+             {CHECK_ENROLLMENT_STATUS}, {ACTIVE_CLAIMS}, {TASK_QUERY}, {INDEX}, and {RECALL}; it refuses a name it \
              does not translate rather than approximating one."
         )),
     }
@@ -447,12 +450,13 @@ mod tests {
     #[test]
     fn the_advertised_surface_includes_explicit_node_indexing() {
         let advertised = advertised();
-        assert_eq!(advertised.len(), 5);
+        assert_eq!(advertised.len(), 6);
         assert_eq!(advertised[0]["name"], OPEN_SESSION);
         assert_eq!(advertised[1]["name"], CHECK_ENROLLMENT_STATUS);
         assert_eq!(advertised[2]["name"], ACTIVE_CLAIMS);
         assert_eq!(advertised[3]["name"], TASK_QUERY);
         assert_eq!(advertised[4]["name"], INDEX);
+        assert_eq!(advertised[5]["name"], RECALL);
     }
 
     /// ADR-0137 clause 2's contract, in one call: a session opens and returns
@@ -549,9 +553,14 @@ mod tests {
     /// rules out.
     #[test]
     fn an_unserved_tool_name_is_refused_and_says_what_is_served() {
-        let error = call("http://127.0.0.1:8443", "recall", &Value::Null, &no_env)
-            .expect_err("recall is not translated by this slice");
-        assert!(error.contains("unknown tool: recall"), "got: {error}");
+        let error = call(
+            "http://127.0.0.1:8443",
+            "unsupported",
+            &Value::Null,
+            &no_env,
+        )
+        .expect_err("an unsupported tool is refused");
+        assert!(error.contains("unknown tool: unsupported"), "got: {error}");
         assert!(error.contains(CHECK_ENROLLMENT_STATUS), "got: {error}");
         assert!(error.contains(TASK_QUERY), "got: {error}");
     }
