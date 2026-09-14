@@ -378,6 +378,20 @@ Defects and limits in tools this repository depends on but does not own. Nothing
 here is fixable from this codebase. Each entry records the version measured,
 because that is what lets a future reader check whether it still holds.
 
+- **Docker Compose 5.4.0 all-service wait can reject a successful one-shot.**
+  Measured 2026-09-14 on macOS through Podman's external Compose provider during
+  the `1e6ce34993089fb14ccd647baa56d9a2258d407a` installation rehearsal:
+  `up -d --build --wait --wait-timeout 120` exited 1 with
+  `migrate-test-1 exited (0)`. Direct inspection found all four one-shot services
+  exited zero and PostgreSQL, Ackplane and Bridge running healthy at the expected
+  revision. This is an external wait-mode limitation, not a failed migration or
+  proof that the application works. The documented startup does not require
+  `--wait`. After successful initialization, scope waits to long-running services;
+  the rehearsal restarted PostgreSQL first, then Ackplane and Bridge, using
+  `--no-deps --wait` with explicit service names. Installed enrollment, protocol
+  calls and server-observed heartbeats supplied the actual behavior checks.
+  Evidence: [PR #960 qualification](https://github.com/monk-eee/MindLeak/pull/960#issuecomment-5658702254).
+
 - **Interprocess 2.4.3 clones a descriptor group into its owner field.** Source
   inspected 2026-09-11 in the installed crate's
   `src/os/windows/security_descriptor/try_clone.rs::clone`: after copying the

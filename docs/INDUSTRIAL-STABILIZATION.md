@@ -500,3 +500,53 @@ administrator approval, packaged distribution and the recorded conformance
 review remain open. The current claim history records four lapses totaling
 249,052 unleased seconds; no merge or successful test waives that history.
 Execution evidence: `execution:7dcd26c2d9aa`.
+
+## Installed Candidate Rehearsal (2026-09-14)
+
+The exact [PR #960](https://github.com/monk-eee/MindLeak/pull/960) candidate
+`1e6ce34993089fb14ccd647baa56d9a2258d407a` passed a single-revision installation
+and restart rehearsal after its [CI check set](https://github.com/monk-eee/MindLeak/actions/runs/34801167641)
+passed. At this checkpoint the PR was armed but had not merged; this evidence
+does not certify a later queue-update or merge commit.
+
+All six host binaries and both application images were built from that clean,
+pinned checkout. The macOS ARM64 Industrial ZIP was 15,338,481 bytes, SHA-256
+`c05d8d6ee5475d1b6c70c73ed0d755c961c02435286538f9e5aa260e6a759dae`.
+The deployment used empty project-owned volumes and random loopback ports.
+Installation used a temporary home; native credential operations used the normal
+OS account with isolated application state.
+
+- Independent ZIP validation and two Node-only installations passed, with all
+  six installed hashes, sizes and executable permissions matching the manifest.
+  Repeated trust preparation preserved CA/salt bytes, timestamps and modes.
+- TLS enrollment request and activation retries retained the same provider
+  identity and exactly one request, receipt and signing key. Missing or incorrect
+  trust, unusable socket paths, premature activation and wrong-tenant approval
+  refused. Approval was the explicit development-only database command.
+- All three installed MCP clients worked through the companion. Wrong tenant or
+  repository, missing companion, obsolete seed settings and endpoint mismatch
+  refused; companion loss did not disable the independent Local profile.
+- The installed notification-only supervisor restarted against its original
+  queue. The Bridge reported one unchanged session and original start time plus
+  a newer heartbeat. Both supervisor shutdowns in each runtime run exited zero.
+- PostgreSQL, Ackplane and Bridge restarted with unchanged image revision,
+  volumes, trust, provider metadata and enrollment counts. The installed runtime
+  checks passed again; a subsequent server-session comparison also passed.
+- Cleanup deleted only the exact test credential by reference and verified its
+  absence without reading a password. Missing-provider startup then refused
+  without replacement or metadata changes. Test containers, volumes, network,
+  image tags and temporary state were removed. Original live container IDs and
+  start times were unchanged; peer services were not touched.
+
+The optional all-service Compose wait returned failure for a successful
+one-shot migration. Direct migration results and long-running service checks
+discriminated that [external wait limitation](KNOWN-LIMITATIONS.md#external-tools);
+the restart used waits scoped to the long-running services.
+
+This closes the candidate's observed supervisor restart failure, not the
+programme's release gate. A final reviewed revision must be qualified separately.
+Fresh OS-account setup, real-worker execution, two-node isolation, authenticated
+production administration, signed publication and pilot endurance were not tested
+here. STAB-02 and the historical conformance review remain open.
+Evidence: `execution:d488392e4cc0` and `execution:c1988a15bd2f`, also recorded in
+the [PR qualification comment](https://github.com/monk-eee/MindLeak/pull/960#issuecomment-5658702254).
