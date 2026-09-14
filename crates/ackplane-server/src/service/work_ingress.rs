@@ -229,6 +229,9 @@ impl From<WorkStoreError> for WorkIngressError {
             WorkStoreError::UnknownState { .. } => {
                 Self::Unavailable("native Work store has invalid state")
             }
+            WorkStoreError::InconsistentProjection { .. } => {
+                Self::Unavailable("native Work projection is inconsistent")
+            }
         }
     }
 }

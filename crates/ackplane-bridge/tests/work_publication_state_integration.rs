@@ -10,6 +10,7 @@ use ackplane_bridge::work_api::{work_routes, WorkApiState};
 use ackplane_protocol::enrollment::{activation_challenge_bytes, public_key_fingerprint};
 use ackplane_server::{
     claim_store::{ClaimLeaseOutcome, ClaimLeaseRequest, ClaimStore},
+    db_pool::PgPool,
     enrollment_store::{
         ActivationChallengeRequest, EnrollmentActivation, EnrollmentApproval, EnrollmentStore,
         EnrollmentSubmission,
@@ -28,6 +29,9 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 const WORK_PAGE: &str = include_str!("../static/work.html");
+
+#[path = "work_publication_state_integration/integrity.rs"]
+mod integrity;
 
 fn unique_id(prefix: &str) -> String {
     let mut bytes = [0_u8; 8];
@@ -113,14 +117,9 @@ async fn enroll_repository(database_url: &str, tenant_id: &str, repository_id: &
         .expect("activate enrollment");
 }
 
-async fn application(database_url: &str, tenant_id: &str) -> axum::Router {
-    let db_pool = ackplane_server::db_pool::build_pool(
-        database_url,
-        ackplane_server::db_pool::TEST_POOL_MAX_SIZE,
-    )
-    .expect("the gated test database url builds a pool");
+async fn application(database_url: &str, tenant_id: &str, work_pool: &PgPool) -> axum::Router {
     let work = Arc::new(
-        WorkStore::connect(&db_pool)
+        WorkStore::connect(work_pool)
             .await
             .expect("connect Work store"),
     );
@@ -227,7 +226,7 @@ async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositor
         .expect("create live orphan claim");
     assert_eq!(claim.outcome, ClaimLeaseOutcome::Granted);
 
-    let app = application(&database_url, &tenant_id).await;
+    let app = application(&database_url, &tenant_id, &db_pool).await;
     let claims_only = app
         .clone()
         .oneshot(

@@ -602,17 +602,9 @@ async fn an_applied_drain_receipt_cannot_reopen_a_terminal_task() {
         return;
     };
 
-    for (terminal_state, expected_state, label) in [
-        (
-            7_i16,
-            crate::work_store::WorkTaskState::Completed,
-            "completed",
-        ),
-        (
-            8_i16,
-            crate::work_store::WorkTaskState::Abandoned,
-            "abandoned",
-        ),
+    for (expected_state, label) in [
+        (crate::work_store::WorkTaskState::Completed, "completed"),
+        (crate::work_store::WorkTaskState::Abandoned, "abandoned"),
     ] {
         let fixture = fixture(vec![SupervisorDirectiveCapability::Drain]).await;
         let now = SystemTime::now();
@@ -664,18 +656,27 @@ async fn an_applied_drain_receipt_cannot_reopen_a_terminal_task() {
         let owner_id = format!("owner-{label}-{}", fixture.suffix);
         let owner_session_id = format!("session-{label}-{}", fixture.suffix);
         let lease_expires_at = now + Duration::from_secs(900);
+        let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
+            .await
+            .expect("connect work store");
+        work_store
+            .transition_for_test(
+                &fixture.tenant_id,
+                &fixture.repository_id,
+                &fixture.task_id,
+                expected_state,
+            )
+            .await;
         let client = raw_client(&database_url).await;
         client
             .execute(
                 "UPDATE work_tasks
-                 SET state = $4, owner_id = $5, owner_session_id = $6,
-                     lease_expires_at = $7, version = version + 1
+                 SET owner_id = $4, owner_session_id = $5, lease_expires_at = $6
                  WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
                 &[
                     &fixture.tenant_id,
                     &fixture.repository_id,
                     &fixture.task_id,
-                    &terminal_state,
                     &owner_id,
                     &owner_session_id,
                     &lease_expires_at,
@@ -684,9 +685,6 @@ async fn an_applied_drain_receipt_cannot_reopen_a_terminal_task() {
             .await
             .expect("another path should be able to reach a terminal state");
 
-        let work_store = WorkStore::connect(&crate::test_support::gated_test_pool())
-            .await
-            .expect("connect work store");
         let before = work_store
             .task_detail(&fixture.tenant_id, &fixture.repository_id, &fixture.task_id)
             .await

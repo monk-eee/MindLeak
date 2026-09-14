@@ -22,6 +22,9 @@ use thiserror::Error;
 #[cfg(test)]
 mod detail_tests;
 
+#[cfg(test)]
+mod integrity_tests;
+
 const WORK_MIGRATION: &str = include_str!("../../migrations/0028_work.sql");
 const CLAIM_MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
 const WORK_TASK_COMMAND_EXECUTION_MIGRATION: &str =
@@ -42,6 +45,12 @@ pub enum WorkStoreError {
         tenant_id: String,
         repository_id: String,
         task_id: String,
+    },
+    #[error("Work projection is unavailable: task {repository_id}/{task_id}: {reason}")]
+    InconsistentProjection {
+        repository_id: String,
+        task_id: String,
+        reason: WorkIntegrityReason,
     },
 }
 
@@ -222,8 +231,17 @@ impl WorkStore {
     ) -> Result<WorkTaskPage, WorkStoreError> {
         let offset = (page - 1).saturating_mul(page_size);
         let state = state.map(|state| state.as_i16());
-        let connection = self.connection().await?;
-        let rows = connection
+        let mut connection = self.connection().await?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await?;
+        let publication =
+            Self::publication_in(&*transaction, tenant_id, repository_id, SystemTime::now())
+                .await?;
+        let rows = transaction
             .query(
                 "WITH matching AS ( \
                      SELECT * FROM work_tasks \
@@ -247,7 +265,12 @@ impl WorkStore {
                 items.push(Self::row_to_task(row)?);
             }
         }
-        Ok(WorkTaskPage { items, total })
+        transaction.commit().await?;
+        Ok(WorkTaskPage {
+            items,
+            total,
+            publication,
+        })
     }
 
     /// Reads the task, history and waits from one committed snapshot.
@@ -274,6 +297,7 @@ impl WorkStore {
             transaction.commit().await?;
             return Ok(None);
         };
+        Self::check_integrity(&*transaction, tenant_id, Some(repository_id), Some(task_id)).await?;
         let task = Self::row_to_task(&task_row)?;
         let history_rows = transaction
             .query(
@@ -368,10 +392,12 @@ pub(crate) async fn allocate_stream_position(
 
 mod doctor;
 mod ingress;
+mod integrity;
 mod model;
 mod publication;
 pub use doctor::{FleetUnansweredWait, WorkDoctorFinding};
 pub(crate) use ingress::WorkTaskCreationOutcome;
+pub use integrity::WorkIntegrityReason;
 pub(in crate::work_store) use model::source_digest;
 pub use model::{
     NewWorkTask, WorkTask, WorkTaskDetail, WorkTaskEvent, WorkTaskPage, WorkTaskState, WorkTaskWait,
@@ -387,6 +413,41 @@ mod tests {
 
     use super::*;
     use crate::test_support::unique_id;
+
+    impl WorkStore {
+        pub(crate) async fn transition_for_test(
+            &self,
+            tenant_id: &str,
+            repository_id: &str,
+            task_id: &str,
+            state: WorkTaskState,
+        ) {
+            let mut connection = self.connection().await.expect("checkout lifecycle fixture");
+            let transaction = connection
+                .transaction()
+                .await
+                .expect("begin lifecycle fixture");
+            let position = allocate_stream_position(&transaction, tenant_id, repository_id)
+                .await
+                .expect("allocate lifecycle event");
+            transaction.execute(
+                "INSERT INTO work_task_history (tenant_id, repository_id, event_id, task_id, \
+                     event_kind, from_state, to_state, actor_id, source_digest, stream_position) \
+                 SELECT tenant_id, repository_id, $4, task_id, 2, state, $5, 'fixture', source_digest, $6 \
+                 FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
+                &[&tenant_id, &repository_id, &task_id, &unique_id("lifecycle-event"), &state.as_i16(), &position],
+            ).await.expect("append matching lifecycle event");
+            transaction.execute(
+                "UPDATE work_tasks SET state = $4, version = version + 1, source_event_position = $5 \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
+                &[&tenant_id, &repository_id, &task_id, &state.as_i16(), &position],
+            ).await.expect("set lifecycle projection");
+            transaction
+                .commit()
+                .await
+                .expect("commit lifecycle fixture");
+        }
+    }
 
     pub(super) fn new_task(
         tenant_id: &str,

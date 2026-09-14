@@ -1,22 +1,25 @@
-- **Work reads still lack explicit unavailable reporting for synchronous
-  projection inconsistency -- OPEN IMPLEMENTATION; design choice resolved
-  2026-09-14.** The user explicitly approved retaining atomic event/projection
-  updates and amending ADR-0120, not introducing an asynchronous Work projector.
-  Its amended decision 6 removes `lagging` from Work's vocabulary and requires
-  per-task event/position/state checks from a coherent snapshot. Read failures
-  and committed inconsistencies must not appear as a current or empty board.
-  Matching repository-wide maximum positions is insufficient and structural
-  checks are not a substitute for full replay verification.
+- **Work structural consistency is checked; full event replay verification
+  remains incomplete -- OPEN RESIDUAL; structural checks fixed 2026-09-15.** Under the explicitly approved
+  synchronous ADR-0120 amendment, `work_store/integrity.rs` now checks each
+  task's own latest scoped history, source event position, and lifecycle state.
+  List publication and rows share a committed snapshot; detail, Board Doctor,
+  and tenant-wide unanswered waits also check and read one snapshot. Ordinary
+  inconsistent reads are unavailable (Bridge 503, gRPC Unavailable, MCP tool
+  error); Board Doctor reports the first repair reason without mutating data.
+  Corruption and concurrent-publication regressions failed before these fixes
+  and pass afterward; real HTTP and enrolled-companion MCP tests cover the
+  transport behavior, scope isolation, and no implicit repair.
 
-  This amendment changes the contract, not the running read surfaces.
-  `WorkStore::publication`, Bridge's publication mapping, and
-  `WorkQueryService::publication_to_wire` still need the shared implementation
-  and regression coverage. Ordinary reads must withhold known-inconsistent
-  data; diagnostic paths must report the affected scope without repairing it.
-  Implementation is deliberately separate from the current integration batch,
-  whose live claim overlaps the Work store and integration tests. Keep this
-  fragment until the implemented behavior and required tests satisfy the amended
-  contract. The evidence below records why the original plan was corrected.
+  **Remaining job:** ADR-0120 decision 3 requires full replay verification,
+  not just structural checks. `work_task_history` (migration 0028, extended by
+  0065) records lifecycle and source digest/position, not every task field's
+  reconstruction payload. `WorkStore` has no full replay verifier or explicit
+  operator repair workflow. A title or scope change can therefore still pass
+  the structural check; `current` does not certify full replay equivalence.
+  Completing this requires the bounded event payload and replay/repair contract,
+  not an asynchronous projector or repository-wide maximum comparison. Left
+  for separate work; no replay or deployment qualification is claimed here.
+  The historical evidence below records why the original plan was corrected.
 
   **Historical observation, 2026-08-30:** neither read surface computed the
   originally described `lagging` or `unavailable` states, initially blocked on

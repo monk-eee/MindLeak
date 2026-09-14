@@ -131,13 +131,7 @@ struct WorkPublicationResponse {
 
 impl From<WorkPublication> for WorkPublicationResponse {
     fn from(publication: WorkPublication) -> Self {
-        let state = if publication.has_work_tasks {
-            "current"
-        } else if publication.claims_only_total > 0 {
-            "claims_only"
-        } else {
-            "not_published"
-        };
+        let state = publication.state();
         Self {
             state,
             claims_only_total: publication.claims_only_total,
@@ -168,11 +162,6 @@ pub(super) async fn work_list(
         Some(raw) => Some(parse_state(&raw).ok_or(StatusCode::BAD_REQUEST)?),
         None => None,
     };
-    let publication = state
-        .work
-        .publication(state.tenant_id.as_ref(), &repository_id, SystemTime::now())
-        .await
-        .map_err(work_store_error)?;
     let result = state
         .work
         .list_tasks(
@@ -193,7 +182,7 @@ pub(super) async fn work_list(
         total: result.total,
         page,
         page_size,
-        publication: WorkPublicationResponse::from(publication),
+        publication: WorkPublicationResponse::from(result.publication),
         commands: command_capabilities(&crate::work_command_api::verified_principal(
             state.tenant_id.as_ref(),
             &repository_id,

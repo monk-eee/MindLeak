@@ -14,12 +14,15 @@ use ackplane_protocol::v1::{
     self, node_enrollment_service_client::NodeEnrollmentServiceClient,
     node_enrollment_service_server::NodeEnrollmentServiceServer,
     node_sync_service_server::NodeSyncServiceServer,
+    work_query_service_server::WorkQueryServiceServer,
 };
 use ackplane_server::{
     enrollment_service::NodeEnrollmentService,
     enrollment_store::{EnrollmentApproval, EnrollmentStore},
     ledger::LedgerStore,
     service::NodeSyncService,
+    work_query_service::WorkQueryService,
+    work_store::{NewWorkTask, WorkStore},
 };
 use ed25519_dalek::{Signer, SigningKey};
 use tokio::sync::oneshot;
@@ -63,6 +66,9 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
     let ledger = LedgerStore::connect(&pool)
         .await
         .expect("the gated test database should accept ledger migrations");
+    let work = WorkStore::connect(&pool)
+        .await
+        .expect("connect Work query store");
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -71,6 +77,7 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
         Server::builder()
+            .add_service(WorkQueryServiceServer::new(WorkQueryService::new(work)))
             .add_service(NodeEnrollmentServiceServer::new(
                 NodeEnrollmentService::new(enrollment_store),
             ))
@@ -169,6 +176,38 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
     let signing_key_id = activation.signing_key_id.clone();
     assert!(!signing_key_id.is_empty());
 
+    // A successful MCP envelope must not turn corrupt native Work into a healthy board.
+    let work = WorkStore::connect(&pool)
+        .await
+        .expect("connect Work fixture writer");
+    work.create_task(
+        &NewWorkTask {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            task_id: "integrity-task".to_owned(),
+            title: "Work requiring repair".to_owned(),
+            acceptance: "Do not expose an inconsistent task".to_owned(),
+            goal_id: None,
+            declared_paths: Vec::new(),
+            declared_symbols: Vec::new(),
+            published_by: "test-publisher".to_owned(),
+        },
+        "integrity-event",
+        std::time::SystemTime::now(),
+    )
+    .await
+    .expect("create a task with its matching event");
+    pool.get()
+        .await
+        .expect("checkout corruption fixture")
+        .execute(
+            "UPDATE work_tasks SET source_event_position = NULL \
+         WHERE tenant_id = $1 AND repository_id = $2 AND task_id = 'integrity-task'",
+            &[&tenant_id, &repository_id],
+        )
+        .await
+        .expect("remove source position only for this test task");
+
     let directory = tempfile::tempdir().unwrap();
     let companion = companion::TestCompanion::start(
         &endpoint,
@@ -221,8 +260,13 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
             .env_remove("MINDLEAK_ACKPLANE_KEY_PATH")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
         let mut input = child.stdin.take().unwrap();
-        for (index, name) in ["open_session", "check_enrollment_status"].iter().enumerate() {
-            let arguments = if index == 0 { serde_json::json!({"session_id":"0123456789abcdef0123456789abcdef"}) } else { serde_json::json!({}) };
+        for (index, (name, arguments)) in [
+            ("open_session", serde_json::json!({"session_id":"0123456789abcdef0123456789abcdef"})),
+            ("check_enrollment_status", serde_json::json!({})),
+            ("task_query", serde_json::json!({"view":"list"})),
+            ("task_query", serde_json::json!({"view":"detail","task_id":"integrity-task"})),
+            ("task_query", serde_json::json!({"view":"doctor"})),
+        ].iter().enumerate() {
             writeln!(input, "{}", serde_json::json!({"jsonrpc":"2.0","id":index,"method":"tools/call","params":{"name":name,"arguments":arguments}})).unwrap();
         }
         drop(input);
@@ -230,8 +274,8 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
         assert!(output.status.success());
         String::from_utf8(output.stdout).unwrap().lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).collect::<Vec<_>>()
     }).await.unwrap();
-    assert_eq!(responses.len(), 2);
-    for response in &responses {
+    assert_eq!(responses.len(), 5);
+    for response in &responses[..2] {
         assert_eq!(response["result"]["isError"], false, "{response}");
     }
     let session: serde_json::Value = serde_json::from_str(
@@ -252,6 +296,31 @@ async fn a_second_connection_signed_by_the_same_node_key_is_tolerated_alongside_
     .unwrap();
     assert_eq!(status["verified"], true);
     assert_eq!(status["node_id"], node_id);
+    for response in &responses[2..4] {
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        let diagnostic = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(diagnostic.contains("unavailable"), "{diagnostic}");
+        assert!(
+            !diagnostic.contains("source event position is missing"),
+            "ordinary errors must retain companion redaction"
+        );
+        assert!(
+            !diagnostic.contains("Work requiring repair"),
+            "task data was exposed"
+        );
+    }
+    assert_eq!(responses[4]["result"]["isError"], false);
+    let doctor: serde_json::Value = serde_json::from_str(
+        responses[4]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let findings = doctor["findings"].as_array().expect("diagnostic findings");
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0]["kind"], "inconsistent_projection");
+    assert_eq!(findings[0]["task_id"], "integrity-task");
+    assert_eq!(findings[0]["detail"], "source event position is missing");
 
     // `second_connection`'s value is dropped as part of this `map` (its
     // closure takes ownership and returns `()`), matching `_supervisor_

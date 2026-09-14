@@ -5,6 +5,10 @@ use super::*;
 /// and scope overlap, but it never mutates a task."
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkDoctorFinding {
+    InconsistentProjection {
+        task_id: String,
+        reason: WorkIntegrityReason,
+    },
     /// A live claim (ClaimStore) has no corresponding Work task at all.
     ClaimsOnly {
         task_id: String,
@@ -53,11 +57,31 @@ impl WorkStore {
         now: SystemTime,
         unanswered_wait_threshold: std::time::Duration,
     ) -> Result<Vec<WorkDoctorFinding>, WorkStoreError> {
+        let mut connection = self.connection().await?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await?;
+        match Self::check_integrity(&*transaction, tenant_id, Some(repository_id), None).await {
+            Ok(()) => {}
+            Err(WorkStoreError::InconsistentProjection {
+                task_id, reason, ..
+            }) => {
+                transaction.commit().await?;
+                return Ok(vec![WorkDoctorFinding::InconsistentProjection {
+                    task_id,
+                    reason,
+                }]);
+            }
+            Err(error) => return Err(error),
+        }
         let mut findings = Vec::new();
 
-        let (_, claims_only) = self
-            .claims_only_records(tenant_id, repository_id, now, i64::MAX)
-            .await?;
+        let (_, claims_only) =
+            Self::claims_only_records(&*transaction, tenant_id, repository_id, now, i64::MAX)
+                .await?;
         for claim in claims_only {
             findings.push(WorkDoctorFinding::ClaimsOnly {
                 task_id: claim.task_id,
@@ -66,9 +90,7 @@ impl WorkStore {
             });
         }
 
-        let task_rows = self
-            .connection()
-                .await?
+        let task_rows = transaction
             .query(
                 "SELECT task_id, title, goal_id, state, owner_id, lease_expires_at, declared_paths \
                  FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2 ORDER BY task_id",
@@ -153,9 +175,7 @@ impl WorkStore {
         let stale_before = now
             .checked_sub(unanswered_wait_threshold)
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        let wait_rows = self
-            .connection()
-            .await?
+        let wait_rows = transaction
             .query(
                 "SELECT w.wait_id, w.task_id, w.question, w.asked_at FROM work_task_waits w \
                  INNER JOIN work_tasks t \
@@ -176,6 +196,7 @@ impl WorkStore {
             });
         }
 
+        transaction.commit().await?;
         Ok(findings)
     }
 
@@ -194,9 +215,15 @@ impl WorkStore {
         let stale_before = now
             .checked_sub(unanswered_wait_threshold)
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        let rows = self
-            .connection()
-            .await?
+        let mut connection = self.connection().await?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await?;
+        Self::check_integrity(&*transaction, tenant_id, None, None).await?;
+        let rows = transaction
             .query(
                 "SELECT w.repository_id, w.task_id, w.wait_id, w.question, w.asked_at \
                  FROM work_task_waits w \
@@ -209,6 +236,7 @@ impl WorkStore {
                 &[&tenant_id, &stale_before, &limit],
             )
             .await?;
+        transaction.commit().await?;
         Ok(rows
             .into_iter()
             .map(|row| FleetUnansweredWait {
@@ -635,16 +663,14 @@ mod tests {
 
     #[tokio::test]
     async fn board_doctor_ignores_a_terminal_tasks_owner_and_lease() {
-        let Ok(database_url) = std::env::var("ACKPLANE_TEST_DATABASE_URL") else {
+        let Some(pool) = crate::test_support::test_pool() else {
             eprintln!("skipping: ACKPLANE_TEST_DATABASE_URL is not set");
             return;
         };
         let tenant_id = unique_id("tenant");
         let repository_id = unique_id("repo");
         let task_id = unique_id("task");
-        let store = WorkStore::connect(&crate::test_support::gated_test_pool())
-            .await
-            .expect("connect");
+        let store = WorkStore::connect(&pool).await.expect("connect");
         store
             .create_task(
                 &new_task(&tenant_id, &repository_id, &task_id, "Ship the thing"),
@@ -653,13 +679,14 @@ mod tests {
             )
             .await
             .expect("create task");
-        let raw = raw_client(&database_url).await;
-        raw.execute(
-            "UPDATE work_tasks SET state = 7 WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
-            &[&tenant_id, &repository_id, &task_id],
-        )
-        .await
-        .expect("mark the task completed");
+        store
+            .transition_for_test(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                WorkTaskState::Completed,
+            )
+            .await;
 
         let findings = store
             .board_doctor(
@@ -694,10 +721,18 @@ mod tests {
             )
             .await
             .expect("create task");
+        store
+            .transition_for_test(
+                &tenant_id,
+                &repository_id,
+                &task_id,
+                WorkTaskState::Completed,
+            )
+            .await;
         let raw = raw_client(&database_url).await;
         let lease_expires_at = SystemTime::now() + Duration::from_secs(600);
         raw.execute(
-            "UPDATE work_tasks SET state = 7, owner_id = 'owner-1', lease_expires_at = $4 \
+            "UPDATE work_tasks SET owner_id = 'owner-1', lease_expires_at = $4 \
              WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3",
             &[&tenant_id, &repository_id, &task_id, &lease_expires_at],
         )

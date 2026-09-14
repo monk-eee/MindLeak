@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use tokio_postgres::GenericClient;
+
 use super::*;
 
 const MAX_CLAIMS_ONLY_ROWS: i64 = 20;
@@ -21,6 +23,18 @@ pub struct WorkPublication {
     pub claims_only: Vec<ClaimsOnlyWork>,
 }
 
+impl WorkPublication {
+    pub fn state(&self) -> &'static str {
+        if self.has_work_tasks {
+            "current"
+        } else if self.claims_only_total > 0 {
+            "claims_only"
+        } else {
+            "not_published"
+        }
+    }
+}
+
 impl WorkStore {
     /// Reports whether this repository has native Industrial Work records and
     /// exposes a bounded sample of live claims that lack one.
@@ -30,9 +44,27 @@ impl WorkStore {
         repository_id: &str,
         now: SystemTime,
     ) -> Result<WorkPublication, WorkStoreError> {
-        let has_work_tasks = self
-            .connection()
-            .await?
+        let mut connection = self.connection().await?;
+        let transaction = connection
+            .build_transaction()
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .await?;
+        let publication =
+            Self::publication_in(&*transaction, tenant_id, repository_id, now).await?;
+        transaction.commit().await?;
+        Ok(publication)
+    }
+
+    pub(super) async fn publication_in(
+        client: &(impl GenericClient + Sync),
+        tenant_id: &str,
+        repository_id: &str,
+        now: SystemTime,
+    ) -> Result<WorkPublication, WorkStoreError> {
+        Self::check_integrity(client, tenant_id, Some(repository_id), None).await?;
+        let has_work_tasks = client
             .query_one(
                 "SELECT EXISTS(\
                      SELECT 1 FROM work_tasks WHERE tenant_id = $1 AND repository_id = $2\
@@ -41,9 +73,9 @@ impl WorkStore {
             )
             .await?
             .get("has_work_tasks");
-        let (claims_only_total, claims_only) = self
-            .claims_only_records(tenant_id, repository_id, now, MAX_CLAIMS_ONLY_ROWS)
-            .await?;
+        let (claims_only_total, claims_only) =
+            Self::claims_only_records(client, tenant_id, repository_id, now, MAX_CLAIMS_ONLY_ROWS)
+                .await?;
         Ok(WorkPublication {
             has_work_tasks,
             claims_only_total,
@@ -52,15 +84,13 @@ impl WorkStore {
     }
 
     pub(in crate::work_store) async fn claims_only_records(
-        &self,
+        client: &(impl GenericClient + Sync),
         tenant_id: &str,
         repository_id: &str,
         now: SystemTime,
         max_rows: i64,
     ) -> Result<(i64, Vec<ClaimsOnlyWork>), WorkStoreError> {
-        let rows = self
-            .connection()
-                .await?
+        let rows = client
             .query(
                 "SELECT dc.task_id, dc.owner_id, dc.branch, dc.lease_expires_at, dc.paths, dc.symbols, \
                         COUNT(*) OVER()::BIGINT AS total_count \

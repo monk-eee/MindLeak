@@ -23,6 +23,19 @@ struct WorkDoctorFindingResponse {
 impl From<WorkDoctorFinding> for WorkDoctorFindingResponse {
     fn from(finding: WorkDoctorFinding) -> Self {
         match finding {
+            WorkDoctorFinding::InconsistentProjection { task_id, reason } => Self {
+                kind: "inconsistent_projection",
+                detail: reason.to_string(),
+                task_id,
+                related_task_id: None,
+                title: None,
+                goal_id: None,
+                path: None,
+                wait_id: None,
+                question: None,
+                owner_id: None,
+                since_seconds: None,
+            },
             WorkDoctorFinding::ClaimsOnly {
                 task_id,
                 owner_id,
