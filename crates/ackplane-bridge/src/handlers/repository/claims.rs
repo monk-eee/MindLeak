@@ -19,6 +19,10 @@ use crate::{unix_seconds, AppState};
 
 const CLAIM_PAGE_SIZE: i64 = 50;
 
+#[cfg(test)]
+#[path = "claims/node_custody_tests.rs"]
+mod node_custody_tests;
+
 #[derive(Serialize)]
 pub struct ActiveWorkResponse {
     claims: Vec<ActiveWorkSummary>,
@@ -75,6 +79,7 @@ struct ClaimCursorSummary {
 #[derive(Deserialize)]
 pub struct RecoverClaimRequest {
     owner_id: String,
+    node_id: String,
     reason: String,
     branch: String,
     lease_seconds: u64,
@@ -84,6 +89,7 @@ pub struct RecoverClaimRequest {
 pub struct RecoverClaimResponse {
     task_id: String,
     owner_id: String,
+    node_id: String,
     branch: String,
     claim_started_at_seconds: Option<u64>,
     lease_expires_at_seconds: Option<u64>,
@@ -271,6 +277,7 @@ pub async fn repository_recover_claim(
         task_id,
         expected_owner: current.owner_id,
         owner_id: request.owner_id,
+        node_id: request.node_id,
         reason: request.reason,
         branch: request.branch,
         lease: Duration::from_secs(request.lease_seconds),
@@ -284,6 +291,7 @@ pub async fn repository_recover_claim(
             Ok(Json(RecoverClaimResponse {
                 task_id: recover_request.task_id,
                 owner_id: result.owner_id,
+                node_id: recover_request.node_id,
                 branch: result.branch,
                 claim_started_at_seconds: unix_seconds(result.claim_started_at),
                 lease_expires_at_seconds: unix_seconds(result.lease_expires_at),
@@ -294,9 +302,11 @@ pub async fn repository_recover_claim(
         // still live - ClaimStore::recover's own unconditional expiry check
         // (ADR-0111), not a judgment Bridge makes itself.
         Ok(_rejected) => Err(StatusCode::CONFLICT),
-        Err(ClaimStoreError::MissingReason | ClaimStoreError::InvalidLease) => {
-            Err(StatusCode::BAD_REQUEST)
-        }
+        Err(
+            ClaimStoreError::MissingReason
+            | ClaimStoreError::InvalidLease
+            | ClaimStoreError::MissingNode,
+        ) => Err(StatusCode::BAD_REQUEST),
         Err(error) => {
             tracing::error!(%error, "Bridge claim recovery failed");
             Err(StatusCode::INTERNAL_SERVER_ERROR)

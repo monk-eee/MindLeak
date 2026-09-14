@@ -215,6 +215,7 @@ async fn work_list_distinguishes_claims_only_not_published_and_foreign_repositor
                 repository_id: claims_only_repository.clone(),
                 task_id: orphan_task_id.clone(),
                 owner_id: "owner-claims-only".to_string(),
+                node_id: "work-publication-test-node".into(),
                 branch: "feat/industrial-work".to_string(),
                 lease: Duration::from_secs(3_600),
                 paths: vec!["crates/ackplane-bridge/static/work.html".to_string()],

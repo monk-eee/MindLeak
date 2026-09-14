@@ -7,7 +7,7 @@ use ackplane_protocol::{
     v1,
 };
 use prost::Message;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 pub(crate) const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS inbox_identity (
@@ -17,6 +17,11 @@ CREATE TABLE IF NOT EXISTS inbox_identity (
     node_id TEXT NOT NULL,
     supervisor_id TEXT NOT NULL,
     session_id TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS supervisor_session (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    declaration TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS directive_inbox (
@@ -144,12 +149,31 @@ impl StoredReceipt {
     }
 }
 
+pub(crate) enum SupervisorIdentityBinding {
+    Bound(SupervisorSession),
+    Mismatch,
+    MissingSession,
+}
+
 pub(crate) fn ensure_supervisor_identity(
     conn: &Connection,
     identity: &SupervisorIdentity,
     supervisor_id: &str,
     session: &SupervisorSession,
-) -> Result<bool, rusqlite::Error> {
+) -> Result<SupervisorIdentityBinding, rusqlite::Error> {
+    let read_only = conn.is_readonly(rusqlite::DatabaseName::Main)?;
+    let transaction = if conn.is_autocommit() {
+        Some(Transaction::new_unchecked(
+            conn,
+            if read_only {
+                TransactionBehavior::Deferred
+            } else {
+                TransactionBehavior::Immediate
+            },
+        )?)
+    } else {
+        None
+    };
     let stored: Option<(String, String, String, String, String)> = conn
         .query_row(
             "SELECT tenant_id, repository_id, node_id, supervisor_id, session_id FROM inbox_identity WHERE singleton = 1",
@@ -167,13 +191,49 @@ pub(crate) fn ensure_supervisor_identity(
                 session.session_id.clone(),
             )
         {
-            return Ok(false);
+            return Ok(SupervisorIdentityBinding::Mismatch);
         }
-        return Ok(true);
+        let has_session_table: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'supervisor_session')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_session_table {
+            return Ok(SupervisorIdentityBinding::MissingSession);
+        }
+        let declaration: Option<String> = conn
+            .query_row(
+                "SELECT declaration FROM supervisor_session WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(declaration) = declaration else {
+            return Ok(SupervisorIdentityBinding::MissingSession);
+        };
+        let stored_session: SupervisorSession =
+            serde_json::from_str(&declaration).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+        let mut expected = session.clone();
+        expected.started_at = stored_session.started_at;
+        if stored_session != expected {
+            return Ok(SupervisorIdentityBinding::Mismatch);
+        }
+        if let Some(transaction) = transaction {
+            transaction.commit()?;
+        }
+        return Ok(SupervisorIdentityBinding::Bound(stored_session));
     }
-    if conn.is_readonly(rusqlite::DatabaseName::Main)? {
-        return Ok(false);
+    if read_only {
+        return Ok(SupervisorIdentityBinding::Mismatch);
     }
+    let declaration = serde_json::to_string(session)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     conn.execute(
         "INSERT INTO inbox_identity (singleton, tenant_id, repository_id, node_id, supervisor_id, session_id) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
         params![
@@ -184,7 +244,14 @@ pub(crate) fn ensure_supervisor_identity(
             session.session_id,
         ],
     )?;
-    Ok(true)
+    conn.execute(
+        "INSERT INTO supervisor_session (singleton, declaration) VALUES (1, ?1)",
+        [declaration],
+    )?;
+    if let Some(transaction) = transaction {
+        transaction.commit()?;
+    }
+    Ok(SupervisorIdentityBinding::Bound(session.clone()))
 }
 
 pub(crate) fn next_sequence(transaction: &Transaction<'_>) -> Result<i64, rusqlite::Error> {

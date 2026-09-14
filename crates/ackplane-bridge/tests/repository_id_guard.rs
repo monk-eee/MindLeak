@@ -62,11 +62,17 @@ const KNOWLEDGE_STORE_SOURCES: &[&str] = &[
 ];
 const CLAIM_STORE_MOD_RS: &str = include_str!("../../ackplane-server/src/claim_store/mod.rs");
 const CLAIM_STORE_LEASE_RS: &str = include_str!("../../ackplane-server/src/claim_store/lease.rs");
+const CLAIM_STORE_PARK_RS: &str = include_str!("../../ackplane-server/src/claim_store/park.rs");
+const CLAIM_STORE_RECOVER_RS: &str =
+    include_str!("../../ackplane-server/src/claim_store/recover.rs");
 
-/// `ClaimStore`'s methods live in two files: `mod.rs` (connection/read
-/// concerns) and `lease.rs` (the delegate/release/renew/recover lease
-/// mutations), each with its own `impl ClaimStore { ... }` block.
-const CLAIM_STORE_SOURCES: &[&str] = &[CLAIM_STORE_MOD_RS, CLAIM_STORE_LEASE_RS];
+/// Scan every claim module so a file split cannot remove a mutation from this guard.
+const CLAIM_STORE_SOURCES: &[&str] = &[
+    CLAIM_STORE_MOD_RS,
+    CLAIM_STORE_LEASE_RS,
+    CLAIM_STORE_PARK_RS,
+    CLAIM_STORE_RECOVER_RS,
+];
 const PROJECTION_MOD_RS: &str = include_str!("../../ackplane-server/src/projection/mod.rs");
 const PROJECTION_REBUILD_RS: &str = include_str!("../../ackplane-server/src/projection/rebuild.rs");
 const PROJECTION_NEIGHBORHOOD_RS: &str =
@@ -293,6 +299,12 @@ fn every_claim_store_query_requires_an_explicit_tenant_id() {
         !methods.is_empty(),
         "expected to find at least one ClaimStore method - the parser may be broken"
     );
+    for required in ["delegate", "release", "renew", "recover", "park", "answer"] {
+        assert!(
+            methods.iter().any(|(name, _)| name == required),
+            "ClaimStore::{required} must remain covered after a module split"
+        );
+    }
     for (name, signature) in methods {
         if CLAIM_STORE_METHODS_WITHOUT_A_TENANT.contains(&name.as_str()) {
             continue;

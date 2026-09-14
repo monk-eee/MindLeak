@@ -132,7 +132,6 @@ async fn serve_once(
     config: &SupervisorConfig,
     runtime: &mut runtime::WorkerRuntime,
 ) -> Result<DaemonExit, DaemonError> {
-    let started_at = runtime.started_at;
     let positions = runtime.outbox.positions()?;
 
     let mut connection = match tokio::time::timeout(
@@ -237,7 +236,7 @@ async fn serve_once(
     if !runtime.finished {
         if let Some(exit) = disconnected_on_error(
             connection
-                .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
+                .exchange_supervisor_frame(session_frame(&runtime.session)?)
                 .await,
         )? {
             return Ok(exit);
@@ -300,7 +299,7 @@ async fn serve_once(
         if !runtime.finished {
             if let Some(exit) = disconnected_on_error(
                 connection
-                    .exchange_supervisor_frame(session_frame(&runtime.session, started_at)?)
+                    .exchange_supervisor_frame(session_frame(&runtime.session)?)
                     .await,
             )? {
                 return Ok(exit);
@@ -330,6 +329,9 @@ fn disconnected_on_error<T>(
             error @ (ClientError::Companion(_)
             | ClientError::Signing(_)
             | ClientError::ConnectionRefused {
+                retryable: false, ..
+            }
+            | ClientError::FrameRefused {
                 retryable: false, ..
             }),
         ) => Err(Box::new(error).into()),
@@ -748,6 +750,28 @@ mod tests {
             disconnected_on_error(dropped),
             Ok(Some(DaemonExit::Disconnected))
         ));
+    }
+
+    // A permanent session conflict was treated as a disconnect and retried forever.
+    // Preserve retryable refusals, but return permanent frame errors to the caller.
+    #[test]
+    fn permanent_frame_refusal_stops_instead_of_reconnecting() {
+        for retryable in [true, false] {
+            let result = disconnected_on_error::<()>(Err(ClientError::FrameRefused {
+                reason: v1::RejectionReason::Malformed,
+                retryable,
+                diagnostic: "immutable session conflict".into(),
+            }));
+            if retryable {
+                assert!(matches!(result, Ok(Some(DaemonExit::Disconnected))));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(DaemonError::Connect(error))
+                        if matches!(*error, ClientError::FrameRefused { retryable: false, .. })
+                ));
+            }
+        }
     }
 
     fn queued_receipt() -> v1::DirectiveReceipt {
