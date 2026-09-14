@@ -116,6 +116,8 @@ of every executable. Future tagged releases produce an Industrial archive for
 each supported platform alongside the existing Local archive and VSIX, covered
 by the release's checksums and provenance attestations. Existing releases do not
 gain these assets retroactively.
+The existing Linux and Windows Rust CI jobs also build and smoke-test the host
+archive and run its installer and ZIP contract tests before release.
 
 Verify the archive's release checksum and provenance before running its
 installer. The manifest detects mixed or damaged binaries; it does not
