@@ -16,8 +16,15 @@ topologies, and what happens when that ceiling is reached.
 [ADR-0143](adr/0143-postgres-access-goes-through-one-bounded-pool-per-process.md)
 gives every Ackplane process exactly one bounded `deadpool-postgres` pool
 (`crates/ackplane-server/src/db_pool.rs`), capped at `ACKPLANE_DB_POOL_MAX_SIZE`
-connections (default `SERVICE_POOL_MAX_SIZE = 16`) and bounding the wait for
-one at `ACKPLANE_DB_POOL_TIMEOUT_MS` (default 5000ms). Every store's own
+connections (default `SERVICE_POOL_MAX_SIZE = 16`). `ACKPLANE_DB_POOL_TIMEOUT_MS`
+(default 5000ms) limits both waiting for a free slot and creating a new PostgreSQL
+connection, including its startup handshake. These are separate phase limits:
+a checkout may spend time in both phases, and this setting is not a total request
+or SQL-query deadline. A server that accepts TCP but never completes startup
+returns the typed pool `Timeout(Create)` error instead of occupying a slot
+indefinitely; the failed attempt releases its capacity for another caller.
+
+Every store's own
 `connection()` helper checks a connection out through `db_pool::checkout`,
 which now refuses **immediately** once as many callers are already queued as
 the pool has slots — the identical typed `PoolExhausted` a caller joining
