@@ -43,6 +43,12 @@ fn watch_git_path(repo_root: &Path, name: &str) {
 
 fn git_output(repo_root: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_OBJECT_DIRECTORY")
+        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
         .arg("-C")
         .arg(repo_root)
         .args(args)

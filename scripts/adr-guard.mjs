@@ -20,42 +20,12 @@
 //   node scripts/adr-guard.mjs --uncommitted    # working-tree check only
 //   node scripts/adr-guard.mjs --format json
 
-import { execFileSync } from "node:child_process";
+import { isolatedGit as git } from "./adr-files.mjs";
 
 const args = process.argv.slice(2);
 const uncommittedOnly = args.includes("--uncommitted");
 const asJson =
   args.includes("--format") && args[args.indexOf("--format") + 1] === "json";
-
-// A child git process must never inherit the parent's repository pointers, or a
-// hook-invoked run resolves the wrong repository entirely.
-const GIT_REPOSITORY_VARIABLES = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-];
-
-const gitEnvironment = () => {
-  const isolated = { ...process.env };
-  for (const variable of GIT_REPOSITORY_VARIABLES) delete isolated[variable];
-  return isolated;
-};
-
-const git = (gitArgs, cwd = process.cwd()) => {
-  try {
-    return execFileSync("git", gitArgs, {
-      cwd,
-      encoding: "utf8",
-      stdio: "pipe",
-      env: gitEnvironment(),
-    }).trim();
-  } catch {
-    return null;
-  }
-};
 
 const ADR_PATH = /^docs\/adr\/\d{4}-.*\.md$/;
 const isAdr = (file) => ADR_PATH.test(file.replace(/\\/g, "/"));

@@ -1890,6 +1890,7 @@ dependencies = [
  "mindleak-storage",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
 ]
 
