@@ -398,9 +398,10 @@ because that is what lets a future reader check whether it still holds.
   treat this as a passing Linux endurance result. The reproduction's original
   log, daemon diagnostics and result are retained under
   `target/ubuntu-keyring-1789384227468/` in the investigation checkout; no host
-  credentials or deployed services were used. The separate repository-owned
-  [unresponsive-service cleanup gap](../gaps.d/linux-credential-service-loss-stalls-enrollment-tests.md)
-  remains open.
+  credentials or deployed services were used. Enrollment fixtures now bound
+  exact native credential cleanup to ten seconds in a killable child, require
+  explicit completion, and retain metadata on failure. That prevents a stuck
+  cleanup call from hiding an assertion; it does not repair the native service.
 
 - **Docker Compose 5.4.0 all-service wait can reject a successful one-shot.**
   Measured 2026-09-14 on macOS through Podman's external Compose provider during

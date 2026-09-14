@@ -21,6 +21,9 @@ use tonic::{
     Request, Response, Status,
 };
 
+#[path = "credential_cleanup.rs"]
+mod credential_cleanup;
+
 struct EnrollmentWithLostResponse {
     inner: NodeEnrollmentService,
     dropped: Option<Arc<Mutex<Option<v1::EnrollmentActivationResult>>>>,
@@ -119,66 +122,7 @@ impl TestIdentity {
     }
 
     pub(super) fn remove_credential(&self) -> Result<(), String> {
-        let bytes = match std::fs::read(self.path().join("enrolment.json")) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(_) => return Err("could not read test credential metadata for cleanup".to_string()),
-        };
-        let record: ackplane_node::EnrolmentRecord = serde_json::from_slice(&bytes)
-            .map_err(|_| "invalid test credential metadata for cleanup".to_string())?;
-        let handle = record
-            .provider_handle
-            .as_deref()
-            .ok_or("test credential handle missing")?;
-        if record.provider_scheme != "credential-facility-software"
-            || handle.len() != 32
-            || !handle.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err("refusing cleanup of an unexpected test credential".to_string());
-        }
-        let service = "mindleak-ackplane-node-software-v1";
-        #[cfg(target_os = "macos")]
-        {
-            use security_framework::item::{ItemClass, ItemSearchOptions, Reference, SearchResult};
-
-            let mut query = ItemSearchOptions::new();
-            query
-                .class(ItemClass::generic_password())
-                .service(service)
-                .account(handle)
-                .load_refs(true);
-            let items = match query.search() {
-                Ok(items) => items,
-                Err(error) if error.code() == -25300 => return Ok(()),
-                Err(error) => {
-                    return Err(format!(
-                        "test Keychain reference lookup failed ({})",
-                        error.code()
-                    ))
-                }
-            };
-            for item in items {
-                match item {
-                    SearchResult::Ref(Reference::KeychainItem(item)) => item.delete(),
-                    _ => return Err("unexpected test Keychain reference type".to_string()),
-                }
-            }
-            match query.search() {
-                Err(error) if error.code() == -25300 => Ok(()),
-                Err(error) => Err(format!(
-                    "test Keychain cleanup verification failed ({})",
-                    error.code()
-                )),
-                Ok(_) => Err("test Keychain entry remains after deletion".to_string()),
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            match keyring::Entry::new(service, handle).and_then(|entry| entry.delete_password()) {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(_) => Err("could not remove the exact test credential entry".to_string()),
-            }
-        }
+        credential_cleanup::remove(self.path())
     }
 }
 
