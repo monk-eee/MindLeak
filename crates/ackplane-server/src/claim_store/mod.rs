@@ -7,11 +7,62 @@ use thiserror::Error;
 use crate::db_pool::{PgConnection, PgPool};
 
 mod lease;
+#[cfg(test)]
+mod node_custody_tests;
 mod park;
+mod recover;
 
 const MIGRATION: &str = include_str!("../../migrations/0005_claim_delegation.sql");
 const NONCE_MIGRATION: &str = include_str!("../../migrations/0006_claim_authentication_nonces.sql");
 const PARKED_MIGRATION: &str = include_str!("../../migrations/0066_delegated_claim_parked.sql");
+const NODE_CUSTODY_MIGRATION: &str =
+    include_str!("../../migrations/0067_delegated_claim_node_custody.sql");
+
+#[derive(Debug, Clone, Copy)]
+pub struct ClaimOwner<'owner> {
+    pub owner_id: &'owner str,
+    pub node_id: &'owner str,
+}
+
+impl ClaimOwner<'_> {
+    fn validate(self) -> Result<(), ClaimStoreError> {
+        if self.node_id.trim().is_empty() {
+            return Err(ClaimStoreError::MissingNode);
+        }
+        Ok(())
+    }
+
+    fn verify_node(
+        self,
+        stored_owner: &str,
+        stored_node: Option<&str>,
+    ) -> Result<(), ClaimStoreError> {
+        if stored_owner == self.owner_id && stored_node != Some(self.node_id) {
+            return Err(ClaimStoreError::OwnerNodeMismatch);
+        }
+        Ok(())
+    }
+
+    async fn lock_and_verify(
+        self,
+        transaction: &tokio_postgres::Transaction<'_>,
+        tenant_id: &str,
+        repository_id: &str,
+        task_id: &str,
+    ) -> Result<(), ClaimStoreError> {
+        if let Some(row) = transaction
+            .query_opt(
+                "SELECT owner_id, owner_node_id FROM delegated_claims \
+                 WHERE tenant_id = $1 AND repository_id = $2 AND task_id = $3 FOR UPDATE",
+                &[&tenant_id, &repository_id, &task_id],
+            )
+            .await?
+        {
+            self.verify_node(row.get("owner_id"), row.get("owner_node_id"))?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimLeaseRequest {
@@ -19,6 +70,7 @@ pub struct ClaimLeaseRequest {
     pub repository_id: String,
     pub task_id: String,
     pub owner_id: String,
+    pub node_id: String,
     pub branch: String,
     pub lease: Duration,
     pub paths: Vec<String>,
@@ -30,6 +82,14 @@ pub enum ClaimLeaseOutcome {
     Granted,
     Rejected,
 }
+
+fn outcome_tag(outcome: ClaimLeaseOutcome) -> i16 {
+    match outcome {
+        ClaimLeaseOutcome::Granted => 1,
+        ClaimLeaseOutcome::Rejected => 2,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimLeaseResult {
     pub outcome: ClaimLeaseOutcome,
@@ -51,6 +111,7 @@ pub struct ClaimRecoverRequest {
     pub task_id: String,
     pub expected_owner: String,
     pub owner_id: String,
+    pub node_id: String,
     pub reason: String,
     pub branch: String,
     pub lease: Duration,
@@ -64,6 +125,7 @@ pub struct ClaimRecoverRequest {
 pub struct ActiveClaim {
     pub task_id: String,
     pub owner_id: String,
+    pub node_id: Option<String>,
     pub branch: String,
     pub lease_expires_at: SystemTime,
     pub paths: Vec<String>,
@@ -84,6 +146,10 @@ pub enum ClaimStoreError {
     InvalidLapseCount,
     #[error("claim recovery requires a reason")]
     MissingReason,
+    #[error("claim ownership requires a non-empty node id")]
+    MissingNode,
+    #[error("the named claim owner is not bound to this authenticated node")]
+    OwnerNodeMismatch,
 }
 
 pub struct ClaimStore {
@@ -112,6 +178,12 @@ impl ClaimStore {
             &mut connection,
             crate::migration_lock::key::DELEGATED_CLAIM_PARKED,
             PARKED_MIGRATION,
+        )
+        .await?;
+        crate::migration_lock::migrate_locked(
+            &mut connection,
+            crate::migration_lock::key::DELEGATED_CLAIM_NODE_CUSTODY,
+            NODE_CUSTODY_MIGRATION,
         )
         .await?;
         Ok(Self { pool: pool.clone() })
@@ -183,7 +255,7 @@ impl ClaimStore {
             .connection()
             .await?
             .query(
-                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols \
+                "SELECT task_id, owner_id, branch, lease_expires_at, paths, symbols, owner_node_id \
                  FROM delegated_claims \
                  WHERE tenant_id = $1 AND repository_id = $2 \
                    AND (lease_expires_at >= $3 OR parked) \
@@ -196,6 +268,7 @@ impl ClaimStore {
             .map(|row| ActiveClaim {
                 task_id: row.get(0),
                 owner_id: row.get(1),
+                node_id: row.get("owner_node_id"),
                 branch: row.get(2),
                 lease_expires_at: row.get(3),
                 paths: row.get(4),
@@ -280,12 +353,20 @@ mod tests {
         );
     }
 
-    fn request(tenant_id: &str, task_id: &str, owner_id: &str) -> ClaimLeaseRequest {
+    fn owner(owner_id: &str) -> ClaimOwner<'_> {
+        ClaimOwner {
+            owner_id,
+            node_id: "claim-store-node",
+        }
+    }
+
+    pub(super) fn request(tenant_id: &str, task_id: &str, owner_id: &str) -> ClaimLeaseRequest {
         ClaimLeaseRequest {
             tenant_id: tenant_id.to_owned(),
             repository_id: "repository".to_owned(),
             task_id: task_id.to_owned(),
             owner_id: owner_id.to_owned(),
+            node_id: owner(owner_id).node_id.to_owned(),
             branch: format!("branch/{owner_id}"),
             lease: Duration::from_secs(60),
             paths: vec![format!("src/{owner_id}.rs")],
@@ -293,7 +374,7 @@ mod tests {
         }
     }
 
-    fn recover_request(
+    pub(super) fn recover_request(
         tenant_id: &str,
         task_id: &str,
         expected_owner: &str,
@@ -306,6 +387,7 @@ mod tests {
             task_id: task_id.to_owned(),
             expected_owner: expected_owner.to_owned(),
             owner_id: owner_id.to_owned(),
+            node_id: owner(owner_id).node_id.to_owned(),
             reason: reason.to_owned(),
             branch: format!("branch/{owner_id}"),
             lease: Duration::from_secs(300),
@@ -377,7 +459,13 @@ mod tests {
         // claim as already stranded.
         let at_expiry = now + Duration::from_secs(60);
         let released = store
-            .release(&tenant_id, "repository", task_id, "owner-one", at_expiry)
+            .release(
+                &tenant_id,
+                "repository",
+                task_id,
+                owner("owner-one"),
+                at_expiry,
+            )
             .await
             .unwrap();
         assert!(released, "the live owner must be able to release at expiry");
@@ -411,7 +499,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-two",
+                owner("owner-two"),
                 now + Duration::from_secs(1),
             )
             .await
@@ -453,7 +541,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-one",
+                owner("owner-one"),
                 now + Duration::from_secs(61),
             )
             .await
@@ -480,7 +568,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-one",
+                owner("owner-one"),
                 now + Duration::from_secs(1),
             )
             .await
@@ -494,7 +582,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-one",
+                owner("owner-one"),
                 now + Duration::from_secs(2),
             )
             .await
@@ -531,7 +619,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-two",
+                owner("owner-two"),
                 Duration::from_secs(60),
                 now + Duration::from_secs(5),
             )
@@ -544,7 +632,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-one",
+                owner("owner-one"),
                 Duration::from_secs(60),
                 now + Duration::from_secs(6),
             )
@@ -586,7 +674,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-one",
+                owner("owner-one"),
                 Duration::from_secs(60),
                 now + Duration::from_secs(1),
             )
@@ -618,7 +706,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-one",
+                owner("owner-one"),
                 Duration::from_secs(120),
                 now + Duration::from_secs(30),
             )
@@ -665,7 +753,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-two",
+                owner("owner-two"),
                 Duration::from_secs(120),
                 now + Duration::from_secs(1),
             )
@@ -712,7 +800,7 @@ mod tests {
                 &tenant_id,
                 "repository",
                 task_id,
-                "owner-one",
+                owner("owner-one"),
                 Duration::from_secs(120),
                 now + Duration::from_secs(61),
             )

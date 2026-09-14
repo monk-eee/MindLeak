@@ -20,6 +20,8 @@ use prost::Message;
 mod encoding;
 #[path = "outbox/read_only.rs"]
 mod read_only;
+#[path = "outbox/restart.rs"]
+mod restart;
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(1);
 

@@ -63,8 +63,7 @@ impl GraphStore {
                     node,
                     attention: edge.effective,
                     observation_count: raw.reinforcement_count,
-                    observation_span_hours: ((raw.updated_at - raw.first_seen) as f64 / 3600.0)
-                        .max(0.0),
+                    observation_span_hours: edge.signal_evidence.reinforcement_span_hours,
                     last_observed_at: raw.updated_at,
                 });
             }

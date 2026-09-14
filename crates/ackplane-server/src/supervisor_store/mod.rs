@@ -297,7 +297,8 @@ impl SupervisorStore {
     }
 
     /// Appends an immutable lifecycle receipt and advances the checked current
-    /// projection only when the receipt is newer than its current observation.
+    /// projection by observation time, then accepted order for equal timestamps.
+    /// An exact replay or older observation never regresses the current view.
     pub async fn record_lifecycle(
         &self,
         request: &SupervisorLifecycleReceiptRequest,
@@ -381,7 +382,7 @@ impl SupervisorStore {
             }
         };
         let projection_advanced =
-            !idempotent_replay && receipt.receipt.occurred_at > current.current_occurred_at;
+            !idempotent_replay && receipt.receipt.occurred_at >= current.current_occurred_at;
         let projection = if projection_advanced {
             let row = transaction
                 .query_one(
@@ -713,6 +714,107 @@ mod tests {
                 .await
                 .expect("read lifecycle history"),
             vec![paused.receipt, older.receipt]
+        );
+    }
+
+    // Second-resolution timestamps hid valid transitions in the current view.
+    // Distinct equal-time receipts follow accepted order; replay and older time do not.
+    #[tokio::test]
+    async fn same_second_lifecycle_receipts_advance_without_replaying_an_earlier_state() {
+        let Some(store) = store().await else {
+            println!("skipped: ACKPLANE_TEST_DATABASE_URL not set");
+            return;
+        };
+        let (tenant_id, repository_id, supervisor_id) = unique_scope("same-second-lifecycle");
+        store
+            .register(&registration(
+                tenant_id.clone(),
+                repository_id.clone(),
+                supervisor_id.clone(),
+            ))
+            .await
+            .unwrap();
+        let session = session(supervisor_id);
+        store
+            .record_session(&tenant_id, &repository_id, &session)
+            .await
+            .unwrap();
+        let first = SupervisorLifecycleReceiptRequest {
+            tenant_id: tenant_id.clone(),
+            repository_id: repository_id.clone(),
+            receipt: SupervisorLifecycleReceipt {
+                supervisor_id: session.supervisor_id.clone(),
+                session_id: session.session_id.clone(),
+                worker_id: session.worker_id.clone(),
+                occurred_at: session.started_at,
+                state: SupervisorWorkerState::Checkpointed,
+                reason: None,
+            },
+            idempotency_key: "receipt:initial-checkpoint".into(),
+        };
+        let initial = store.record_lifecycle(&first).await.unwrap();
+        assert!(initial.projection_advanced);
+        assert_eq!(
+            initial.projection.session.state,
+            SupervisorWorkerState::Checkpointed
+        );
+        let paused = SupervisorLifecycleReceiptRequest {
+            receipt: SupervisorLifecycleReceipt {
+                occurred_at: session.started_at + 100,
+                state: SupervisorWorkerState::Paused,
+                ..first.receipt.clone()
+            },
+            idempotency_key: "receipt:paused".into(),
+            ..first.clone()
+        };
+        let pause = store.record_lifecycle(&paused).await.unwrap();
+        let completed = SupervisorLifecycleReceiptRequest {
+            receipt: SupervisorLifecycleReceipt {
+                state: SupervisorWorkerState::Completed,
+                ..paused.receipt.clone()
+            },
+            idempotency_key: "receipt:completed".into(),
+            ..paused.clone()
+        };
+        let completion = store.record_lifecycle(&completed).await.unwrap();
+        assert!(completion.projection_advanced);
+        assert_eq!(
+            completion.projection.session.state,
+            SupervisorWorkerState::Completed
+        );
+        assert!(completion.receipt.receipt_position > pause.receipt.receipt_position);
+        let replay = store.record_lifecycle(&paused).await.unwrap();
+        assert!(replay.idempotent_replay);
+        assert!(!replay.projection_advanced);
+        assert_eq!(replay.projection, completion.projection);
+        let older = SupervisorLifecycleReceiptRequest {
+            receipt: SupervisorLifecycleReceipt {
+                occurred_at: session.started_at + 50,
+                ..first.receipt.clone()
+            },
+            idempotency_key: "receipt:older".into(),
+            ..first
+        };
+        let late = store.record_lifecycle(&older).await.unwrap();
+        assert!(!late.projection_advanced);
+        assert_eq!(late.projection, completion.projection);
+        let mut conflicting = completed;
+        conflicting.receipt.state = SupervisorWorkerState::Started;
+        assert!(matches!(
+            store.record_lifecycle(&conflicting).await,
+            Err(SupervisorStoreError::IdempotencyConflict)
+        ));
+        assert_eq!(
+            store
+                .lifecycle_history(&tenant_id, &repository_id, &session.session_id)
+                .await
+                .unwrap(),
+            vec![
+                initial.receipt,
+                pause.receipt,
+                completion.receipt,
+                late.receipt
+            ]
         );
     }
 
