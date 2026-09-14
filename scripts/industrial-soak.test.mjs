@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -272,4 +272,28 @@ test("the executable explains missing fixture consent without printing database 
   });
   assert.equal(help.status, 0);
   assert.match(help.stdout, /not service uptime/);
+});
+
+test("a linked invocation runs the same entry point instead of silently succeeding", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "industrial-soak-link-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const root = fileURLToPath(new URL("../", import.meta.url));
+  const linked = join(directory, "candidate");
+  symlinkSync(root, linked, process.platform === "win32" ? "junction" : "dir");
+  // Node resolves the module path but can preserve the link spelling in argv.
+  // Comparing those strings skipped main, reporting exit zero without testing.
+  const help = spawnSync(
+    process.execPath,
+    [join(linked, "scripts", "industrial-soak.mjs"), "--help"],
+    { encoding: "utf8" },
+  );
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /Usage: node scripts\/industrial-soak\.mjs/);
+  const refused = spawnSync(
+    process.execPath,
+    [join(linked, "scripts", "industrial-soak.mjs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /--disposable-databases is required/);
 });
