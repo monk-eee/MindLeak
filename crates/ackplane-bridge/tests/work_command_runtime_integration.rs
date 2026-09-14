@@ -15,7 +15,9 @@ use std::{
 };
 
 use ackplane_client::companion::NodeClient;
-use ackplane_protocol::context_packet::ContextPacketUseStatus;
+use ackplane_protocol::{
+    context_packet::ContextPacketUseStatus, supervisor::SupervisorWorkerState,
+};
 use ackplane_server::{
     claim_store::ClaimStore,
     constitution_store::{ClauseSnapshot, ConstitutionStore, PublishConstitutionRequest},
@@ -233,6 +235,11 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
             let supervisor_id = supervisor["supervisor_id"].as_str().unwrap().to_owned();
             let session_id = session["session_id"].as_str().unwrap().to_owned();
             let worker_id = session["worker_id"].as_str().unwrap();
+            let declared_session = SupervisorStore::connect(&scenario_pool).await.unwrap()
+                .list_sessions(&identity.tenant_id, &identity.repository_id, &supervisor_id)
+                .await.unwrap().into_iter()
+                .find(|entry| entry.session.session_id == session_id).unwrap().session;
+            assert_eq!(declared_session.state, SupervisorWorkerState::Started);
             let assignment = json!({"kind": "assign", "target_node_id": supervisor["node_id"], "target_session_id": session_id});
             let preview = post_json(&app, &commands_uri, envelope(assignment.clone(), Some((&task_id, version)))).await;
             assert_eq!(preview["status"], "pending_confirmation");
@@ -328,7 +335,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
             let detail = get_json(&app, &task_uri).await;
             assert_eq!(detail["task"]["state"], "in_review", "review acceptance is not verified completion");
             assert_eq!(detail["task"]["version"], version + 1);
-            (supervisor_id, session_id)
+            (supervisor_id, session_id, declared_session)
         }).await.expect("the runtime scenario has a bounded deadline")
     });
     let (daemon_result, scenario_result) = tokio::join!(
@@ -341,7 +348,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
         daemon_result.is_ok(),
         "supervisor failed: {daemon_result:?}; scenario: {scenario_result:?}"
     );
-    let (supervisor_id, session_id) =
+    let (supervisor_id, session_id, declared_session) =
         scenario_result.expect("runtime assertions failed after orderly shutdown");
     assert!(
         !config.worker_run_path("fixture").exists(),
@@ -366,7 +373,7 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
         .find(|entry| entry.registration.supervisor_id == supervisor_id)
         .unwrap()
         .registration;
-    let session = supervisors
+    let mut session = supervisors
         .list_sessions(&tenant_id, &repository_id, &supervisor_id)
         .await
         .unwrap()
@@ -374,12 +381,23 @@ async fn browser_scoped_work_runs_real_supervisor_and_review_does_not_complete_t
         .find(|entry| entry.session.session_id == session_id)
         .unwrap()
         .session;
-    let outbox = SupervisorOutbox::open(
-        config.state_dir.join(format!("{supervisor_id}.outbox.db")),
-        registration,
-        session,
-    )
-    .unwrap();
+    let completed = supervisors
+        .lifecycle_history(&tenant_id, &repository_id, &session_id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    session.state = completed.receipt.state;
+    assert_eq!(session.state, SupervisorWorkerState::Completed);
+    let outbox_path = config.state_dir.join(format!("{supervisor_id}.outbox.db"));
+    assert!(matches!(
+        SupervisorOutbox::open_read_only(&outbox_path, registration.clone(), session),
+        Err(ackplane_supervisor::OutboxError::OutboxIdentityMismatch)
+    ));
+    let outbox =
+        SupervisorOutbox::open_read_only(&outbox_path, registration, declared_session.clone())
+            .unwrap();
+    assert_eq!(outbox.session(), &declared_session);
     let positions = outbox.positions().unwrap();
     assert!(positions.last_enqueued >= 4);
     assert_eq!(positions.acknowledged, positions.last_enqueued);
