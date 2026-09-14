@@ -214,10 +214,14 @@ mod embeddings;
 mod neighborhood;
 mod ranking;
 mod rebuild;
+mod recall;
+#[cfg(test)]
+mod recall_tests;
 
 pub use embeddings::{SimilarNode, UnembeddedNode};
 pub use ranking::{rank, RankedNode};
 pub use rebuild::run_projection_worker;
+pub use recall::{RecallSnapshot, RecallState};
 
 #[cfg(test)]
 pub(crate) mod tests {

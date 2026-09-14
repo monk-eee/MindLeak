@@ -40,8 +40,9 @@
 //     above: it is what puts a database into that state in the first place)
 //
 // Usage:
-//   node scripts/migration-audit.mjs [--check] [--container <name>] [--base <ref>]
-//   node scripts/migration-audit.mjs --next [--container <name>]
+//   node scripts/migration-audit.mjs [--check] [--container <name>] [--engine <executable>] [--base <ref>]
+//   node scripts/migration-audit.mjs --next [--container <name>] [--engine <executable>]
+// The engine is --engine, then MINDLEAK_COMPOSE_BIN, then docker.
 //
 // --check exits 1 on a static defect (duplicate key, a constant/file
 // mismatch, or an edited landed migration); the live-only findings never
@@ -324,12 +325,25 @@ function lockFilePath(repoRoot) {
   );
 }
 
-async function main() {
-  const argv = process.argv.slice(2);
+export async function main(
+  argv = process.argv.slice(2),
+  { env = process.env, execute = execFileSync } = {},
+) {
   const check = argv.includes("--check");
   const next = argv.includes("--next");
   const containerFlag = argv.indexOf("--container");
   const baseFlag = argv.indexOf("--base");
+  const engineFlag = argv.indexOf("--engine");
+  if (
+    engineFlag !== -1 &&
+    (!argv[engineFlag + 1]?.trim() || argv[engineFlag + 1].startsWith("-"))
+  ) {
+    throw new Error("--engine requires a container engine executable");
+  }
+  const engine =
+    engineFlag !== -1
+      ? argv[engineFlag + 1]
+      : env.MINDLEAK_COMPOSE_BIN || "docker";
   const baseRef =
     baseFlag !== -1 && argv[baseFlag + 1]
       ? argv[baseFlag + 1]
@@ -337,7 +351,7 @@ async function main() {
   const container =
     containerFlag !== -1 && argv[containerFlag + 1]
       ? argv[containerFlag + 1]
-      : (process.env.ACKPLANE_POSTGRES_CONTAINER ?? "ackplane-postgres-1");
+      : (env.ACKPLANE_POSTGRES_CONTAINER ?? "ackplane-postgres-1");
 
   const repoRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -357,9 +371,9 @@ async function main() {
         sql: fs.readFileSync(path.join(migrationsDir(repoRoot), name), "utf8"),
       })),
   );
-  const run = (args) => execFileSync("docker", args, { encoding: "utf8" });
+  const run = (args) => execute(engine, args, { encoding: "utf8" });
   const git = (args) =>
-    execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" });
+    execute("git", args, { cwd: repoRoot, encoding: "utf8" });
   const live = LIVE_DATABASES.map((database) => ({
     database,
     rows: appliedMigrationsFromLiveDatabase(
@@ -376,7 +390,7 @@ async function main() {
     console.log(nextAvailableKey(keys, fileNumbers, applied));
     if (!reachable) {
       console.error(
-        `(no live database reachable via container "${container}"; based on committed source only)`,
+        `(no live database reachable via ${engine} container "${container}"; based on committed source only)`,
       );
     }
     return;
@@ -411,7 +425,7 @@ async function main() {
   for (const { database, rows } of live) {
     if (rows === null) {
       console.log(
-        `  ${database}: skipped, not reachable via container "${container}"`,
+        `  ${database}: skipped, not reachable via ${engine} container "${container}"`,
       );
       continue;
     }
@@ -437,7 +451,7 @@ async function main() {
   for (const { database, rows } of live) {
     if (rows === null) {
       console.log(
-        `  ${database}: skipped, not reachable via container "${container}"`,
+        `  ${database}: skipped, not reachable via ${engine} container "${container}"`,
       );
       continue;
     }

@@ -1,10 +1,17 @@
 use super::*;
 
+#[cfg(test)]
+mod concurrency;
+
 impl Projector {
     /// Drop and replay one repository's projection from its committed
     /// [`STRUCTURAL_FACT_PAYLOAD_TYPE`] ledger records, in stream order, all
     /// inside one transaction — a caller never observes a half-rebuilt
     /// projection.
+    ///
+    /// Rebuilds for the same tenant/repository serialize under a transaction
+    /// lock. This explicit operation always replays, including invalidating
+    /// derived embeddings; background catch-up rechecks freshness instead.
     ///
     /// Retries a genuine PostgreSQL deadlock (SQLSTATE 40P01) a bounded number
     /// of times. No foreign key ties `projected_edges` to `projected_nodes`
@@ -22,10 +29,24 @@ impl Projector {
         tenant_id: &str,
         repository_id: &str,
     ) -> Result<ProjectionSummary, ProjectionError> {
+        self.apply_projection(tenant_id, repository_id, false)
+            .await
+            .map(|(summary, _)| summary)
+    }
+
+    async fn apply_projection(
+        &self,
+        tenant_id: &str,
+        repository_id: &str,
+        only_if_stale: bool,
+    ) -> Result<(ProjectionSummary, bool), ProjectionError> {
         const MAX_DEADLOCK_RETRIES: u32 = 3;
         let mut attempt = 0;
         loop {
-            match self.rebuild_once(tenant_id, repository_id).await {
+            match self
+                .rebuild_once(tenant_id, repository_id, only_if_stale)
+                .await
+            {
                 Err(ProjectionError::Database(error))
                     if attempt < MAX_DEADLOCK_RETRIES && error.code().is_some_and(is_deadlock) =>
                 {
@@ -40,9 +61,45 @@ impl Projector {
         &self,
         tenant_id: &str,
         repository_id: &str,
-    ) -> Result<ProjectionSummary, ProjectionError> {
+        only_if_stale: bool,
+    ) -> Result<(ProjectionSummary, bool), ProjectionError> {
         let mut connection = self.connection().await?;
         let transaction = connection.transaction().await?;
+
+        let lock_scope = format!("mindleak.projection:{tenant_id}");
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+                &[&lock_scope, &repository_id],
+            )
+            .await?;
+        if only_if_stale {
+            let current = transaction
+                .query_opt(
+                    "SELECT ps.stream_position, \
+                         (SELECT count(*) FROM projected_nodes \
+                          WHERE tenant_id = $1 AND repository_id = $2), \
+                         (SELECT count(*) FROM projected_edges \
+                          WHERE tenant_id = $1 AND repository_id = $2) \
+                     FROM projection_state ps \
+                     WHERE ps.tenant_id = $1 AND ps.repository_id = $2 \
+                       AND ps.stream_position >= ( \
+                           SELECT COALESCE(max(stream_position), 0) FROM ledger_records \
+                           WHERE tenant_id = $1 AND repository_id = $2 AND payload_type = $3 \
+                       )",
+                    &[&tenant_id, &repository_id, &STRUCTURAL_FACT_PAYLOAD_TYPE],
+                )
+                .await?;
+            if let Some(current) = current {
+                let summary = ProjectionSummary {
+                    stream_position: current.get(0),
+                    nodes: current.get(1),
+                    edges: current.get(2),
+                };
+                transaction.commit().await?;
+                return Ok((summary, false));
+            }
+        }
 
         transaction
             .execute(
@@ -144,11 +201,14 @@ impl Projector {
             .get(0);
 
         transaction.commit().await?;
-        Ok(ProjectionSummary {
-            nodes: node_count,
-            edges: edge_count,
-            stream_position: last_position,
-        })
+        Ok((
+            ProjectionSummary {
+                nodes: node_count,
+                edges: edge_count,
+                stream_position: last_position,
+            },
+            true,
+        ))
     }
 
     /// Every repository whose committed structural facts are ahead of its
@@ -184,17 +244,19 @@ impl Projector {
     /// [`stale_projections`](Self::stale_projections) finds. One repository's
     /// rebuild failing is logged and does not stop the rest, or the caller's
     /// next tick — a projection worker's job is to catch a stream back up,
-    /// not to guarantee every tick succeeds. Returns how many repositories
-    /// were actually rebuilt.
+    /// not to guarantee every tick succeeds. The scan is only a work list:
+    /// freshness is rechecked after locking each tenant/repository, so a
+    /// delayed scan cannot discard vectors indexed after another worker
+    /// caught up. Already-current repositories are not counted as rebuilt.
     pub async fn rebuild_stale(&self) -> Result<usize, ProjectionError> {
         let stale = self.stale_projections().await?;
         let mut rebuilt = 0;
         for repository in &stale {
             match self
-                .rebuild(&repository.tenant_id, &repository.repository_id)
+                .apply_projection(&repository.tenant_id, &repository.repository_id, true)
                 .await
             {
-                Ok(summary) => {
+                Ok((summary, true)) => {
                     tracing::info!(
                         tenant_id = %repository.tenant_id,
                         repository_id = %repository.repository_id,
@@ -205,6 +267,7 @@ impl Projector {
                     );
                     rebuilt += 1;
                 }
+                Ok((_, false)) => {}
                 Err(error) => {
                     tracing::error!(
                         tenant_id = %repository.tenant_id,
@@ -257,295 +320,4 @@ pub async fn run_projection_worker(projector: Projector, interval: std::time::Du
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ledger::{DedupKey, LedgerStore};
-    use crate::projection::tests::{require_test_database, structural_fact_envelope};
-    use crate::test_support::uuid_ish;
-
-    #[tokio::test]
-    async fn a_rebuild_reproduces_the_same_projection_from_the_same_ledger() {
-        let url = require_test_database!();
-        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
-            .expect("the test database url should build a pool");
-        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
-        let projector = Projector::connect(&pool).await.expect("connect projector");
-        let tenant = format!("t-{}", uuid_ish());
-        let repo = "repo-a".to_string();
-
-        let file = StructuralFact {
-            node_id: "artifact:src/lib.rs".to_string(),
-            node_type: "artifact".to_string(),
-            label: "src/lib.rs".to_string(),
-            edges: vec![StructuralEdgeFact {
-                target_id: "symbol:src/lib.rs:main".to_string(),
-                relation: "contains".to_string(),
-                base_weight: 1.0,
-                half_life_hours: 168.0,
-            }],
-        };
-        let symbol = StructuralFact {
-            node_id: "symbol:src/lib.rs:main".to_string(),
-            node_type: "symbol".to_string(),
-            label: "main".to_string(),
-            edges: vec![],
-        };
-
-        ledger
-            .append(&structural_fact_envelope(
-                DedupKey {
-                    tenant_id: tenant.clone(),
-                    repository_id: repo.clone(),
-                    producer_id: "producer-a".to_string(),
-                    producer_sequence: 1,
-                },
-                b"digest-1",
-                &file,
-            ))
-            .await
-            .expect("append file fact");
-        ledger
-            .append(&structural_fact_envelope(
-                DedupKey {
-                    tenant_id: tenant.clone(),
-                    repository_id: repo.clone(),
-                    producer_id: "producer-a".to_string(),
-                    producer_sequence: 2,
-                },
-                b"digest-2",
-                &symbol,
-            ))
-            .await
-            .expect("append symbol fact");
-
-        let first = projector.rebuild(&tenant, &repo).await.expect("rebuild");
-        assert_eq!(
-            first,
-            ProjectionSummary {
-                nodes: 2,
-                edges: 1,
-                stream_position: 2,
-            }
-        );
-
-        // Rebuilding again from the same ledger, with nothing appended in
-        // between, must reproduce exactly the same projection (ADR-0087
-        // clause 1) — this is the rebuild-and-diff test the ADR requires.
-        let second = projector
-            .rebuild(&tenant, &repo)
-            .await
-            .expect("rebuild again");
-        assert_eq!(second, first);
-
-        let freshness = projector
-            .freshness(&tenant, &repo)
-            .await
-            .expect("freshness")
-            .expect("projected at least once");
-        assert_eq!(freshness.stream_position, 2);
-    }
-
-    /// Real-database coverage, reproducing the contention `rebuild`'s retry
-    /// closes: many concurrent rebuilds of *unrelated* tenants used to
-    /// deadlock under enough parallel load (no FK ties `projected_edges` to
-    /// `projected_nodes`, so this is B-tree index-page lock contention, not a
-    /// logical schema bug) — confirmed live once the Coverage CI gate began
-    /// running these tests against a real Postgres (ADR-0118) instead of
-    /// hollow-skipping them. Every task must still succeed; a deadlock is
-    /// retried internally, never surfaced to the caller.
-    #[tokio::test]
-    async fn concurrent_rebuilds_of_unrelated_tenants_all_succeed() {
-        let url = require_test_database!();
-        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
-            .expect("the test database url should build a pool");
-        let tasks = (0..12).map(|i| {
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
-                let projector = Projector::connect(&pool).await.expect("connect projector");
-                let tenant = format!("t-{}-{}", i, uuid_ish());
-                let repo = "repo-a".to_string();
-
-                let fact = StructuralFact {
-                    node_id: "artifact:src/lib.rs".to_string(),
-                    node_type: "artifact".to_string(),
-                    label: "src/lib.rs".to_string(),
-                    edges: vec![StructuralEdgeFact {
-                        target_id: "symbol:src/lib.rs:main".to_string(),
-                        relation: "contains".to_string(),
-                        base_weight: 1.0,
-                        half_life_hours: 168.0,
-                    }],
-                };
-                ledger
-                    .append(&structural_fact_envelope(
-                        DedupKey {
-                            tenant_id: tenant.clone(),
-                            repository_id: repo.clone(),
-                            producer_id: "producer-a".to_string(),
-                            producer_sequence: 1,
-                        },
-                        b"digest-1",
-                        &fact,
-                    ))
-                    .await
-                    .expect("append fact");
-
-                projector.rebuild(&tenant, &repo).await.expect("rebuild")
-            })
-        });
-        for task in tasks {
-            let summary = task.await.expect("task did not panic");
-            assert_eq!(summary.nodes, 1);
-            assert_eq!(summary.edges, 1);
-        }
-    }
-
-    #[tokio::test]
-    async fn an_unprojected_repository_reports_no_freshness() {
-        let url = require_test_database!();
-        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
-            .expect("the test database url should build a pool");
-        let projector = Projector::connect(&pool).await.expect("connect");
-        let tenant = format!("t-{}", uuid_ish());
-
-        let freshness = projector
-            .freshness(&tenant, "repo-never-projected")
-            .await
-            .expect("freshness query");
-        assert_eq!(freshness, None);
-    }
-
-    #[tokio::test]
-    async fn stale_projections_finds_a_repository_ahead_of_its_checkpoint_and_rebuild_stale_catches_it_up(
-    ) {
-        let url = require_test_database!();
-        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
-            .expect("the test database url should build a pool");
-        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
-        let projector = Projector::connect(&pool).await.expect("connect projector");
-        let tenant = format!("t-{}", uuid_ish());
-        let repo = "repo-stale".to_string();
-
-        let fact = StructuralFact {
-            node_id: "artifact:src/lib.rs".to_string(),
-            node_type: "artifact".to_string(),
-            label: "src/lib.rs".to_string(),
-            edges: vec![],
-        };
-        ledger
-            .append(&structural_fact_envelope(
-                DedupKey {
-                    tenant_id: tenant.clone(),
-                    repository_id: repo.clone(),
-                    producer_id: "producer-a".to_string(),
-                    producer_sequence: 1,
-                },
-                b"digest-1",
-                &fact,
-            ))
-            .await
-            .expect("append fact");
-
-        let stale = projector.stale_projections().await.expect("stale query");
-        assert!(stale.contains(&StaleProjection {
-            tenant_id: tenant.clone(),
-            repository_id: repo.clone(),
-        }));
-
-        // `rebuilt` counts every stale repository across every tenant in the
-        // shared test database, not just this one (other tests may be
-        // running concurrently against it), so only a lower bound on the
-        // count is safe to assert here; `freshness` below is the assertion
-        // that actually proves THIS repository was rebuilt.
-        let rebuilt = projector.rebuild_stale().await.expect("rebuild_stale");
-        assert!(
-            rebuilt >= 1,
-            "expected at least this repository to be rebuilt, got {rebuilt}"
-        );
-
-        let freshness = projector
-            .freshness(&tenant, &repo)
-            .await
-            .expect("freshness")
-            .expect("projected after rebuild_stale");
-        assert_eq!(freshness.stream_position, 1);
-    }
-
-    #[tokio::test]
-    async fn a_repository_already_caught_up_is_not_reported_stale_or_redundantly_rebuilt() {
-        let url = require_test_database!();
-        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
-            .expect("the test database url should build a pool");
-        let ledger = LedgerStore::connect(&pool).await.expect("connect ledger");
-        let projector = Projector::connect(&pool).await.expect("connect projector");
-        let tenant = format!("t-{}", uuid_ish());
-        let repo = "repo-caught-up".to_string();
-
-        let fact = StructuralFact {
-            node_id: "artifact:src/lib.rs".to_string(),
-            node_type: "artifact".to_string(),
-            label: "src/lib.rs".to_string(),
-            edges: vec![],
-        };
-        ledger
-            .append(&structural_fact_envelope(
-                DedupKey {
-                    tenant_id: tenant.clone(),
-                    repository_id: repo.clone(),
-                    producer_id: "producer-a".to_string(),
-                    producer_sequence: 1,
-                },
-                b"digest-1",
-                &fact,
-            ))
-            .await
-            .expect("append fact");
-
-        // Catch it up directly (not through rebuild_stale, which scans every
-        // tenant and would make this setup step depend on concurrent test
-        // activity in the shared test database).
-        projector
-            .rebuild(&tenant, &repo)
-            .await
-            .expect("catch up directly");
-
-        // Nothing new has been appended, so this repository must no longer
-        // be reported as stale. `rebuild_stale` only ever rebuilds what this
-        // query returns (it is a plain for-loop over it), so excluding this
-        // repository here is exactly what proves it can never be redundantly
-        // rebuilt -- a second, separate timing-based check would only repeat
-        // the same guarantee less reliably under concurrent test load.
-        let stale = projector.stale_projections().await.expect("stale query");
-        assert!(!stale.contains(&StaleProjection {
-            tenant_id: tenant.clone(),
-            repository_id: repo.clone(),
-        }));
-    }
-
-    #[tokio::test]
-    async fn a_repository_with_zero_structural_facts_is_never_marked_projected() {
-        let url = require_test_database!();
-        let pool = crate::db_pool::build_pool(&url, crate::db_pool::TEST_POOL_MAX_SIZE)
-            .expect("the test database url should build a pool");
-        let projector = Projector::connect(&pool).await.expect("connect projector");
-        let tenant = format!("t-{}", uuid_ish());
-        let repo = "repo-never-published-a-structural-fact".to_string();
-
-        let stale = projector.stale_projections().await.expect("stale query");
-        assert!(!stale
-            .iter()
-            .any(|repository| repository.tenant_id == tenant && repository.repository_id == repo));
-
-        // A pass may rebuild other tenants' stale repositories concurrently;
-        // the count is not asserted here, only that this specific repository
-        // stays unprojected afterward.
-        projector.rebuild_stale().await.expect("rebuild_stale");
-
-        let freshness = projector
-            .freshness(&tenant, &repo)
-            .await
-            .expect("freshness query");
-        assert_eq!(freshness, None);
-    }
-}
+mod tests;
