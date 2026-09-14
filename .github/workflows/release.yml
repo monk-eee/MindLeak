@@ -145,6 +145,11 @@ jobs:
           cache-dependency-path: editors/vscode/package-lock.json
       - name: Install extension release dependencies
         run: npm --prefix editors/vscode ci
+      - name: Build Industrial host bundle
+        run: >-
+          node scripts/industrial-bundle.mjs
+          --target ${{ matrix.target }}
+          --out dist/mindleak-industrial-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}.zip
       - name: Build servers
         # ADR-0105 decision 3: the Local/Industrial profile is a *runtime*
         # declaration (MINDLEAK_COORDINATION_MODE / the repository's git
@@ -364,6 +369,7 @@ jobs:
             const platforms = ["windows-x64", "linux-x64", "macos-x64", "macos-arm64"];
             const expected = platforms.flatMap((platform) => [
               `mindleak-${process.env.RELEASE_TAG}-${platform}.zip`,
+              `mindleak-industrial-${process.env.RELEASE_TAG}-${platform}.zip`,
               `mindleak-${process.env.RELEASE_TAG}-${platform}.vsix`,
             ]).sort();
             const actual = fs.readdirSync("dist").sort();
@@ -405,7 +411,8 @@ jobs:
                 prerelease: process.env.PRERELEASE === "true",
                 generate_release_notes: true,
                 body: [
-                  "Each platform archive contains both MCP servers, the MindLeak agent skill, and the one-command `install.mjs` workspace registrar.",
+                  "Each Local platform archive contains both MCP servers, the MindLeak agent skill, and the one-command `install.mjs` workspace registrar.",
+                  "Each Industrial host archive contains six commands, a revision/checksum manifest, and a Node-only installer for the shared user-local bin directory. The server and Bridge remain separately deployed.",
                   "Each targeted VSIX contains the same platform's servers for a self-contained VS Code experience.",
                   "Verify assets against `SHA256SUMS`; signed GitHub provenance attestations are also available.",
                   "The binaries are not OS publisher-signed, so your operating system may show a warning.",

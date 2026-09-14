@@ -10,6 +10,12 @@ const files = valuesAfter("--files");
 if (files.length === 0) {
   throw new Error("--files requires at least one file name");
 }
+const executables = new Set(valuesAfter("--executables"));
+for (const name of executables) {
+  if (!files.includes(name)) {
+    throw new Error(`executable must be included in --files: ${name}`);
+  }
+}
 
 fs.mkdirSync(path.dirname(destination), { recursive: true });
 const archive = new yazl.ZipFile();
@@ -22,7 +28,10 @@ for (const fileName of files) {
     throw new Error(`release bundle input is not a file: ${source}`);
   }
   const executable =
-    fileName === "install.mjs" || fileName === "mindleak-mcp" || fileName === "lodestar-mcp";
+    executables.has(fileName) ||
+    fileName === "install.mjs" ||
+    fileName === "mindleak-mcp" ||
+    fileName === "lodestar-mcp";
   archive.addFile(source, fileName, {
     mtime: new Date(0),
     mode: executable ? 0o100755 : 0o100644,
@@ -52,5 +61,7 @@ function valuesAfter(name) {
   if (index < 0) {
     return [];
   }
-  return process.argv.slice(index + 1).filter((value) => !value.startsWith("--"));
+  const values = process.argv.slice(index + 1);
+  const nextOption = values.findIndex((value) => value.startsWith("--"));
+  return nextOption < 0 ? values : values.slice(0, nextOption);
 }

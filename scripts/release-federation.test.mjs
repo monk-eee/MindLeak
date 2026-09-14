@@ -95,3 +95,45 @@ test("the refusal names a remedy a user can actually reach", () => {
       "that is the only other way to reach a federation-capable binary",
   );
 });
+
+test("every release platform builds and publishes its Industrial host bundle", () => {
+  const workflow = fs.readFileSync(
+    path.join(repoRoot, ".github", "workflows", "release.yml"),
+    "utf8",
+  );
+  const step = workflow
+    .split(/^\s*-\s+name:/m)
+    .find((value) => value.includes("node scripts/industrial-bundle.mjs"));
+  assert.ok(
+    step,
+    "release platforms must run the single-revision Industrial builder",
+  );
+  assert.ok(step.includes("--target ${{ matrix.target }}"));
+  assert.ok(
+    step.includes(
+      "--out dist/mindleak-industrial-${{ needs.metadata.outputs.tag }}-${{ matrix.asset }}.zip",
+    ),
+  );
+  assert.ok(
+    workflow.includes(
+      "`mindleak-industrial-${process.env.RELEASE_TAG}-${platform}.zip`",
+    ),
+    "release publication must require the Industrial archive for every platform",
+  );
+});
+
+test("Linux and Windows CI exercise the native host archive before release", () => {
+  const workflow = fs.readFileSync(
+    path.join(repoRoot, ".github", "workflows", "ci.yml"),
+    "utf8",
+  );
+  const rust = workflow.split(/^  rust:\s*$/m)[1]?.split(/^  [\w-]+:/m)[0];
+  assert.ok(rust, "the native Rust CI job must exist");
+  assert.ok(rust.includes("os: [ubuntu-latest, windows-latest]"));
+  assert.ok(
+    rust.includes("run: node scripts/industrial-bundle.mjs"),
+    "both native CI runners must build and smoke the host archive",
+  );
+  assert.ok(rust.includes("scripts/install-servers.test.mjs"));
+  assert.ok(rust.includes("scripts/package-bundle.test.mjs"));
+});

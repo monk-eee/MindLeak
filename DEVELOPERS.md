@@ -85,10 +85,57 @@ identity affects Keychain access. Existing provider metadata and credentials
 must be preserved through upgrades.
 
 The shared Ackplane server and Bridge still use the documented Compose topology;
-this is a source-built host installer, not a released Industrial archive or a
-production-authentication system. Continue with
+host installation does not provide production authentication. Continue with
 [provider-backed enrollment](#provider-backed-enrollment) using the installed
 `register-me` in place of `cargo run ... --` in those examples.
+
+### Package and install an Industrial host archive
+
+From a clean committed checkout with Rust and the extension's packaging
+dependencies installed, build a distributable archive for the current host:
+
+```text
+make package-industrial
+```
+
+The direct equivalent is `node scripts/industrial-bundle.mjs`. Use `--target`
+for an explicitly installed Rust target and `--out` for a new `.zip` path.
+The target's binaries must run on the build host: packaging verifies each staged
+MCP initialization and CLI startup in disposable local state before publishing.
+Supported targets are `x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`,
+`x86_64-apple-darwin` and `aarch64-apple-darwin`. The default output is
+`dist/mindleak-industrial-v<VERSION>-<TARGET>.zip`. Existing archives are never
+overwritten. Cargo's resolved target directory is used, including
+`CARGO_TARGET_DIR`; every host package must have the same version. A dirty
+checkout or a revision change during building/packaging refuses publication.
+
+Each archive contains exactly the six host executables, `install.mjs`,
+`industrial-manifest.json`, the license and installation notes. The manifest
+records the source revision, version, OS/architecture, size and SHA-256 digest
+of every executable. Future tagged releases produce an Industrial archive for
+each supported platform alongside the existing Local archive and VSIX, covered
+by the release's checksums and provenance attestations. Existing releases do not
+gain these assets retroactively.
+The existing Linux and Windows Rust CI jobs also build and smoke-test the host
+archive and run its installer and ZIP contract tests before release.
+
+Verify the archive's release checksum and provenance before running its
+installer. The manifest detects mixed or damaged binaries; it does not
+authenticate the publisher, and the executables are not OS publisher-signed.
+After extracting the archive, run from that extracted directory:
+
+```text
+node install.mjs --profile industrial --bundle .
+```
+
+Installation requires Node.js 20+, but no Cargo, Git checkout or npm packages.
+It refuses mismatched platforms, missing or non-regular binaries and checksum
+failures before replacing installed commands, then checks each staged copy
+again. It uses the same `~/.mindleak/bin` paths and upgrade precautions above;
+repeating installation is supported. Runtime enrollment still requires the
+native OS credential facility. Linux release binaries are built on Ubuntu
+22.04 and require a compatible glibc environment and a Secret Service store.
+No node identity, CA, tenant salt, database or service configuration is bundled.
 
 ### Open a window on the worktree you are editing (ADR-0073)
 
