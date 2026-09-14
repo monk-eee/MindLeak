@@ -161,6 +161,46 @@ async fn salt_file_failure_is_an_unsuccessful_process_exit() {
 }
 
 #[tokio::test]
+async fn an_empty_salt_refuses_startup_without_replacing_identity() {
+    let fixture = StartupFixture::new();
+    let path = fixture.directory.join("salt.bin");
+    fs::write(&path, []).expect("empty only the test salt");
+
+    assert_startup_failure(
+        fixture.command(),
+        "existing Bridge tenant salt is empty; restore the original salt",
+    )
+    .await;
+
+    assert!(fs::read(path).expect("read unchanged test salt").is_empty());
+}
+
+#[tokio::test]
+async fn a_relative_salt_path_is_created_once_and_reused_by_a_new_process() {
+    let fixture = StartupFixture::new();
+    let path = fixture.directory.join("relative.salt");
+    let mut original = None;
+    for _ in 0..2 {
+        let mut command = fixture.command();
+        command
+            .current_dir(&fixture.directory)
+            .env("ACKPLANE_BRIDGE_SALT_PATH", "relative.salt")
+            .env_remove("ACKPLANE_DATABASE_URL");
+        assert_startup_failure(command, "ACKPLANE_DATABASE_URL must be set").await;
+        let stored = fs::read(&path).expect("read the relative salt");
+        assert_eq!(stored.len(), 32);
+        if let Some(original) = &original {
+            assert!(
+                original == &stored,
+                "a new process must retain the same salt"
+            );
+        } else {
+            original = Some(stored);
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_database_connection_failure_reports_failure_without_logging_its_password() {
     let fixture = StartupFixture::new();
     let listener = TcpListener::bind("127.0.0.1:0")

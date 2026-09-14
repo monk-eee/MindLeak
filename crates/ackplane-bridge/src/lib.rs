@@ -4,10 +4,18 @@
 //! servers. This crate is only for the full-server deployment and begins with
 //! a loopback-only developer profile while production authentication is wired.
 
-use std::{fmt, fs, io, net::SocketAddr, path::Path};
+use std::{
+    fmt, fs,
+    io::{self, Write},
+    net::SocketAddr,
+    path::Path,
+};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+#[cfg(test)]
+mod salt_tests;
 
 pub mod administration;
 pub mod context_api;
@@ -113,20 +121,41 @@ fn development_tenant_token(salt: &[u8], tenant_name: &str) -> String {
 /// fresh 32-byte one on first run. This is what keeps a tenant name guessed
 /// or found in a log from reconstructing the same developer-tenant token on
 /// another machine (ADR-0098 decision 3).
+/// Existing empty or unreadable files are errors, never permission to replace
+/// an identity. Concurrent first-time callers reuse the fully published winner.
 pub fn load_or_generate_salt(path: &Path) -> io::Result<Vec<u8>> {
-    if let Ok(existing) = fs::read(path) {
-        if !existing.is_empty() {
-            return Ok(existing);
-        }
+    match read_salt(path) {
+        Ok(existing) => return Ok(existing),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
     let mut salt = vec![0_u8; 32];
     getrandom::getrandom(&mut salt).map_err(|error| {
         io::Error::other(format!("could not generate a Bridge tenant salt: {error}"))
     })?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(&salt)?;
+    temporary.as_file().sync_all()?;
+    match temporary.persist_noclobber(path) {
+        Ok(_) => Ok(salt),
+        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => read_salt(path),
+        Err(error) => Err(error.error),
     }
-    fs::write(path, &salt)?;
+}
+
+fn read_salt(path: &Path) -> io::Result<Vec<u8>> {
+    let salt = fs::read(path)?;
+    if salt.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "existing Bridge tenant salt is empty; restore the original salt instead of regenerating identity",
+        ));
+    }
     Ok(salt)
 }
 
