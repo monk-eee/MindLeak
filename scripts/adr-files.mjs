@@ -56,7 +56,7 @@ export const isolatedGit = (
       stdio: "pipe",
       maxBuffer: 1 << 26,
       env: gitEnvironment(),
-    }).trim();
+    }).trimEnd();
   } catch {
     return null;
   }
