@@ -146,6 +146,8 @@ pub enum ProjectionError {
     EmbeddingsMigration(#[source] tokio_postgres::Error),
     #[error("projection store could not obtain a database connection: {0}")]
     PoolExhausted(#[from] deadpool_postgres::PoolError),
+    #[error("projection signing key lookup failed: {0}")]
+    SigningKey(#[from] crate::signing_keys::SigningKeyError),
 }
 
 /// Whether a SQLSTATE is PostgreSQL's own deadlock detection (40P01) — the
@@ -156,6 +158,7 @@ fn is_deadlock(code: &tokio_postgres::error::SqlState) -> bool {
 }
 
 /// A connection to Ackplane's projection tables (ADR-0087).
+#[derive(Clone)]
 pub struct Projector {
     pool: PgPool,
 }
@@ -187,6 +190,12 @@ impl Projector {
         )
         .await
         .map_err(ProjectionError::EmbeddingsMigration)?;
+        crate::migration_lock::migrate_locked(
+            &mut connection,
+            crate::migration_lock::key::PROJECTION_EMBEDDING_AUTHENTICATION_NONCES,
+            include_str!("../../migrations/0068_projection_embedding_authentication_nonces.sql"),
+        )
+        .await?;
         Ok(Self { pool: pool.clone() })
     }
 
@@ -200,6 +209,7 @@ impl Projector {
     }
 }
 
+mod authentication;
 mod embeddings;
 mod neighborhood;
 mod ranking;
@@ -297,7 +307,7 @@ pub(crate) mod tests {
             }
         };
     }
-    pub(super) use require_test_database;
+    pub(crate) use require_test_database;
 
     #[test]
     fn is_deadlock_recognizes_only_the_deadlock_sqlstate() {

@@ -51,6 +51,50 @@ service KnowledgeService {
   rpc RetireKnowledge(RetireKnowledgeRequest) returns (RetireKnowledgeResult);
 }
 
+service ProjectionEmbeddingService {
+  rpc ListMissingProjectionEmbeddings(ListMissingProjectionEmbeddingsRequest) returns (ListMissingProjectionEmbeddingsResult);
+  rpc PublishProjectionEmbedding(PublishProjectionEmbeddingRequest) returns (PublishProjectionEmbeddingResult);
+}
+
+message ProjectionEmbeddingAuthentication {
+  string signing_key_id = 1;
+  string node_id = 2;
+  string signed_at = 3;
+  bytes nonce = 4;
+  bytes signature = 5;
+}
+
+message ProjectionEmbeddingSource {
+  string node_id = 1;
+  string label = 2;
+}
+
+message ListMissingProjectionEmbeddingsRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  string model = 3;
+  uint32 limit = 4;
+  ProjectionEmbeddingAuthentication authentication = 5;
+}
+
+message ListMissingProjectionEmbeddingsResult {
+  repeated ProjectionEmbeddingSource nodes = 1;
+  bool has_more = 2;
+}
+
+message PublishProjectionEmbeddingRequest {
+  string tenant_id = 1;
+  string repository_id = 2;
+  ProjectionEmbeddingSource source = 3;
+  string model = 4;
+  repeated float embedding = 5;
+  ProjectionEmbeddingAuthentication authentication = 6;
+}
+
+message PublishProjectionEmbeddingResult {
+  bool stored = 1;
+}
+
 // ADR-0106 decision 3: Evidence is a PostgreSQL-backed Industrial domain.
 // The first contract preserves bounded references, digests, and provenance;
 // it never transmits terminal output, source text, or credentials as evidence.

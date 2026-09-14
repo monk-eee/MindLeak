@@ -58,6 +58,8 @@ pub mod ledger;
 pub mod live_feed_store;
 mod migration_lock;
 pub mod projection;
+pub mod projection_embedding_service;
+mod projection_embedding_signature;
 pub mod readiness;
 pub mod schema_migration;
 pub mod service;
