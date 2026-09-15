@@ -89,8 +89,10 @@ pub fn advertised() -> Vec<Value> {
                  filtered by `state`, paged by `page`/`page_size`), `detail` (requires `task_id`; \
                  returns acceptance, event history, and waits), or `doctor` (Board Doctor \
                  findings). Every `list` answer carries ADR-0120 decision 6's publication state \
-                 (`current`/`claims_only`/`not_published` today; `lagging`/`unavailable` are not \
-                 yet computed by any read surface). Read-only: this tool exposes no create, \
+                 (`current`/`claims_only`/`not_published`) from the same checked snapshot as its \
+                 tasks. Unreadable or inconsistent Work returns an unavailable tool error; \
+                 `doctor` identifies the first task requiring integrity repair. Work updates \
+                 synchronously and does not report lagging. Read-only: this tool exposes no create, \
                  route, or lifecycle-mutation operation, because ADR-0120 decision 8 defers all \
                  of them -- this is materially narrower than Lodestar's own task_query \
                  (ADR-0139 clause 6).",
@@ -351,11 +353,7 @@ fn work_task_to_json(task: ackplane_client::WorkTaskSummary) -> Value {
     })
 }
 
-/// ADR-0120 decision 6's publication-state honesty: names the state
-/// (`current`/`claims_only`/`not_published` today -- see this crate's
-/// `ackplane-server::work_query_service` for why `lagging`/`unavailable`
-/// are not yet computed) rather than presenting an empty task list as a
-/// silent "no work".
+/// Successful publication shares the task snapshot; unavailable reads are tool errors.
 fn publication_to_json(publication: ackplane_client::WorkPublicationSummary) -> Value {
     json!({
         "state": publication.state,

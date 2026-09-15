@@ -112,14 +112,20 @@ async fn ensure_repository_visible(
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(error) => {
             tracing::error!(%error, "Bridge Work repository visibility query failed");
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err(StatusCode::SERVICE_UNAVAILABLE)
         }
     }
 }
 
 fn work_store_error(error: WorkStoreError) -> StatusCode {
     tracing::error!(%error, "Bridge Work query failed");
-    StatusCode::INTERNAL_SERVER_ERROR
+    match error {
+        WorkStoreError::Database(_)
+        | WorkStoreError::PoolExhausted(_)
+        | WorkStoreError::UnknownState { .. }
+        | WorkStoreError::InconsistentProjection { .. } => StatusCode::SERVICE_UNAVAILABLE,
+        WorkStoreError::TaskConflict { .. } => StatusCode::CONFLICT,
+    }
 }
 
 fn state_label(state: WorkTaskState) -> &'static str {

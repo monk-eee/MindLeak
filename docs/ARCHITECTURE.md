@@ -589,7 +589,21 @@ unchanged. None of these paths invokes a model or certifies task completion.
 
 Authenticated `NodeSync` streams also accept the closed `WorkTaskCreate` frame for one native Industrial Work record. The frame carries only a node-scoped creation id and bounded task content; the completed connection challenge supplies tenant, repository, and publisher identity. Ackplane derives an opaque Work id from that authenticated identity and creation id, writes the current task projection and initial history event transactionally, and returns a typed `WorkTaskReceipt`. An exact retry returns the original Work id with `idempotent_replay`; changed content under the same creation id receives a non-retryable conflict. This is native Ackplane Work publication, not a Local Lodestar import. The Bridge's reads remain bounded projections; its separately authorized Work command routes below provide the browser mutation path.
 
-Every Work event -- a creation from either path above, and every lifecycle effect a confirmed Work command applies -- takes an allocated `stream_position` from a per-`(tenant, repository)` head (`work_stream_heads`, migration `0065`), and the task projection records the `source_event_position` it was built from. This is the same event-stream shape `0001_ledger`, `0022_human_delegation`, and `0054_human_decision_requests` already use; Work was the exception, ordering its history by `recorded_at`, which is a clock reading that ties and leaves gaps. Allocation happens inside the caller's own transaction, so a refused creation rolls its position back rather than leaving a hole, and the `ON CONFLICT DO UPDATE` on the head serializes concurrent creators within a repository while leaving unrelated repositories independent. `work_command_store::execute::append_task_event` is the single site that stamps both the event and the projection for command-driven effects, so the two cannot drift across the eight command paths that update `work_tasks`. ADR-0120 decision 6's `lagging` publication state -- "the projection has fallen behind the ledger" -- was previously unstateable for want of a position on either side to compare; computing it remains future work, but the foundation it needs now exists.
+Every Work event -- a creation from either path above, and every lifecycle effect a confirmed Work command applies -- takes an allocated `stream_position` from a per-`(tenant, repository)` head (`work_stream_heads`, migration `0065`), and the task projection records the `source_event_position` it was built from. This is the same event-stream shape `0001_ledger`, `0022_human_delegation`, and `0054_human_decision_requests` already use; Work was the exception, ordering its history by `recorded_at`, which is a clock reading that ties and leaves gaps. Allocation happens inside the caller's own transaction, so a refused creation rolls its position back rather than leaving a hole, and the `ON CONFLICT DO UPDATE` on the head serializes concurrent creators within a repository while leaving unrelated repositories independent. `work_command_store::execute::append_task_event` is the single site that stamps both the event and the projection for command-driven effects, so the two cannot drift across the eight command paths that update `work_tasks`.
+
+Work updates synchronously; ADR-0120's amended decision 6 does not report
+`lagging`. `work_store/integrity.rs` checks each task against its own latest
+tenant/repository/task event, refusing missing history or source positions,
+unequal positions, and lifecycle mismatches. List publication, totals, and rows
+share one read-only Repeatable Read transaction. Detail, Board Doctor, and
+tenant-wide unanswered waits likewise check and read one snapshot. An affected
+ordinary read returns a typed unavailable error (HTTP 503 or gRPC Unavailable,
+preserved as an MCP tool error), not an empty/current result. Board Doctor
+reports the first inconsistent task in deterministic order and its repair reason,
+withholding ordinary findings until that scope is consistent. It never repairs
+data. These are structural checks, not full replay verification of fields the
+event schema cannot reconstruct; that remains tracked in
+`gaps.d/work-publication-state-never-reports-lagging-or-unavailable.md`.
 
 `WorkCommandStore` (`work_command_store/`) is ADR-0125's durable Work command/receipt persistence primitive. Its authoritative command-service caller must validate authorization first; the store records the closed command vocabulary, schema version, tenant/repository and optional Work-task scope, principal/delegation/policy references, bounded rationale, expected task version, confirmation and expiry references, idempotency key, canonical payload digest, and immutable receipt outcomes. Exact command or receipt retries return their original record; reusing an identity with changed content is refused. A confirmed `CreateWork`/`RouteWork`/`ReleaseLease`/`AnswerWait`/`SubmitReview` executes its Work/Claim mutation and receipt atomically in one transaction (`execute::execute_confirmed`); a confirmed `Assign`/`Steer`/`Pause`/`Resume`/`Drain` instead issues a matching ADR-0107 directive to the enrolled supervisor session its payload names, on that same transaction (`execute::supervisor_directives`, sharing `directive_store::enqueue_in_transaction` rather than a second connection) -- the receipt records `pending_delivery` or a typed refusal, never that the worker already acted. Only the addressed supervisor's own later `applied`/`refused`/`failed`/`expired` directive receipt, applied through `WorkCommandStore::apply_directive_receipt`, appends the corresponding `work_task_history` event and, for `applied`, moves the task's projected state; `accepted` never does. The module and its authorization types (`WorkCommandService`, `WorkCommandAuthorization`, `WorkCommandServiceOutcome`, the per-kind payload structs) are now `pub`, so the Bridge route below is the one caller ADR-0125 decision 11 requires -- no other module reaches `WorkCommandStore` directly.
 
@@ -1167,8 +1181,10 @@ Doctor findings -- missing publication, impossible state/lease combinations,
 unresolved waits, and declared scope overlap), each a direct translation of
 `WorkStore`'s existing read methods, exactly as Bridge's own Work read
 surface already exposes them over HTTP. Every `list` answer carries ADR-0120
-decision 6's publication state (`current`/`claims_only`/`not_published`
-today; `lagging`/`unavailable` are not yet computed by either read surface).
+decision 6's checked publication state (`current`/`claims_only`/`not_published`)
+from the same snapshot as its tasks. Unreadable or inconsistent Work returns an
+unavailable error; Board Doctor names the first task requiring integrity repair.
+The synchronous Work domain has no `lagging` state.
 It holds itself to a local-loopback Ackplane endpoint (ADR-0136 clause 4):
 neither today's enrolled-node possession proof nor Bridge's loopback
 developer token fits an arbitrary MCP client, so `endpoint::resolve_endpoint`

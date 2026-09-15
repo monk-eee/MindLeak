@@ -111,6 +111,7 @@ pub struct NewWorkTask {
 pub struct WorkTaskPage {
     pub items: Vec<WorkTask>,
     pub total: i64,
+    pub publication: super::WorkPublication,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -23,6 +23,9 @@ const UNANSWERED_WAIT_THRESHOLD: std::time::Duration = std::time::Duration::from
 const DEFAULT_PAGE_SIZE: i64 = 20;
 const MAX_PAGE_SIZE: i64 = 100;
 
+#[cfg(test)]
+mod integrity_tests;
+
 pub struct WorkQueryService {
     store: Arc<Mutex<WorkStore>>,
 }
@@ -55,11 +58,6 @@ impl v1::work_query_service_server::WorkQueryService for WorkQueryService {
         };
 
         let store = self.store.lock().await;
-        let now = SystemTime::now();
-        let publication = store
-            .publication(&tenant_id, &repository_id, now)
-            .await
-            .map_err(map_store_error)?;
         let result = store
             .list_tasks(&tenant_id, &repository_id, state, page, page_size)
             .await
@@ -76,7 +74,7 @@ impl v1::work_query_service_server::WorkQueryService for WorkQueryService {
             total: result.total,
             page,
             page_size,
-            publication: Some(publication_to_wire(publication).map_err(Status::internal)?),
+            publication: Some(publication_to_wire(result.publication).map_err(Status::internal)?),
         }))
     }
 
@@ -222,19 +220,9 @@ fn claims_only_to_wire(claim: ClaimsOnlyWork) -> Result<v1::WorkClaimsOnlySummar
     })
 }
 
-/// Mirrors Bridge's own `WorkPublicationResponse::from` mapping exactly
-/// (`current`/`claims_only`/`not_published`). `lagging` and `unavailable`
-/// (ADR-0120 decision 6's remaining two states) are not yet computed by
-/// either read surface -- see
-/// `gaps.d/work-publication-state-never-reports-lagging-or-unavailable.md`.
+/// Unavailable reads return a typed error; successful reads use the store's checked state.
 fn publication_to_wire(publication: WorkPublication) -> Result<v1::WorkPublicationSummary, String> {
-    let state = if publication.has_work_tasks {
-        "current"
-    } else if publication.claims_only_total > 0 {
-        "claims_only"
-    } else {
-        "not_published"
-    };
+    let state = publication.state();
     Ok(v1::WorkPublicationSummary {
         state: state.to_string(),
         claims_only_total: publication.claims_only_total,
@@ -290,6 +278,14 @@ fn detail_to_wire(detail: WorkTaskDetail) -> Result<v1::WorkTaskDetailResult, St
 
 fn finding_to_wire(finding: WorkDoctorFinding) -> Result<v1::WorkDoctorFindingSummary, String> {
     Ok(match finding {
+        WorkDoctorFinding::InconsistentProjection { task_id, reason } => {
+            v1::WorkDoctorFindingSummary {
+                kind: "inconsistent_projection".to_string(),
+                detail: reason.to_string(),
+                task_id,
+                ..Default::default()
+            }
+        }
         WorkDoctorFinding::ClaimsOnly {
             task_id,
             owner_id,
@@ -358,9 +354,12 @@ fn finding_to_wire(finding: WorkDoctorFinding) -> Result<v1::WorkDoctorFindingSu
 
 fn map_store_error(error: WorkStoreError) -> Status {
     match error {
-        WorkStoreError::UnknownState { .. } => Status::internal(error.to_string()),
+        WorkStoreError::InconsistentProjection { .. } => Status::unavailable(error.to_string()),
+        WorkStoreError::UnknownState { .. } => Status::unavailable(error.to_string()),
         WorkStoreError::TaskConflict { .. } => Status::invalid_argument(error.to_string()),
-        WorkStoreError::Database(_) => Status::internal(error.to_string()),
+        WorkStoreError::Database(_) => {
+            Status::unavailable("Work data could not be read or checked")
+        }
         // `unavailable`, not `internal`: a saturated pool is a condition the
         // caller can retry, matching how ClaimStore reports the same failure.
         WorkStoreError::PoolExhausted(_) => Status::unavailable(error.to_string()),

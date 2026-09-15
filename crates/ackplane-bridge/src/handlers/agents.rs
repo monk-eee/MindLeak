@@ -159,7 +159,7 @@ pub async fn agents(
         .await
         .map_err(|error| {
             tracing::error!(%error, "Bridge Agents native Work state query failed");
-            StatusCode::INTERNAL_SERVER_ERROR
+            StatusCode::SERVICE_UNAVAILABLE
         })?;
     let unresolved_waits = state
         .work
@@ -172,7 +172,7 @@ pub async fn agents(
         .await
         .map_err(|error| {
             tracing::error!(%error, "Bridge Agents unresolved waits query failed");
-            StatusCode::INTERNAL_SERVER_ERROR
+            StatusCode::SERVICE_UNAVAILABLE
         })?;
 
     Ok(Json(AgentsResponse {
